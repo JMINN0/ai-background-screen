@@ -1,0 +1,6 @@
+{
+  "name": "dsh-go-plugin-screen",
+  "description": "Private headless virtual display for app automation.",
+  "version": "0.1.0",
+  "entry": { "name": "dsh-go-plugin-screen", "inject": ["tools"] }
+}

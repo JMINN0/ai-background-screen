@@ -1,0 +1,44 @@
+{
+  "name": "local-screen-watch",
+  "version": "2026.1105.1908",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  },
+  "dshGo": {
+    "v": 1,
+    "title": {
+      "zh": "看 AI 操作",
+      "en": "Watch AI"
+    },
+    "icon": "image",
+    "contributes": {
+      "composer.strip": [
+        {
+          "id": "watch",
+          "icon": "image",
+          "text": "AI 未操作",
+          "panel": "live"
+        }
+      ],
+      "panels": [
+        {
+          "id": "live",
+          "title": "AI 画面",
+          "icon": "image",
+          "placement": [
+            "chat.panel",
+            "session.tab"
+          ]
+        }
+      ]
+    }
+  }
+}
