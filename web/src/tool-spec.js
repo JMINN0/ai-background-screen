@@ -1,0 +1,143 @@
+/** 六个工具的契约。宿主只支持 string/number/integer/boolean/null/array/object/json/oneOf 注解。 */
+
+const out = (d) => ({
+  schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true, description: d } } },
+  render(_a, v) { return [{ type: 'text', text: v.text }]; },
+});
+
+const WHY = 'Works without touching the screen: it talks to the phone browser over the DevTools protocol (adb forward → ws).';
+
+export function ensureSpec() {
+  return {
+    name: 'web_ensure',
+    description: [
+      'Check the browser automation channel and repair it if the forward went stale.',
+      WHY,
+      '',
+      'Call this first when web_* tools fail. If the browser process was killed, this reports it;',
+      'with allowForeground:true it will launch the browser (which briefly takes over the screen).',
+    ].join('\n'),
+    parameters: {
+      allowForeground: { type: 'boolean', description: 'If the browser is dead, launch it. Takes the screen for ~1-2s. Default false.' },
+    },
+    output: out('Channel status, browser version, or why it cannot work plus the next step.'),
+  };
+}
+
+export function openSpec() {
+  return {
+    name: 'web_open',
+    description: [
+      'Open a URL in a tab OWNED BY THIS PLUGIN and return its targetId.',
+      WHY,
+      '',
+      'The tab is tagged in its URL fragment (#dsh-<marker>) so it can be found and closed later even',
+      'after a crash. It NEVER reuses or navigates a tab the user owns.',
+    ].join('\n'),
+    parameters: {
+      url: { type: 'string', required: true, description: 'Absolute http(s) URL.' },
+      reuse: { type: 'boolean', description: 'Reuse our own previous tab instead of creating another. Default true.' },
+    },
+    output: out('targetId plus the resulting title/url.'),
+  };
+}
+
+export function readSpec() {
+  return {
+    name: 'web_read',
+    description: [
+      'Read the current page of one of our tabs: url, title, and visible text (first 4000 chars).',
+      WHY,
+      'Costs no image tokens — prefer it over screenshots when you only need to know what the page says.',
+    ].join('\n'),
+    parameters: {
+      targetId: { type: 'string', required: true, description: 'targetId returned by web_open.' },
+      maxChars: { type: 'integer', description: 'How many characters of body text, default 4000, max 20000.' },
+    },
+    output: out('Page url, title and visible text.'),
+  };
+}
+
+export function clickSpec() {
+  return {
+    name: 'web_click',
+    description: [
+      'Click an element by CSS selector in one of our tabs.',
+      WHY,
+      'No coordinates involved: it scrolls the element into view and dispatches a real click, so page',
+      'scrolling or layout shifts cannot make it hit the wrong thing.',
+    ].join('\n'),
+    parameters: {
+      targetId: { type: 'string', required: true, description: 'targetId from web_open.' },
+      selector: { type: 'string', description: 'CSS selector, e.g. "#submit". Optional if text is given.' },
+      text: { type: 'string', description: 'Visible text to match instead, e.g. "创建仓库". Optional if selector is given.' },
+    },
+    output: out('Whether the element was found and clicked.'),
+  };
+}
+
+export function fillSpec() {
+  return {
+    name: 'web_fill',
+    description: [
+      'Type into an input/textarea by CSS selector.',
+      WHY,
+      'Uses Input.insertText so frameworks (React/Vue) actually receive the change event. Setting',
+      'element.value directly leaves their state empty — that is why the page says "still blank".',
+    ].join('\n'),
+    parameters: {
+      targetId: { type: 'string', required: true, description: 'targetId from web_open.' },
+      selector: { type: 'string', required: true, description: 'CSS selector of the field.' },
+      text: { type: 'string', required: true, description: 'Text to type.' },
+    },
+    output: out('What the field reads back after typing.'),
+  };
+}
+
+export function shotSpec() {
+  return {
+    name: 'web_shot',
+    description: [
+      'Screenshot our tab and save it as PNG.',
+      WHY,
+      'Useful when layout matters; prefer web_read when you only need text (no image tokens).',
+    ].join('\n'),
+    parameters: {
+      targetId: { type: 'string', required: true, description: 'targetId from web_open.' },
+      dir: { type: 'string', description: 'Directory on this machine, default /tmp.' },
+    },
+    output: out('Saved path and byte size.'),
+  };
+}
+
+export function closeSpec() {
+  return {
+    name: 'web_close',
+    description: [
+      'Close every tab this plugin created and remove the adb forward.',
+      WHY,
+      'Only tabs carrying our #dsh-<marker> tag are closed. Tabs the user owns are never touched.',
+      '',
+      'Call it when the task is done — leaving a stale forwards behind is what makes later',
+      'connections hang with "socket hang up".',
+    ].join('\n'),
+    parameters: {},
+    output: out('How many of our tabs were closed and whether the forward was removed.'),
+  };
+}
+
+export function browserSpec() {
+  return {
+    name: 'web_browser',
+    description: [
+      '查看或切换要操作的浏览器（默认 Edge）。',
+      '',
+      'Chromium 系（Edge / Chrome / 红魔浏览器）的 devtools socket 都叫 chrome_devtools_remote，',
+      '同一时刻只允许一个进程绑定，所以切换前要先关掉另一个浏览器。',
+    ].join('\n'),
+    parameters: {
+      select: { type: 'string', description: '要切到的浏览器：edge / chrome / nubia。省略则只查看当前状态。' },
+    },
+    output: out('当前浏览器与可选项。'),
+  };
+}

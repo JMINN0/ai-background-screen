@@ -1,6 +1,8 @@
 # dsh-go-second-screen
 
-Give an Android phone **a screen the user cannot see**. An AI operates any app on it, and you can peek at it whenever you want.
+Let an AI **operate the phone in the background without taking your screen**.
+
+Three packages: a display you cannot see (runs any app), a browser controller (drives pages without touching the screen), and a capsule that lets you peek at what the AI is doing.
 
 English ｜ [中文](README.md)
 
@@ -26,18 +28,35 @@ Measured: the AI browsed Xiaohongshu, read comments and paged through notes on t
 
 ---
 
-## 2. Why two packages
+## 2. Three packages, one job each
 
-The feature is **split in half and runs in two different places**. Both halves are required:
+Packages are split by **which subsystem they run in**:
 
 | Package | Type | Does | Installed into |
 |---|---|---|---|
-| `screen/` | Cordis plugin | creates the display, launches apps, taps, screenshots, streams | the profile (registers tools for the engine) |
+| `screen/` | Cordis plugin | creates the invisible virtual display, launches apps, taps, screenshots, streams | the profile (registers tools) |
+| `web/` | Cordis plugin | drives the browser over CDP: read the DOM, click, fill, screenshot | the profile (same) |
 | `watch/` | dsh-go native plugin | the capsule above the composer and the frame panel | `$DSH_HOME/dsh-go/plugins/` (draws app UI) |
 
-**Why they are not merged**: the app only loads native plugins to draw UI, and the engine only loads Cordis plugins to register tools. "AI works in the background while you can watch" therefore needs both.
+**What they share**: all three let the AI work in the background without interrupting what you are doing.
 
----
+- `screen/` covers **native apps** (WeChat, Xiaohongshu, games) — they expose no debugging interface, so they have to be launched onto a virtual display
+- `web/` covers **web pages** — Chromium has CDP built in, so reading the DOM beats guessing coordinates from screenshots
+- `watch/` is **your window** — tap it when you want to see what the AI is up to
+
+**Why `web/` lives here instead of its own repository**: browser automation is a very common need; a separate repo would just be another address with no independent value. It is the same kind of thing as `screen/` (background operation, no screen stealing), so it is easier to find here.
+
+**Why `watch/` cannot merge into `screen/`**: the app only loads native plugins to draw UI, and the engine only loads Cordis plugins to register tools. "AI works in the background while you can watch" needs both.
+
+**Choosing between `screen/` and `web/`**:
+
+| What you need to operate | Use |
+|---|---|
+| web pages (log in, fill forms, click, read) | `web/` — faster and more accurate |
+| native apps (WeChat, TikTok, Xiaohongshu, games) | `screen/` — launch onto the virtual display |
+| just fetch page text (no clicking) | **neither**; the built-in `web_fetch` is enough |
+
+> DSH ships `web_search` / `web_fetch`, which only fetch text — **no clicking, no forms, no login**. You need `web/` only when interaction is required.
 
 ## 3. Install
 
@@ -70,6 +89,14 @@ cd dsh-go-second-screen
 dsh plugin --profile web add ./screen
 ```
 
+### Install `web/` (browser control, optional)
+
+```bash
+dsh plugin --profile web add ./web
+```
+
+**Only install it if you need to operate web pages.** It requires the browser to already be running (it never launches the browser itself, so it cannot interrupt you).
+
 ### Install `watch/`
 
 ```bash
@@ -92,8 +119,8 @@ import json
 d=json.load(open('$HOME/.dsh/profiles/web/package.json'))
 b=d['dsh']['profile']['bundles']
 print('screen:', 'dsh-go-plugin-screen' in b)
+print('web   :', 'dsh-go-plugin-web' in b)   # only if you installed web
 print('watch :', 'local-screen-watch' in b)"
-# both must be True
 
 grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md" | grep -E "screen|watch" || echo "no load errors ✅"
 ```
@@ -119,7 +146,7 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 
 ---
 
-## 5. The ten tools (`screen/`)
+## 5. Tools
 
 | Tool | Purpose |
 |---|---|
@@ -133,6 +160,21 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 | `vdisplay_stop` | destroy the display |
 | `vdisplay_stream` | push frames as 2fps JPEG to the capsule (about 0.30 core) |
 | `vdisplay_stream_stop` | stop streaming |
+
+### `web/` provides eight tools (browser control)
+
+| Tool | Purpose |
+|---|---|
+| `web_browser` | view or switch the target browser (Edge / Chrome / Nubia, Edge by default) |
+| `web_ensure` | check and repair the CDP channel; does **not** launch the browser by default |
+| `web_open` | open a tab, returns `targetId` |
+| `web_read` | read page text from the DOM (no image tokens) |
+| `web_click` | click by CSS selector or visible text |
+| `web_fill` | fill a field via `Input.insertText`, so React/Vue see the event |
+| `web_shot` | screenshot |
+| `web_close` | close only the tabs it opened |
+
+> The browser must already be running. The plugin **never** launches it — you may have just closed it, and waking it would interrupt you and overwrite the browser's session-restore record (this actually happened).
 
 ---
 
@@ -148,6 +190,17 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 ```
 
 **To watch live**: `vdisplay_stream { fps: 2, width: 360 }`, then tap the capsule above the composer.
+
+**Operating a web page** (use `web/`, far faster than the virtual display):
+
+```
+1. web_ensure {}                                          → channel ready
+2. web_open { url: "https://example.com" }                → targetId: "ABC123"
+3. web_read { targetId: "ABC123" }                        → page text
+4. web_click { targetId: "ABC123", text: "Sign in" }
+5. web_fill { targetId: "ABC123", selector: "#user", text: "xxx" }
+6. web_close {}
+```
 
 ---
 
@@ -175,6 +228,8 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 | the display dies with its process | by design, nothing is left behind |
 | cannot read other apps' `/data/data` | SELinux, no root |
 | idling display costs ~0.28 core | 2fps streaming adds ~0.02 core |
+| `web/` cannot create a tab while the browser is backgrounded | Android restriction; the plugin never opens a window behind your back, it returns `needsUserConfirm` |
+| `web/` cannot drive two Chromium browsers at once | they contend for the same `chrome_devtools_remote` socket |
 
 ---
 
@@ -194,7 +249,17 @@ watch/ (native plugin, inside the app)
   → draws the capsule / panel above the composer
 ```
 
-No accessibility service, and no public overlay display (that one covers the screen, eats touches and takes the IME).
+`web/` is an independent path:
+
+```
+web/ (Cordis plugin)
+  ↓ adb forward tcp:<random port> localabstract:chrome_devtools_remote
+the browser's DevTools socket
+  ↓ speaks CDP over WebSocket
+read/write the DOM, click, fill, screenshot -- the screen is never touched
+```
+
+`screen/` uses neither accessibility nor a public overlay display (that one covers the screen, eats touches and takes the IME).
 
 ---
 

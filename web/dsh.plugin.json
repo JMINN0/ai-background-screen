@@ -1,0 +1,6 @@
+{
+  "name": "dsh-go-plugin-web",
+  "description": "Screen-free browser control over the DevTools protocol.",
+  "version": "0.1.0",
+  "entry": { "name": "dsh-go-plugin-web", "inject": ["tools"] }
+}
