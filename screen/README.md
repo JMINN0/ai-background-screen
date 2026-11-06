@@ -77,6 +77,28 @@ FLAG_OWN_CONTENT_ONLY + FLAG_OWN_FOCUS  → 能托管，内容独立
 
 ## 已知限制
 
+### ⚠️ 重度游戏跑不了（UE4 / Unity 这类）
+
+**建屏和投屏都会报成功，但游戏跑 5–20 秒后会 ANR 退出。** 实测 Apex Legends Mobile：
+
+```
+同一个游戏在主屏：正常渲染，存活 24 秒以上，SurfaceView 图层正常
+投到虚拟屏：20 秒后死
+  E ActivityManager: ANR in com.levelinfinite.apexlegendsmobile
+  Reason: Input dispatching timed out (... not responding.
+          Waited 8000ms for FocusEvent(hasFocus=false))
+  SurfaceUtils: disconnecting ... reason disconnectNativeWindow
+  Surface: disconnect - SurfaceView[...GameActivity]#1(BLAST Consumer)
+```
+
+排除项：`oom_score_adj=0`（前台优先级，不是 OOM 杀的）；把虚拟屏做成主屏同规格（1216x2688/480dpi）只多撑几秒，ANR 照旧。
+
+**原因**：虚拟屏是**软件合成**，没有硬件合成层。UE4 创建 SurfaceView 时主线程阻塞，8 秒内处理不了焦点事件 → ANR → 系统杀进程 → Surface 断开。
+
+**这不是参数问题，工具侧改不出来**——是 DisplayManager 虚拟屏的固有限制。轻量 App（微信、小红书、设置、浏览器、文档类）不受影响。
+
+### 其他
+
 - 没有 root。虚拟屏上的 App 仍然受 SELinux 约束，读不了别人的 `/data/data`。
 - 虚拟屏与插件进程同生共死：引擎重启，屏自动消失，任务里的 App 也会结束。
 - 每次 `start` 会多占约 0.28 核，用完记得 `vdisplay_stop`。
