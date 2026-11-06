@@ -77,25 +77,31 @@ FLAG_OWN_CONTENT_ONLY + FLAG_OWN_FOCUS  → 能托管，内容独立
 
 ## 已知限制
 
-### ⚠️ 重度游戏跑不了（UE4 / Unity 这类）
+### 重度 3D 游戏可以跑（但改造过的 App 要自己修）
 
-**建屏和投屏都会报成功，但游戏跑 5–20 秒后会 ANR 退出。** 实测 Apex Legends Mobile：
+虚拟屏跑重度 3D 游戏**是通的**：Minecraft 实测约 120fps（`--latency` 8.33ms/帧，8/8 张间隔截图 md5 全不同）。
+
+如果某个游戏投上来就崩，先别怪屏——**同一份 APK 在主屏上也崩在同一行**，那就不是屏的问题。实测 ApexM 改造版的例子：
 
 ```
-同一个游戏在主屏：正常渲染，存活 24 秒以上，SurfaceView 图层正常
-投到虚拟屏：20 秒后死
-  E ActivityManager: ANR in com.levelinfinite.apexlegendsmobile
-  Reason: Input dispatching timed out (... not responding.
-          Waited 8000ms for FocusEvent(hasFocus=false))
-  SurfaceUtils: disconnecting ... reason disconnectNativeWindow
-  Surface: disconnect - SurfaceView[...GameActivity]#1(BLAST Consumer)
+主屏：     t=37s 死，Application Error 弹窗
+虚拟屏：   t=38s 死
+两边崩溃行逐字相同：
+  Fatal signal 11 (SIGSEGV) in tid dsh-hook-worker
+  #01 libdshnative.so (Java_com_dshx_NativeBridge_nativeCallOpenLevel+956)
 ```
 
-排除项：`oom_score_adj=0`（前台优先级，不是 OOM 杀的）；把虚拟屏做成主屏同规格（1216x2688/480dpi）只多撑几秒，ANR 照旧。
+根因在改造版自己：`GameDefaultMap` 写成了包里不存在的地图，游戏弹出
+`The map specified on the commandline ... could not be found. Exiting.`，
+随后 hook worker 每 5 秒调一次 `nativeCallOpenLevel` 把它打崩。跟屏无关。
 
-**原因**：虚拟屏是**软件合成**，没有硬件合成层。UE4 创建 SurfaceView 时主线程阻塞，8 秒内处理不了焦点事件 → ANR → 系统杀进程 → Surface 断开。
+**排查顺序**：先在主屏跑一遍。主屏也崩 → 修 App；主屏正常但屏上崩 → 才是插件的事。
 
-**这不是参数问题，工具侧改不出来**——是 DisplayManager 虚拟屏的固有限制。轻量 App（微信、小红书、设置、浏览器、文档类）不受影响。
+**已知的虚拟屏真实限制**（和游戏无关）：
+
+- `video=false` 建不出屏——`new_display` 依赖视频通路，别去关编码器
+- 屏幕上默认会带二级 launcher / 导航栏 / 权限弹窗，AI 截图会混进这些 UI；
+  想要干净画面用 `systemDecorations: false`（scrcpy ≥3.1，实测有效）
 
 ### 其他
 

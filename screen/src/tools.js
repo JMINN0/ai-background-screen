@@ -19,7 +19,12 @@ export async function modes() {
 }
 
 export async function start(args) {
-  const r = await vd.start({ width: Number(args?.width) || 720, height: Number(args?.height) || 1280, dpi: Number(args?.dpi) || 320 });
+  const r = await vd.start({
+    width: Number(args?.width) || 720,
+    height: Number(args?.height) || 1280,
+    dpi: Number(args?.dpi) || 320,
+    systemDecorations: args?.systemDecorations === true,   // 默认 false：屏上不带二级桌面/导航栏
+  });
   if (!r.ok) return { text: `建屏失败：${r.hint}` };
   return {
     text: `虚拟屏已就绪：displayId=${r.displayId}，SurfaceFlinger id=${r.sfId || '(未取到)'}\n`

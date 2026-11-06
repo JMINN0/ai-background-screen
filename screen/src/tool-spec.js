@@ -36,6 +36,7 @@ export function startSpec() {
       width: { type: 'integer', description: '宽度，默认 720。' },
       height: { type: 'integer', description: '高度，默认 1280。' },
       dpi: { type: 'integer', description: '密度，默认 320。' },
+      systemDecorations: { type: 'boolean', description: '默认 false。false 时虚拟屏上不含二级桌面、导航栏和权限弹窗，AI 截图更干净（scrcpy ≥3.1）。改这个值会重建屏。' },
     },
     output: out('displayId、SurfaceFlinger id、是否具备托管 App 的能力标志。'),
   };

@@ -139,13 +139,14 @@ const state = {
   lastShotHash: null,
   lastShotPath: null,
   lastShotImgWidth: 0,
+  systemDecorations: false,
   launchedPkgs: [],
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
+export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false } = {}) {
   if (state.displayId) {
-    if (await alive()) {
+    if (state.systemDecorations === systemDecorations && await alive()) {
       // 复用分支以前不返回 canHost/flags，tools.js 把它当 false，
       // 于是第二次 vdisplay_start 会误报"不能托管 App"，让 AI 放弃一个正常屏。
       const fl = await shell(`dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1`);
@@ -156,9 +157,9 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
         flags: (fl.match(/FLAG_[A-Z_]+/g) || []).join(' '),
       };
     }
-    // 记着有屏但实际已经没了（server 被回收 / adb 断开 / 被 pkill）→ 清干净重来，
-    // 而不是继续返回"已就绪"骗调用方。
-    forget('旧屏已失效，重建');
+    // 走到这里说明：要么装饰设置变了要重建，要么记着有屏但实际已经没了
+    // （server 被回收 / adb 断开 / 被 pkill）。清干净重来，别继续报"已就绪"骗调用方。
+    forget('旧屏配置变化或已失效，重建');
   }
 
   const jar = await ensureJar();
@@ -188,7 +189,10 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
     // display_ime_policy=hide 是必须的：不加这个，虚拟屏上的输入框会把系统输入法焦点
     // 抢过去（实测 mDisplayIdToShowIme 会变成虚拟屏的 id），用户在主屏打字时键盘就没了。
     // 代价：虚拟屏上也打不了字（没有输入法连接），所以文字要么用深链带参数进去，要么用坐标点选。
-    + `log_level=info tunnel_forward=true display_ime_policy=hide new_display=${width}x${height}/${dpi} `
+    // vd_system_decorations=false（scrcpy ≥3.1）：不加这个，虚拟屏上会自带
+    // 二级桌面 launcher、导航栏和权限弹窗——AI 截图会把这些系统 UI 一起截进去，
+    // 以为是自己要操作的界面。实测关掉后屏上窗口数=0，画面干净。
+    + `log_level=info tunnel_forward=true display_ime_policy=hide vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${width}x${height}/${dpi} `
     + `control=true audio=false scid=${scid}`;
   // 把 server 的输出落到日志文件：出问题时没有日志只能瞎猜（刚踩过：服务秒退却不知道为什么）
   const logPath = '/tmp/dsh-vd-server.log';
@@ -260,6 +264,7 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
     if (added.length) {
       state.displayId = added[0];
       state.width = width; state.height = height;
+      state.systemDecorations = systemDecorations;
       break;
     }
   }
@@ -360,6 +365,7 @@ function forget(reason) {
   state.child = null; state.sockets = [];
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   state.lastShotHash = null; state.lastShotPath = null; state.lastShotImgWidth = 0;
+  state.systemDecorations = false;
   return { ...dead, reason };
 }
 
