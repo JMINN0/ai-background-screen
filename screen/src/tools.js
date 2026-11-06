@@ -47,7 +47,7 @@ export async function launch(args) {
 
 export async function input(args) {
   const kind = String(args?.kind || '').trim();
-  if (!['tap', 'swipe', 'text', 'key'].includes(kind)) return { text: 'kind 只能是 tap / swipe / text / key。' };
+  if (!['tap', 'swipe', 'text', 'key', 'paste'].includes(kind)) return { text: 'kind 只能是 tap / swipe / text / key / paste。' };
   const r = await vd.input(kind, args || {});
   if (!r.ok) return { text: `注入失败：${r.hint || r.out}` };
   return { text: `已在 display=${r.displayId} 注入 ${kind}${r.out ? `（${r.out}）` : ''}` };
