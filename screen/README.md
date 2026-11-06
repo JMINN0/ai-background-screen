@@ -30,7 +30,7 @@ Android 上「造虚拟屏」有两条路，差别是生死攸关的：
 | `screen_modes` | 列出四种操作方式（shell / browser / vdisplay / watch）和各自代价 |
 | `vdisplay_start` | 建私有虚拟屏，返回 displayId 与能力标志 |
 | `vdisplay_launch` | 把 App 投到虚拟屏（先 force-stop，避免把主屏的旧任务拉前台） |
-| `vdisplay_input` | 往虚拟屏定向注入 tap / swipe / text / key |
+| `vdisplay_input` | 往虚拟屏定向注入 tap / swipe / text / key / **paste** |
 | `vdisplay_shot` | 截虚拟屏，返回本地路径，可直接当图片读 |
 | `screen_shot_main` | 截主屏（只读），用来核对有没有影响用户 |
 | `vdisplay_status` | 屏状态、上面跑着什么、主屏焦点是什么 |

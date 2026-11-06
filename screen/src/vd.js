@@ -106,6 +106,8 @@ const state = {
   displayId: null,
   sfId: null,
   startedAt: 0,
+  lastShotHash: null,
+  lastShotPath: null,
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
@@ -368,11 +370,28 @@ export async function input(kind, a = {}) {
   };
 }
 
-/** 截虚拟屏。返回本地路径。 */
+/**
+ * 截虚拟屏。返回本地路径。
+ *
+ * 带**画面去重**：如果这一帧和上次截的完全一样，直接返回上次那个路径并标 `unchanged:true`，
+ * 调用方就不用再 read_image 了。为什么值得做：一张 720x1280 截图约 1.1k tokens
+ * 且永久留在上下文里，长任务翻几屏就把上下文吃满了（实测 15 屏 → 上下文 203k→243k）。
+ */
 export async function shot(dir = '/tmp') {
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
   if (!state.sfId) return { ok: false, hint: '没拿到这块屏的 SurfaceFlinger id，无法截图。' };
+
+  // 先算哈希，和上次比
+  const hash = await frameHash();
+  if (hash && hash === state.lastShotHash && state.lastShotPath) {
+    // 文件还在就直接复用，省一次 pull 也省一次模型看图
+    try {
+      const { access } = await import('node:fs/promises');
+      await access(state.lastShotPath);
+      return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
+    } catch { /* 文件没了就正常截 */ }
+  }
   const remote = `/sdcard/dsh-vd-${Date.now()}.png`;
   const cap = await shell(`screencap -p -d ${state.sfId} ${remote}`);
   if (/Failed|invalid/i.test(cap)) return { ok: false, hint: `截图失败：${cap}` };
@@ -381,7 +400,9 @@ export async function shot(dir = '/tmp') {
   const pull = await adb(['pull', remote, local], 60000);
   await shell(`rm -f ${remote}`);
   if (!pull.ok) return { ok: false, hint: `拉取失败：${pull.err}` };
-  return { ok: true, path: local, displayId: state.displayId };
+  state.lastShotHash = hash;
+  state.lastShotPath = local;
+  return { ok: true, path: local, displayId: state.displayId, unchanged: false };
 }
 
 /** 主屏截图（只读，不打扰）。 */
