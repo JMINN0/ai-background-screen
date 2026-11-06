@@ -70,7 +70,7 @@ export async function apply(ctx) {
             [shotSpec, (a) => T.shot(a)],
             [mainShotSpec, (a) => T.mainShot(a)],
             [statusSpec, () => T.status()],
-            [stopSpec, () => T.stop()],
+            [stopSpec, (a) => T.stop(a)],   // 以前写成 () => T.stop()，把 args 丢了，forceStopApps 永远无效
             [streamStartSpec, (a) => T.streamStart(a)],
             [streamStopSpec, () => T.streamStop()],
           ];

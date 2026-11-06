@@ -102,13 +102,22 @@ export async function ensureJar() {
 }
 
 /** 列出当前的 displayId 集合，用于差集。 */
+/**
+ * 读屏 id 列表。
+ * **查询失败时返回 null**，而不是空集合——空集和"屏真的没了"无法区分，
+ * 早期版本因此把一次 adb 抖动当成"虚拟屏消失"，直接把正常屏拆了重建
+ * （复核实测：单次失败 3.6 秒后重建、旧屏上 App 的上下文全丢）。
+ */
 async function displayIds() {
   const out = await shell(`dumpsys display 2>/dev/null | grep -oE "mDisplayId=[0-9]+" | sort -u`);
+  if (!String(out || '').trim() || /error|not found|failed/i.test(String(out))) return null;
   return new Set(out.split('\n').map((s) => s.replace('mDisplayId=', '').trim()).filter(Boolean));
 }
 
 async function sfIds() {
   const out = await shell(`dumpsys SurfaceFlinger --display-id 2>/dev/null | grep scrcpy`);
+  // 同上：查询失败返回 null，不要用空集合冒充"没有 scrcpy 屏"
+  if (!String(out || '').trim() || /error|not found|failed/i.test(String(out))) return null;
   const ids = new Set();
   for (const line of out.split('\n')) {
     const m = line.match(/Display (\d+)/);
@@ -161,8 +170,9 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
     return { ok: false, hint: '这台机器的 com.android.shell 没有 ADD_TRUSTED_DISPLAY 权限，私有虚拟屏起不来（scrcpy 官方 issue #5523）。这条路只在一部分机型上可用。' };
   }
 
-  const before = await displayIds();
-  const beforeSf = await sfIds();
+  // displayIds/sfIds 查询失败会返回 null，这里兜底成空集合（start 时还没有旧屏可比）
+  const before = (await displayIds()) || new Set();
+  const beforeSf = (await sfIds()) || new Set();
 
   // scid 会被 scrcpy 用 Integer.parseInt(radix 16) 解析，必须是**有符号 32 位**内的正整数。
   // 用 0xffffffff 随机会得到 cd7bccd6 这种超范围值，server 直接 NumberFormatException 退出（踩过）。
@@ -245,6 +255,7 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
   for (let i = 0; i < 20; i += 1) {
     await sleep(400);
     const now = await displayIds();
+    if (!now) { await sleep(300); continue; }   // 查询失败这一轮跳过，别误判成屏没出来
     const added = [...now].filter((d) => !before.has(d));
     if (added.length) {
       state.displayId = added[0];
@@ -260,6 +271,7 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
   for (let i = 0; i < 10; i += 1) {
     await sleep(300);
     const nowSf = await sfIds();
+    if (!nowSf) { await sleep(300); continue; }
     const added = [...nowSf].filter((d) => !beforeSf.has(d));
     if (added.length) { state.sfId = added[0]; break; }
   }
@@ -295,14 +307,17 @@ export async function stop({ forceStopApps = false } = {}) {
   // 逐个包判断：以前只要有一个命中就把整个列表都报成"还在跑"（复核实测）。
   const still = [];
   for (const pkg of pkgList) {
-    const cnt = await shell(`ps -A -o NAME 2>/dev/null | grep -c '${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' || echo 0`);
-    if (Number(String(cnt).trim()) > 0) still.push(pkg);
+    // 用 pidof 精确匹配进程名：grep 子串会命中同类包
+    // （实测 com.android.settings 已 force-stop，却因为命中
+    //   com.android.settings.intelligence 而误报"仍在后台"）。
+    const pid = await shell(`pidof ${pkg} 2>/dev/null || true`);
+    if (String(pid || '').trim()) still.push(pkg);
   }
   const scid = state.scid;
   if (scid) await shell(`pkill -f '${scid}' 2>/dev/null`);
   // 清掉本次用的 adb forward：以前从不清，复核实测攒了 9 条残留。
   if (state.port) await adb(['forward', '--remove', `tcp:${state.port}`], 10000).catch(() => {});
-  await adb(['forward', '--remove-all'], 10000).catch(() => {});
+  // 不能用 --remove-all：那会删掉别的插件（比如 web_* 的 CDP）的 forward。只删自己那条。
   for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
   if (state.child) { try { state.child.kill('SIGKILL'); } catch { /* ignore */ } }
   state.sockets = [];
@@ -330,7 +345,8 @@ export async function stop({ forceStopApps = false } = {}) {
 async function alive() {
   if (!state.displayId) return false;
   const [ids, sf] = await Promise.all([displayIds(), sfIds()]);
-  // displayIds() / sfIds() 返回的是 Set，不是数组
+  // null = 查询失败（adb 抖动），不能据此判定屏没了 → 保守认为还活着
+  if (!ids || !sf) return true;
   const hasDisplay = ids.has(String(state.displayId));
   const hasSf = state.sfId ? sf.has(String(state.sfId)) : false;
   return hasDisplay && hasSf;
@@ -363,8 +379,8 @@ export async function status() {
     displayId: state.displayId,
     sfId: state.sfId,
     uptimeSec: state.startedAt ? Math.round((Date.now() - state.startedAt) / 1000) : 0,
-    allDisplays: [...ids].sort((a, b) => a - b),
-    scrcpyScreens: [...sf],
+    allDisplays: ids ? [...ids].sort((a, b) => a - b) : null,   // null 表示查询失败，不是没有屏
+    scrcpyScreens: sf ? [...sf] : null,
     focusedApp: app.trim(),
   };
 }
@@ -598,6 +614,10 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   // 转成 540 宽 JPEG。**必须用本地 proot 的 ffmpeg**：设备上没有 ffmpeg
   // （实测 `adb shell ffmpeg` → inaccessible or not found）。
   let finalPath = local;
+  // 记录**实际**产出的图片宽度：转码失败会退回原始 PNG（720 宽），
+  // 这时如果还按 540 报，坐标换算的倍率就错了，33% 偏移会重新出现
+  // （复核实测：PATH 去掉 ffmpeg 后返回 720 宽 PNG 却声明 imageWidth 540）。
+  let finalImgWidth = state.width;
   if (format === 'jpeg') {
     const jpg = local.replace(/\.png$/, '.jpg');
     const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
@@ -605,11 +625,21 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
       execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local, '-vf', `scale=${targetW}:-1`, '-q:v', '4', jpg],
         (e) => res(!e));
     });
-    if (conv) { finalPath = jpg; }
+    if (conv) {
+      try {
+        const { access } = await import('node:fs/promises');
+        await access(jpg);
+        finalPath = jpg;
+        finalImgWidth = targetW;
+      } catch { finalPath = local; finalImgWidth = state.width; }
+    } else {
+      finalPath = local;
+      finalImgWidth = state.width;   // 退回 PNG，宽度就是显示宽度
+    }
   }
   state.lastShotHash = hash;
   state.lastShotPath = finalPath;
-  state.lastShotImgWidth = format === 'jpeg' ? Math.max(240, Math.min(1080, Number(width) || 540)) : state.width;
+  state.lastShotImgWidth = finalImgWidth;
   return {
     ok: true, path: finalPath, displayId: state.displayId, unchanged: false,
     // **一定要带尺寸**：之前完全不返回，调用方只能猜坐标系。

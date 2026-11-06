@@ -70,7 +70,7 @@ export function inputSpec() {
       '  自绘输入框（京东、部分 App 的搜索框）可能注不进去。',
       '- kind:"paste"：发 KEYCODE_PASTE，把**剪贴板**内容粘进当前输入框。',
       '  这条路不经过输入法，对自绘输入框也有效，是 text 失败时的首选替代。',
-      '  注意：剪贴板内容要靠外部准备（用户自己复制，或用宿主 App 的剪贴板工具写）。插件内部写不了剪贴板。',
+      '  带 text 时插件会先写剪贴板再粘，支持中文；不带 text 则粘用户剪贴板里现有的内容。',
       '- kind:"key"：发按键，如 KEYCODE_BACK / KEYCODE_ENTER。',
     ].join('\n'),
     parameters: {

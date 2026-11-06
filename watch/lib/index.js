@@ -19,10 +19,22 @@ const POLL_MS = 500          // 2 帧/秒，稳在 4 Hz 限制之内
 const FRAME_MAX = 22000      // base64 前的 JPEG 字节上限，留足余量
 
 async function streamInfo() {
+  // 注意：引擎重启后 stream.json 可能残留 running:true，但推流其实已经没了。
+  // 所以这里除了看 running，还要确认端口真的能连上（grabStatus 探测过一次），
+  // 否则胶囊会永远显示"AI 在操作 Ns"、图一直是空的。
+
   try {
     const raw = await readFile(STATE_FILE, 'utf8')
     const j = JSON.parse(raw)
-    if (j && Number(j.port) > 0) return j
+    if (!j || !(Number(j.port) > 0)) return null
+    // 关键：光有 running:true 不算数。引擎重启后这个文件会残留，
+    // 推流其实早没了，胶囊就会永远显示"AI 在操作 Ns"、图一直空。
+    // 这里真探一次 /status，连不上就当作没在推流。
+    const ok = await new Promise((resolve) => {
+      const req = fetch(`http://127.0.0.1:${j.port}/status`, { signal: AbortSignal.timeout(800) })
+      req.then((r) => resolve(r.ok)).catch(() => resolve(false))
+    })
+    return ok ? j : null
   } catch { /* 没有就是没开 */ }
   return null
 }
@@ -128,7 +140,9 @@ export function apply(ctx) {
             const [buf, st] = await Promise.all([grabFrame(info), grabStatus(info)])
             emit({
               frame: buf ? `data:image/jpeg;base64,${buf.toString('base64')}` : '',
-              status: st?.focusedApp ? String(st.focusedApp).slice(0, 60) : '取帧中',
+              // 用 appLabel 转成人话，别把原始窗口串甩给用户
+              // （以前直接 slice，用户看到 mCurrentFocus=Window{ae9eb4a u0 com.android.settings/com.and）
+              status: st?.focusedApp ? (appLabel(st.focusedApp) || '运行中') : '取帧中',
               display: st?.displayId ? `display ${st.displayId}` : '—',
             })
           } finally { busy = false }

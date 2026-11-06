@@ -74,8 +74,8 @@ function pngToJpeg(png, width, q = 7) {
   });
 }
 
-// base64 占 4/3，还要留 JSON 开销，所以 JPEG 必须 ≤ 23000 字节
-const JPEG_BUDGET = 23000;
+// base64 占 4/3，还要留 JSON 开销，所以 JPEG 必须 ≤ 22000 字节（与胶囊端 FRAME_MAX 保持一致，否则落在中间区间会出现 stream 认为合格、胶囊每帧丢弃的黑屏）
+const JPEG_BUDGET = 22000;
 
 async function captureAndConvert() {
   // 目标地址现取：adb 插件的 adbd 端口会变，硬编码 5555 会静默抓不到帧。
@@ -158,7 +158,11 @@ function startServer() {
  */
 export async function start({ sfId, displayId, fps = 2, width = 360, focusedApp = '' } = {}) {
   if (!sfId) return { ok: false, hint: '缺 SurfaceFlinger id，先 vdisplay_start 建屏。' };
-  if (st.running && st.sfId === sfId) return { ok: true, port: st.port, reused: true };
+  if (st.running && st.sfId === sfId) {
+    // 复用时要更新 App 名：以前直接 return，换 App 后胶囊永远显示推流开始时的那个
+    if (focusedApp && focusedApp !== st.focusedApp) { st.focusedApp = String(focusedApp).slice(0, 200); writeState(); }
+    return { ok: true, port: st.port, reused: true, focusedApp: st.focusedApp };
+  }
 
   st.sfId = sfId;
   st.displayId = displayId || null;
