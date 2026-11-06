@@ -168,6 +168,8 @@ export async function start({ sfId, displayId, fps = 2, width = 360, focusedApp 
   st.startedAt = Date.now();
 
   const interval = Math.round(1000 / st.fps);
+  // 换 sfId 时必须先清掉旧定时器：否则两个 tick 叠在一起，抓帧频率翻倍、CPU 也翻倍。
+  if (st.timer) { clearInterval(st.timer); st.timer = null; }
   st.timer = setInterval(tick, interval);
   tick();
   await writeState();

@@ -209,6 +209,8 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
   state.child = child;
   child.unref?.();
 
+  // 这个固定等待**不能省**：试过改成"能连上就往下走"，结果连太早 server 还没准备完，
+  // 屏建不出来（实测 10.6 秒后失败）。1800ms 是 server 初始化 + new_display 的时序要求。
   await sleep(1800);
 
   // 哑客户端 ×2（video + control），断开即销毁
@@ -495,16 +497,8 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   if (!s.ok) return { ok: false, hint: s.hint };
   if (!state.sfId) return { ok: false, hint: '没拿到这块屏的 SurfaceFlinger id，无法截图。' };
 
-  // 先算哈希，和上次比
-  const hash = await frameHash();
-  if (hash && hash === state.lastShotHash && state.lastShotPath) {
-    // 文件还在就直接复用，省一次 pull 也省一次模型看图
-    try {
-      const { access } = await import('node:fs/promises');
-      await access(state.lastShotPath);
-      return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
-    } catch { /* 文件没了就正常截 */ }
-  }
+  // 只截一次：以前先用 exec-out 算哈希、再 screencap 存文件，同一帧截了两次，
+  // 复杂画面每张多花约 0.5 秒。现在截一次、哈希从本地文件算。
   const stamp = Date.now();
   const local = `${dir}/vd-${stamp}.png`;
   const remotePng = `/sdcard/dsh-vd-${stamp}.png`;
@@ -514,6 +508,18 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   const pull = await adb(['pull', remotePng, local], 60000);
   await shell(`rm -f ${remotePng}`);
   if (!pull.ok) return { ok: false, hint: `拉取失败：${pull.err}` };
+
+  const { readFile: readBin } = await import('node:fs/promises');
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha1').update(await readBin(local)).digest('hex');
+  if (hash === state.lastShotHash && state.lastShotPath && state.lastShotPath !== local) {
+    // 和上一张完全一样：删掉刚截的，复用上次那张，省一次模型看图
+    try {
+      const { unlink } = await import('node:fs/promises');
+      await unlink(local);
+      return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
+    } catch { /* 删不掉就继续用新的 */ }
+  }
 
   // 转成 540 宽 JPEG。**必须用本地 proot 的 ffmpeg**：设备上没有 ffmpeg
   // （实测 `adb shell ffmpeg` → inaccessible or not found）。
