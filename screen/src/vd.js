@@ -136,7 +136,17 @@ const state = {
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
 export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
   if (state.displayId) {
-    if (await alive()) return { ok: true, displayId: state.displayId, sfId: state.sfId, reused: true, width: state.width, height: state.height };
+    if (await alive()) {
+      // 复用分支以前不返回 canHost/flags，tools.js 把它当 false，
+      // 于是第二次 vdisplay_start 会误报"不能托管 App"，让 AI 放弃一个正常屏。
+      const fl = await shell(`dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1`);
+      return {
+        ok: true, displayId: state.displayId, sfId: state.sfId, reused: true,
+        width: state.width, height: state.height,
+        canHost: /FLAG_OWN_CONTENT_ONLY/.test(fl) && /FLAG_OWN_FOCUS/.test(fl),
+        flags: (fl.match(/FLAG_[A-Z_]+/g) || []).join(' '),
+      };
+    }
     // 记着有屏但实际已经没了（server 被回收 / adb 断开 / 被 pkill）→ 清干净重来，
     // 而不是继续返回"已就绪"骗调用方。
     forget('旧屏已失效，重建');
@@ -282,13 +292,17 @@ export async function stop({ forceStopApps = false } = {}) {
       killed.push(pkg);
     }
   }
+  // 逐个包判断：以前只要有一个命中就把整个列表都报成"还在跑"（复核实测）。
   const still = [];
-  if (pkgList.length) {
-    const r = await shell(`ps -A -o NAME 2>/dev/null | grep -cE '${pkgList.map((p) => p.replace(/\./g, '\\.')).join('|')}' || echo 0`);
-    if (Number(String(r).trim()) > 0) still.push(...pkgList);
+  for (const pkg of pkgList) {
+    const cnt = await shell(`ps -A -o NAME 2>/dev/null | grep -c '${pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}' || echo 0`);
+    if (Number(String(cnt).trim()) > 0) still.push(pkg);
   }
   const scid = state.scid;
   if (scid) await shell(`pkill -f '${scid}' 2>/dev/null`);
+  // 清掉本次用的 adb forward：以前从不清，复核实测攒了 9 条残留。
+  if (state.port) await adb(['forward', '--remove', `tcp:${state.port}`], 10000).catch(() => {});
+  await adb(['forward', '--remove-all'], 10000).catch(() => {});
   for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
   if (state.child) { try { state.child.kill('SIGKILL'); } catch { /* ignore */ } }
   state.sockets = [];
@@ -331,6 +345,13 @@ function forget(reason) {
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   state.lastShotHash = null; state.lastShotPath = null; state.lastShotImgWidth = 0;
   return { ...dead, reason };
+}
+
+/** 取虚拟屏上当前前台 App 的窗口串（胶囊用来显示"AI 在操作 XX"）。 */
+export async function focusedApp() {
+  if (!state.displayId) return '';
+  const r = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
+  return String(r || '').trim();
 }
 
 export async function status() {
@@ -608,8 +629,10 @@ export async function mainShot(dir = '/tmp') {
   const remote = `/sdcard/dsh-main-${Date.now()}.png`;
   await shell(`screencap -p ${remote}`);
   const local = join(dir, `main-${Date.now()}.png`);
-  const pull = await adb(['pull', remotePng, local], 60000);
-  await shell(`rm -f ${remotePng}`);
+  // 这里以前写成了 remotePng（未定义），导致这个工具 100% 抛 ReferenceError，
+  // 而且报错前已经在设备上留了一个 1.7MB 的 PNG。
+  const pull = await adb(['pull', remote, local], 60000);
+  await shell(`rm -f ${remote}`);
   return pull.ok ? { ok: true, path: local } : { ok: false, hint: pull.err };
 }
 

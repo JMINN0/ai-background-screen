@@ -101,6 +101,8 @@ export async function status() {
 }
 
 export async function stop(args) {
+  // 先停推流：否则胶囊会永远显示"AI 正在操作"+ 冻在最后一帧（复核实测）。
+  await stream.stop().catch(() => {});
   const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
   const lines = ['虚拟屏已销毁。'];
   if (r.killed?.length) lines.push(`已清理后台 App：${r.killed.join('、')}`);
@@ -114,7 +116,9 @@ export async function streamStart(args) {
   if (!s.ok) return { text: `建屏失败：${s.hint}` };
   const fps = Math.min(Math.max(Number(args?.fps) || 2, 1), 4);
   const width = Math.min(Math.max(Number(args?.width) || 360, 240), 720);
-  const r = await stream.start({ sfId: s.sfId, displayId: s.displayId, fps, width, focusedApp: '' });
+  // 传真实的 focusedApp：以前这里写死空串，导致胶囊永远只显示"操作中 12s"。
+  const focus = await vd.focusedApp();
+  const r = await stream.start({ sfId: s.sfId, displayId: s.displayId, fps, width, focusedApp: focus });
   if (!r.ok) return { text: `推流启动失败：${r.hint}` };
   return {
     text: `推流已开启：127.0.0.1:${r.port}，${fps} fps，宽度 ${width}\n`

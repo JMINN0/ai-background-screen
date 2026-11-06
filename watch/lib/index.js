@@ -38,6 +38,27 @@ async function grabFrame(info) {
   } catch { return null }
 }
 
+/** 把 status.focusedApp 里的窗口串变成人能看懂的 App 名。 */
+function appLabel(focus) {
+  if (!focus) return ''
+  const m = String(focus).match(/\b([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)\//i)
+  const pkg = m ? m[1] : ''
+  if (!pkg) return ''
+  // 常见包名给人话名字，其余取包名最后一段
+  const known = {
+    'com.android.settings': '设置',
+    'com.android.vending': 'Play 商店',
+    'com.tencent.mm': '微信',
+    'com.xingin.xhs': '小红书',
+    'com.ss.android.ugc.aweme': '抖音',
+    'com.xunlei.downloadprovider': '迅雷',
+    'io.github.ccch1mneyyy.dsh_app': 'DSH',
+  }
+  if (known[pkg]) return known[pkg]
+  const tail = pkg.split('.').filter(Boolean).pop() || pkg
+  return tail.slice(0, 12)
+}
+
 async function grabStatus(info) {
   try {
     const r = await fetch(`http://127.0.0.1:${info.port}/status`, { signal: AbortSignal.timeout(1500) })
@@ -60,8 +81,11 @@ export function apply(ctx) {
           return
         }
         const sec = Math.max(0, Math.round((Date.now() - (info.startedAt || Date.now())) / 1000))
-        // 24 字以内：「操作中 12s」很短，留空间给屏号
-        emit({ text: `操作中 ${sec}s`, icon: 'image', tone: 'info' })
+        // 带上正在操作的 App 名：用户看到"AI 正在操作 设置"就知道
+        // 为什么这段时间键盘/焦点不听话（虚拟屏抢 IME 时会这样）。
+        const apply = appLabel(info.focusedApp)
+        const text = apply ? `AI 在操作 ${apply} ${sec}s` : `操作中 ${sec}s`
+        emit({ text: text.slice(0, 24), icon: 'image', tone: 'info' })
       }
       tick()
       const timer = setInterval(tick, 2000)
@@ -71,7 +95,8 @@ export function apply(ctx) {
     // 面板：一张图 + 状态 + 两个动作。
     ctx.dshGo.panel('live', {
       view: (scope, caps) => {
-        const en = !String(caps?.locale || '').startsWith('en')
+        // 变量名是 en 但逻辑写成了「不是 en」——中英完全倒置（复核实测：中文用户看到全英文）。
+        const en = String(caps?.locale || '').startsWith('en')
         return {
           v: 2,
           type: 'stack',

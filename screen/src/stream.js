@@ -108,12 +108,18 @@ async function tick() {
   } finally { st.busy = false; }
 }
 
+export function setFocusedApp(app) {
+  st.focusedApp = String(app || '').slice(0, 200);
+  writeState();
+}
+
 async function writeState() {
   try {
     await mkdir(STATE_DIR, { recursive: true });
     await writeFile(STATE_FILE, JSON.stringify({
       port: st.port, running: st.running, startedAt: st.startedAt,
       fps: st.fps, width: st.width, displayId: st.displayId,
+      focusedApp: st.focusedApp || '',   // 胶囊靠这个显示"AI 在操作 XX"，以前压根没写
     }));
   } catch { /* 写不进去不影响推帧 */ }
 }
