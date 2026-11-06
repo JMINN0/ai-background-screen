@@ -65,21 +65,40 @@ function localJar() {
 
 /** 确保设备上有 jar，且在 555 目录里（防自杀）。 */
 export async function ensureJar() {
-  const r = await shell(`ls -l ${REMOTE_JAR} 2>/dev/null | wc -l`);
-  if (Number(r.trim()) > 0) {
-    const d = await shell(`stat -c '%a' ${REMOTE_DIR} 2>/dev/null`);
-    if (d.trim() !== '555') await shell(`chmod 555 ${REMOTE_DIR}`);
-    return { ok: true, existed: true, remote: REMOTE_JAR };
-  }
   const local = localJar();
-  try { await access(local); } catch {
+  let localSize = 0;
+  try {
+    const { stat } = await import('node:fs/promises');
+    localSize = (await stat(local)).size;
+  } catch { /* 见下面的报错 */ }
+
+  // 目录必须可写才推得进去。早期版本推完会把目录 chmod 555「保护」起来，
+  // 结果是**永远无法升级 jar**，而且一旦目录已是 555 又缺 jar，就直接死锁
+  // （实测 push 报 Permission denied）。所以每次先确保可写。
+  await shell(`mkdir -p ${REMOTE_DIR} 2>/dev/null; chmod 777 ${REMOTE_DIR} 2>/dev/null`);
+
+  const remoteSize = await shell(`stat -c '%s' ${REMOTE_JAR} 2>/dev/null || echo 0`);
+  const have = Number(String(remoteSize).trim()) || 0;
+
+  if (!localSize) {
+    if (have > 0) {
+      await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+      return { ok: true, existed: true, remote: REMOTE_JAR, hint: '插件包里没有 jar，用设备上已有的（版本可能与客户端不匹配）' };
+    }
     return { ok: false, hint: `设备上没有 jar，插件包里也没有：${local}（需要 scrcpy-server-v${SERVER_VER}，可从 GitHub 下载放进 assets/）` };
   }
-  await shell(`mkdir -p ${REMOTE_DIR}`);
+
+  // 大小一致就当作同一个版本，跳过推送（省一次 700KB 传输）
+  if (have === localSize) {
+    await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+    return { ok: true, existed: true, remote: REMOTE_JAR };
+  }
+
   const p = await adb(['push', local, REMOTE_JAR], 120000);
   if (!p.ok) return { ok: false, hint: `推送 jar 失败：${p.err}` };
-  await shell(`chmod 555 ${REMOTE_DIR}`);
-  return { ok: true, existed: false, remote: REMOTE_JAR };
+  // 文件本身设只读（防误改），目录保持可写（否则下次升级又会失败）
+  await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+  return { ok: true, existed: false, remote: REMOTE_JAR, hint: have > 0 ? 'jar 版本已更新' : '' };
 }
 
 /** 列出当前的 displayId 集合，用于差集。 */
