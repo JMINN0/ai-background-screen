@@ -143,7 +143,9 @@ export function stopSpec() {
   return {
     name: 'vdisplay_stop',
     description: ['销毁虚拟屏，释放资源。收工时应调用——虽然是自动生命周期的，但显式停更干净。'].join('\n'),
-    parameters: {},
+    parameters: {
+      forceStopApps: { type: 'boolean', description: '默认 false。传 true 会 force-stop 投上去过的 App，清掉后台占用；DSH 和 Shizuku 会被自动跳过（杀了会影响用户）。' },
+    },
     output: out('销毁结果。'),
   };
 }

@@ -100,9 +100,12 @@ export async function status() {
   };
 }
 
-export async function stop() {
-  await vd.stop();
-  return { text: '虚拟屏已销毁。' };
+export async function stop(args) {
+  const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
+  const lines = ['虚拟屏已销毁。'];
+  if (r.killed?.length) lines.push(`已清理后台 App：${r.killed.join('、')}`);
+  if (r.hint) lines.push(r.hint);
+  return { text: lines.join('\n') };
 }
 
 /** 开始把虚拟屏画面推给原生胶囊插件。 */

@@ -129,6 +129,7 @@ const state = {
   startedAt: 0,
   lastShotHash: null,
   lastShotPath: null,
+  launchedPkgs: [],
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
@@ -259,19 +260,41 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
 }
 
 /** 销毁虚拟屏。 */
-export async function stop() {
-  // 先断推流：屏马上就没了，继续抓帧只会报错
-  try { const m = await import('./stream.js'); await m.shutdown(); } catch {}
-  for (const s of state.sockets) { try { s.destroy(); } catch {} }
-  state.sockets = [];
-  if (state.child) { try { state.child.kill('SIGKILL'); } catch {} state.child = null; }
-  if (state.scid) {
-    await shell(`ps -A 2>/dev/null | grep ${state.scid} | awk '{print $2}' | xargs -r kill`);
-    await adb(['forward', '--remove', `tcp:${state.port}`]);
+export async function stop({ forceStopApps = false } = {}) {
+  const pkgList = [...(state.launchedPkgs || [])];
+  const killed = [];
+  // 默认**不杀**投过的 App：里面有可能是 DSH、Shizuku、微信这类不能随便杀的。
+  // 需要清后台时调用方显式传 forceStopApps:true，并且自己判断这个包该不该杀。
+  if (forceStopApps) {
+    for (const pkg of pkgList) {
+      // 硬保护：这些包杀了会直接影响用户（DSH 就是当前 App 本身）
+      if (/^(io\.github\.ccch1mneyyy\.dsh_app|moe\.shizuku\.)/.test(pkg)) continue;
+      await shell(`am force-stop ${pkg}`);
+      killed.push(pkg);
+    }
   }
+  const still = [];
+  if (pkgList.length) {
+    const r = await shell(`ps -A -o NAME 2>/dev/null | grep -cE '${pkgList.map((p) => p.replace(/\./g, '\\.')).join('|')}' || echo 0`);
+    if (Number(String(r).trim()) > 0) still.push(...pkgList);
+  }
+  const scid = state.scid;
+  if (scid) await shell(`pkill -f '${scid}' 2>/dev/null`);
+  for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
+  if (state.child) { try { state.child.kill('SIGKILL'); } catch { /* ignore */ } }
+  state.sockets = [];
+  state.child = null;
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
-  state.lastShotHash = null; state.lastShotPath = null;   // 不清会把上一块屏的旧图当成新屏画面
-  return { ok: true };
+  state.lastShotHash = null; state.lastShotPath = null;
+  state.launchedPkgs = [];
+  return {
+    ok: true,
+    killed,
+    stillRunning: still,
+    hint: still.length
+      ? `虚拟屏已销毁。这些 App 仍在后台运行：${still.join('、')}。如果要清掉，下次 stop 时传 forceStopApps:true（DSH 和 Shizuku 会被跳过）。`
+      : '虚拟屏已销毁，没有需要清理的后台 App。',
+  };
 }
 
 export async function status() {
@@ -303,6 +326,7 @@ export async function launch(pkg, activity) {
   const mainBefore = await mainFocus();
 
   await shell(`am force-stop ${pkg}`);
+  if (!state.launchedPkgs.includes(pkg)) state.launchedPkgs.push(pkg);
   await sleep(600);
 
   // 省略 activity 时不能只写 `-n <pkg>`——实测报 Bad component name。
