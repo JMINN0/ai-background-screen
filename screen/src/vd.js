@@ -248,6 +248,7 @@ export async function stop() {
     await adb(['forward', '--remove', `tcp:${state.port}`]);
   }
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
+  state.lastShotHash = null; state.lastShotPath = null;   // 不清会把上一块屏的旧图当成新屏画面
   return { ok: true };
 }
 
@@ -282,7 +283,16 @@ export async function launch(pkg, activity) {
   await shell(`am force-stop ${pkg}`);
   await sleep(600);
 
-  const comp = activity ? `-n ${pkg}/${activity}` : `-n ${pkg}`;
+  // 省略 activity 时不能只写 `-n <pkg>`——实测报 Bad component name。
+  // 先用 resolve-activity 查出默认入口，查不到再退回 monkey 的 launcher intent。
+  let comp;
+  if (activity) {
+    comp = `-n ${pkg}/${activity}`;
+  } else {
+    const res = await shell(`cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${pkg} 2>/dev/null | tail -1`);
+    const m = String(res).trim().match(/^([\w.]+)\/([\w.$]+)$/);
+    comp = m ? `-n ${m[1]}/${m[2]}` : `-a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg}`;
+  }
   const out = await shell(`am start --display ${state.displayId} ${comp}`);
   await sleep(2000);
 
@@ -343,10 +353,16 @@ export async function input(kind, a = {}) {
   const d = state.displayId;
   let cmd;
   if (kind === 'tap') cmd = `input -d ${d} tap ${a.x | 0} ${a.y | 0}`;
-  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${a.x1 | 0} ${a.y1 | 0} ${a.x2 | 0} ${a.y2 | 0} ${a.ms | 300}`;
+  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${a.x1 | 0} ${a.y1 | 0} ${a.x2 | 0} ${a.y2 | 0} ${Number(a.ms) || 300}`;
   else if (kind === 'text') {
-    if (!/^[\w\s.,:/@#%&*()\-+=?!'"\u4e00-\u9fa5]{0,200}$/.test(a.text || '')) return { ok: false, hint: 'text 含不支持的字符' };
-    cmd = `input -d ${d} text "${String(a.text).replace(/["\\$`]/g, '')}"`;
+    const txt = String(a.text ?? '');
+    // 实测：非 ASCII（中文）走 input text 会让设备侧抛 NPE，而且异常文本会被当输出回填。
+    // 别假装支持——直接告诉调用方改用 paste。
+    if (/[^\x00-\x7F]/.test(txt)) {
+      return { ok: false, hint: 'input text 只支持 ASCII。中文等非 ASCII 字符请改用 kind:"paste"（需先让剪贴板里有内容）。' };
+    }
+    if (!/^[\w\s.,:/@#%&*()\-+=?!']{0,400}$/.test(txt)) return { ok: false, hint: 'text 含不支持的字符' };
+    cmd = `input -d ${d} text "${txt.replace(/["\\$`]/g, '')}"`;
   } else if (kind === 'key') cmd = `input -d ${d} keyevent ${String(a.key || '').replace(/[^A-Z0-9_]/gi, '')}`;
   else if (kind === 'paste') cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：从剪贴板粘贴，不经过输入法
   else return { ok: false, hint: `不认识的输入类型：${kind}` };

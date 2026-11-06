@@ -75,6 +75,8 @@ export function inputSpec() {
     ].join('\n'),
     parameters: {
       kind: { type: 'string', required: true, description: 'tap | swipe | text | key | paste' },
+      verify: { type: 'boolean', description: '默认 true：动作前后各取一次画面哈希，没变就返回"可能没生效"。传 false 省两次截图（约 0.3 秒），适合连续点同一界面。' },
+      settleMs: { type: 'integer', description: '动作后等画面稳定的毫秒数，默认 500。' },
       x: { type: 'integer', description: 'tap 的 x 坐标。' },
       y: { type: 'integer', description: 'tap 的 y 坐标。' },
       x1: { type: 'integer', description: 'swipe 起点 x。' },

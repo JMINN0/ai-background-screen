@@ -49,8 +49,12 @@ export async function input(args) {
   const kind = String(args?.kind || '').trim();
   if (!['tap', 'swipe', 'text', 'key', 'paste'].includes(kind)) return { text: 'kind 只能是 tap / swipe / text / key / paste。' };
   const r = await vd.input(kind, args || {});
-  if (!r.ok) return { text: `注入失败：${r.hint || r.out}` };
-  return { text: `已在 display=${r.displayId} 注入 ${kind}${r.out ? `（${r.out}）` : ''}` };
+  // changed 必须透传：false 表示"动作发出去了但画面没变"，这是有效信息，
+  // 不是"注入失败"。早期把它包成"注入失败"会让调用方以为工具坏了。
+  if (r.changed === false && r.hint) return { text: `${r.hint}\n（display=${r.displayId}，${kind} 已发出）` };
+  if (!r.ok && r.hint) return { text: `注入失败：${r.hint}` };
+  const tail = r.out ? `（${r.out}）` : '';
+  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}` };
 }
 
 export async function shot(args) {
