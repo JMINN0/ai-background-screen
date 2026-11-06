@@ -105,6 +105,8 @@ const state = {
   port: null,
   displayId: null,
   sfId: null,
+  width: 720,
+  height: 1280,
   startedAt: 0,
   lastShotHash: null,
   lastShotPath: null,
@@ -208,6 +210,7 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
     const added = [...now].filter((d) => !before.has(d));
     if (added.length) {
       state.displayId = added[0];
+      state.width = width; state.height = height;
       break;
     }
   }
@@ -352,8 +355,17 @@ export async function input(kind, a = {}) {
   if (!s.ok) return { ok: false, hint: s.hint };
   const d = state.displayId;
   let cmd;
-  if (kind === 'tap') cmd = `input -d ${d} tap ${a.x | 0} ${a.y | 0}`;
-  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${a.x1 | 0} ${a.y1 | 0} ${a.x2 | 0} ${a.y2 | 0} ${Number(a.ms) || 300}`;
+  // 归一化坐标：给 nx/ny（0..1）就按当前屏尺寸换算，省得调用方猜坐标系。
+  // 实测白点率 17.6% 的主因不是点不准，是模型不知道屏多大、坐标系对不上。
+  const toX = () => (a.nx !== undefined && a.nx !== null)
+    ? Math.round(Number(a.nx) * state.width)
+    : Math.trunc(Number(a.x) || 0);
+  const toY = () => (a.ny !== undefined && a.ny !== null)
+    ? Math.round(Number(a.ny) * state.height)
+    : Math.trunc(Number(a.y) || 0);
+
+  if (kind === 'tap') cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${Math.trunc(Number(a.x1)||0)} ${Math.trunc(Number(a.y1)||0)} ${Math.trunc(Number(a.x2)||0)} ${Math.trunc(Number(a.y2)||0)} ${Number(a.ms) || 300}`;
   else if (kind === 'text') {
     const txt = String(a.text ?? '');
     // 实测：非 ASCII（中文）走 input text 会让设备侧抛 NPE，而且异常文本会被当输出回填。
@@ -393,7 +405,7 @@ export async function input(kind, a = {}) {
  * 调用方就不用再 read_image 了。为什么值得做：一张 720x1280 截图约 1.1k tokens
  * 且永久留在上下文里，长任务翻几屏就把上下文吃满了（实测 15 屏 → 上下文 203k→243k）。
  */
-export async function shot(dir = '/tmp') {
+export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) {
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
   if (!state.sfId) return { ok: false, hint: '没拿到这块屏的 SurfaceFlinger id，无法截图。' };
@@ -408,9 +420,20 @@ export async function shot(dir = '/tmp') {
       return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
     } catch { /* 文件没了就正常截 */ }
   }
-  const remote = `/sdcard/dsh-vd-${Date.now()}.png`;
-  const cap = await shell(`screencap -p -d ${state.sfId} ${remote}`);
+  const remotePng = `/sdcard/dsh-vd-${Date.now()}.png`;
+  const cap = await shell(`screencap -p -d ${state.sfId} ${remotePng}`);
   if (/Failed|invalid/i.test(cap)) return { ok: false, hint: `截图失败：${cap}` };
+
+  // 默认转成 540 宽 JPEG：实测文字完全可读，体积和 token 都省约 44%
+  // （raw PNG 1229 tokens → 540 宽 JPEG 691 tokens）。
+  let remote = remotePng;
+  if (format === 'jpeg') {
+    const jpgRemote = remotePng.replace(/\.png$/, '.jpg');
+    const conv = await shell(`ffmpeg -y -loglevel error -i ${remotePng} -vf scale=${Math.max(240, Math.min(1080, width))}:-1 -q:v 4 ${jpgRemote} 2>&1 | head -2`);
+    const ok = await shell(`ls ${jpgRemote} 2>/dev/null | wc -l`);
+    if (Number(String(ok).trim()) > 0) { remote = jpgRemote; await shell(`rm -f ${remotePng}`); }
+    else if (conv) return { ok: false, hint: `转 JPEG 失败（保留了原 PNG）：${conv}` };
+  }
   await mkdir(dir, { recursive: true });
   const local = join(dir, `vd-${Date.now()}.png`);
   const pull = await adb(['pull', remote, local], 60000);
@@ -418,7 +441,12 @@ export async function shot(dir = '/tmp') {
   if (!pull.ok) return { ok: false, hint: `拉取失败：${pull.err}` };
   state.lastShotHash = hash;
   state.lastShotPath = local;
-  return { ok: true, path: local, displayId: state.displayId, unchanged: false };
+  return {
+    ok: true, path: local, displayId: state.displayId, unchanged: false,
+    // **一定要带尺寸**：之前完全不返回，调用方只能猜坐标系。
+    width: state.width, height: state.height,
+    hint: `屏尺寸 ${state.width}x${state.height}；点击可以用归一化坐标 nx/ny（0..1）避免算错。`,
+  };
 }
 
 /** 主屏截图（只读，不打扰）。 */

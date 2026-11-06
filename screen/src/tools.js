@@ -58,9 +58,16 @@ export async function input(args) {
 }
 
 export async function shot(args) {
-  const r = await vd.shot(String(args?.dir || '/tmp'));
+  const r = await vd.shot(String(args?.dir || '/tmp'), {
+    width: Number(args?.width) || 540,
+    format: args?.format === 'png' ? 'png' : 'jpeg',
+  });
   if (!r.ok) return { text: `截图失败：${r.hint}` };
-  return { text: `虚拟屏截图：${r.path}（displayId=${r.displayId}）\n用 read_image 打开它就能看到界面。` };
+  const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
+  if (r.unchanged) lines.push('画面和上次完全一样，可以直接复用这张，不用再看一次。');
+  else lines.push('用 read_image 打开它就能看到界面。');
+  lines.push('点坐标时可以用 nx/ny（0..1 归一化）代替 x/y，不用自己算像素。');
+  return { text: lines.join('\n') };
 }
 
 export async function mainShot(args) {

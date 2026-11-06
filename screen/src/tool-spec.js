@@ -77,8 +77,10 @@ export function inputSpec() {
       kind: { type: 'string', required: true, description: 'tap | swipe | text | key | paste' },
       verify: { type: 'boolean', description: '默认 true：动作前后各取一次画面哈希，没变就返回"可能没生效"。传 false 省两次截图（约 0.3 秒），适合连续点同一界面。' },
       settleMs: { type: 'integer', description: '动作后等画面稳定的毫秒数，默认 500。' },
-      x: { type: 'integer', description: 'tap 的 x 坐标。' },
-      y: { type: 'integer', description: 'tap 的 y 坐标。' },
+      x: { type: 'integer', description: 'tap 的 x 像素坐标（和 nx 二选一）。' },
+      y: { type: 'integer', description: 'tap 的 y 像素坐标（和 ny 二选一）。' },
+      nx: { type: 'number', description: '归一化横坐标 0..1，按屏宽换算。比算像素省心，推荐用它。' },
+      ny: { type: 'number', description: '归一化纵坐标 0..1，按屏高换算。' },
       x1: { type: 'integer', description: 'swipe 起点 x。' },
       y1: { type: 'integer', description: 'swipe 起点 y。' },
       x2: { type: 'integer', description: 'swipe 终点 x。' },
@@ -99,7 +101,11 @@ export function shotSpec() {
       '',
       '这是"看 AI 在操作什么"的主要方式：不占用户屏幕，随时可以截图。',
     ].join('\n'),
-    parameters: { dir: { type: 'string', description: '本地保存目录，默认 /tmp。' } },
+    parameters: {
+      dir: { type: 'string', description: '本地保存目录，默认 /tmp。' },
+      width: { type: 'integer', description: '输出宽度，默认 540（实测文字仍清晰，token 省约 44%）。范围 240–1080。' },
+      format: { type: 'string', description: '"jpeg"（默认，省 token）或 "png"（需要无损时）。' },
+    },
     output: out('截图本地路径与 displayId。'),
   };
 }
@@ -112,7 +118,11 @@ export function mainShotSpec() {
       '',
       '用途：确认用户现在在看什么，或核对"我刚才的操作有没有影响主屏"。',
     ].join('\n'),
-    parameters: { dir: { type: 'string', description: '本地保存目录，默认 /tmp。' } },
+    parameters: {
+      dir: { type: 'string', description: '本地保存目录，默认 /tmp。' },
+      width: { type: 'integer', description: '输出宽度，默认 540（实测文字仍清晰，token 省约 44%）。范围 240–1080。' },
+      format: { type: 'string', description: '"jpeg"（默认，省 token）或 "png"（需要无损时）。' },
+    },
     output: out('截图路径，以及当前主屏焦点是哪个 App。'),
   };
 }
