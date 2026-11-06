@@ -129,12 +129,18 @@ const state = {
   startedAt: 0,
   lastShotHash: null,
   lastShotPath: null,
+  lastShotImgWidth: 0,
   launchedPkgs: [],
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
 export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
-  if (state.displayId) return { ok: true, displayId: state.displayId, sfId: state.sfId, reused: true };
+  if (state.displayId) {
+    if (await alive()) return { ok: true, displayId: state.displayId, sfId: state.sfId, reused: true, width: state.width, height: state.height };
+    // 记着有屏但实际已经没了（server 被回收 / adb 断开 / 被 pkill）→ 清干净重来，
+    // 而不是继续返回"已就绪"骗调用方。
+    forget('旧屏已失效，重建');
+  }
 
   const jar = await ensureJar();
   if (!jar.ok) return { ok: false, hint: jar.hint };
@@ -257,6 +263,7 @@ export async function start({ width = 720, height = 1280, dpi = 320 } = {}) {
     displayId: state.displayId,
     sfId: state.sfId,
     canHost,
+    width: state.width, height: state.height,
     flags: (flags.match(/FLAG_[A-Z_]+/g) || []).join(' '),
   };
 }
@@ -299,12 +306,39 @@ export async function stop({ forceStopApps = false } = {}) {
   };
 }
 
+/**
+ * 虚拟屏是不是**真的**还活着。
+ * 只看 state.displayId 会撒谎：server 被系统回收、adb 断开、用户手动 pkill 之后，
+ * state 里还留着旧的 displayId，于是 status 报"运行中"、start 报"已就绪"、
+ * shot 报原始的 "Display Id is not valid"（复核实测踩到）。
+ * 这里用两个客观信号交叉验证：屏还在不在 displayIds 里、SF id 还在不在 sfIds 里。
+ */
+async function alive() {
+  if (!state.displayId) return false;
+  const [ids, sf] = await Promise.all([displayIds(), sfIds()]);
+  // displayIds() / sfIds() 返回的是 Set，不是数组
+  const hasDisplay = ids.has(String(state.displayId));
+  const hasSf = state.sfId ? sf.has(String(state.sfId)) : false;
+  return hasDisplay && hasSf;
+}
+
+/** 状态不一致时，把内存状态清干净，免得后面每个工具都报假消息。 */
+function forget(reason) {
+  const dead = { displayId: state.displayId, sfId: state.sfId, port: state.port };
+  try { state.child?.kill('SIGKILL'); } catch { /* ignore */ }
+  for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
+  state.child = null; state.sockets = [];
+  state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
+  state.lastShotHash = null; state.lastShotPath = null; state.lastShotImgWidth = 0;
+  return { ...dead, reason };
+}
+
 export async function status() {
   const ids = await displayIds();
   const sf = await sfIds();
   const app = state.displayId ? await shell(`dumpsys window displays 2>/dev/null | grep -A20 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`) : '';
   return {
-    running: Boolean(state.displayId),
+    running: await alive(),
     displayId: state.displayId,
     sfId: state.sfId,
     uptimeSec: state.startedAt ? Math.round((Date.now() - state.startedAt) / 1000) : 0,
@@ -353,20 +387,22 @@ export async function launch(pkg, activity) {
   // 只有**两边都测到**且真的不同，才算"主屏被抢"。空值代表"没测到"，不能当变化——
   // 之前用空值比较，导致前后都是 B 站却报"主屏被抢、已切回"（假报警，踩过）。
   const bothKnown = Boolean(mainBefore) && Boolean(mainAfter);
-  let restored = false;
-  if (bothKnown && mainAfter !== mainBefore) {
-    // 主屏被抢了 → 立刻切回原来的 App
-    const prevPkg = mainBefore.split('/')[0];
-    if (prevPkg) { await shell(`monkey -p ${prevPkg} -c android.intent.category.LAUNCHER 1`); restored = true; await sleep(800); }
-  }
+  // **绝对不对主屏做任何操作。**
+  // 以前这里会在"判定主屏被抢"时跑 monkey 把原来的 App 拉回来，
+  // 但那个判定在"用户自己在这 2 秒里切了 App"时会误判——于是插件反过来
+  // 用 monkey 改了用户的主屏，比它要防的问题更打扰人（复核实测踩到）。
+  // 现在只观察、只报告，让调用方决定。
+  const mainChanged = bothKnown && mainAfter !== mainBefore;
+  const restored = false;
 
   return {
     ok: landedOnVd && !restored,
     displayId: state.displayId,
     landedOnVd,
     mainFocusBefore: mainBefore,
-    mainFocusAfter: await mainFocus(),
-    restoredMain: restored,
+    mainFocusAfter: mainAfter,
+    mainChanged,
+    restoredMain: false,
     out: out.trim() || (landedOnVd ? '已在虚拟屏上启动' : '没落在虚拟屏上'),
   };
 }
@@ -435,15 +471,24 @@ export async function input(kind, a = {}) {
   let cmd;
   // 归一化坐标：给 nx/ny（0..1）就按当前屏尺寸换算，省得调用方猜坐标系。
   // 实测白点率 17.6% 的主因不是点不准，是模型不知道屏多大、坐标系对不上。
+  // 三种坐标写法，优先级从高到低：
+  //   nx/ny（0..1）  —— 最稳，永远对
+  //   x/y            —— **按"上一次截图里的像素"理解**，自动放大到显示坐标
+  //   都没给         —— (0,0)
+  //
+  // 为什么要换算 x/y：截图默认是 540 宽，而显示是 720x1280。
+  // 实测照图片像素直接传会系统性偏 33%（点放大镜画面零变化）。
+  const imgW = state.lastShotImgWidth || state.width;
+  const scale = imgW > 0 ? state.width / imgW : 1;
   const toX = () => (a.nx !== undefined && a.nx !== null)
     ? Math.round(Number(a.nx) * state.width)
-    : Math.trunc(Number(a.x) || 0);
+    : Math.round((Number(a.x) || 0) * scale);
   const toY = () => (a.ny !== undefined && a.ny !== null)
     ? Math.round(Number(a.ny) * state.height)
-    : Math.trunc(Number(a.y) || 0);
+    : Math.round((Number(a.y) || 0) * scale);
 
   if (kind === 'tap') cmd = `input -d ${d} tap ${toX()} ${toY()}`;
-  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${Math.trunc(Number(a.x1)||0)} ${Math.trunc(Number(a.y1)||0)} ${Math.trunc(Number(a.x2)||0)} ${Math.trunc(Number(a.y2)||0)} ${Number(a.ms) || 300}`;
+  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${toX()} ${Math.round((Number(a.y1)||0)*scale)} ${Math.round((Number(a.x2)||0)*scale)} ${Math.round((Number(a.y2)||0)*scale)} ${Number(a.ms) || 300}`;
   else if (kind === 'text') {
     const txt = String(a.text ?? '');
     // 实测：非 ASCII（中文）走 input text 会让设备侧抛 NPE，而且异常文本会被当输出回填。
@@ -455,20 +500,28 @@ export async function input(kind, a = {}) {
     cmd = `input -d ${d} text "${txt.replace(/["\\$`]/g, '')}"`;
   } else if (kind === 'key') cmd = `input -d ${d} keyevent ${String(a.key || '').replace(/[^A-Z0-9_]/gi, '')}`;
   else if (kind === 'paste') {
-    // 带 text 就先写剪贴板（走 scrcpy 控制通道，能写中文）；不带就粘现有内容。
+    // 两种用法，行为不同：
+    //  带 text  → 发 SET_CLIPBOARD(paste=1)，**server 自己会粘一次**，不能再补 keyevent，
+    //             否则内容会粘两遍（复核实测：ZQ中文 → ZQ中文ZQ中文）。
+    //  不带 text → 发 KEYCODE_PASTE，粘设备剪贴板里现有的内容。
+    //
+    // 注意：剪贴板是系统全局的，写它就是覆盖用户自己的剪贴板内容。
     if (a.text !== undefined && a.text !== null && String(a.text) !== '') {
       if (!setClipboard(String(a.text))) {
         return { ok: false, hint: '写剪贴板失败（控制通道没连上）。可以改用 kind:"text"（仅 ASCII）。' };
       }
-      await sleep(250);   // 等设备侧 ClipData 落地
+      await sleep(300);   // SET_CLIPBOARD 已经连带粘贴，等它生效即可
+      cmd = null;         // 不再补 keyevent
+    } else {
+      cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：粘现有剪贴板
     }
-    cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：从剪贴板粘贴，不经过输入法
   }
   else return { ok: false, hint: `不认识的输入类型：${kind}` };
 
   const verify = a.verify !== false;
   const before = verify ? await frameHash() : null;
-  const out = await shell(cmd);
+  // SET_CLIPBOARD 那条路 cmd 是 null（server 已经自己粘过，不能再发 keyevent）
+  const out = cmd ? await shell(cmd) : '（SET_CLIPBOARD 已连带粘贴）';
   if (!verify) return { ok: true, displayId: d, out: out.trim(), changed: null };
 
   await sleep(Number(a.settleMs) || 500);
@@ -535,11 +588,17 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   }
   state.lastShotHash = hash;
   state.lastShotPath = finalPath;
+  state.lastShotImgWidth = format === 'jpeg' ? Math.max(240, Math.min(1080, Number(width) || 540)) : state.width;
   return {
     ok: true, path: finalPath, displayId: state.displayId, unchanged: false,
     // **一定要带尺寸**：之前完全不返回，调用方只能猜坐标系。
+    // 注意分清两个尺寸：imageWidth/imageHeight 是**你正在看的这张图**的像素，
+    // width/height 是显示的逻辑像素。点 x/y 时按图片像素给就行（插件会自动换算）。
     width: state.width, height: state.height,
-    hint: `屏尺寸 ${state.width}x${state.height}；点击可以用归一化坐标 nx/ny（0..1）避免算错。`,
+    imageWidth: state.lastShotImgWidth || state.width,
+    imageHeight: Math.round(state.height * ((state.lastShotImgWidth || state.width) / state.width)),
+    hint: `这张图是 ${state.lastShotImgWidth || state.width} 宽，显示逻辑尺寸 ${state.width}x${state.height}。`
+      + '点 x/y 按图片里的像素给即可（插件自动换算），或者直接用 nx/ny（0..1）。',
   };
 }
 
