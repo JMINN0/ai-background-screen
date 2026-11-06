@@ -335,6 +335,39 @@ export async function launch(pkg, activity) {
  * 而调用方完全看不出来，只能靠额外交一张截图 + 模型看图才可能发现。
  * 所以每个输入动作前后各取一次哈希，变了才算真生效。
  */
+/**
+ * 往 scrcpy 的控制 socket 发一条控制消息。
+ *
+ * 为什么值得做：现在所有输入都走 `adb shell input`，那条路对中文必抛 NPE
+ * （实测 `input text 中文` → java NPE），而且每次起一个子进程要 30–50ms。
+ * scrcpy 的控制通道支持 SET_CLIPBOARD，实测设置页能粘进 `abc中文测试abc`，
+ * 所以中文输入的正解是「写剪贴板 → KEYCODE_PASTE」。
+ *
+ * SET_CLIPBOARD 报文（scrcpy 5.x）：
+ *   type=9 (1B) | sequence (8B i64) | paste (1B bool) | length (4B i32) | text (utf8)
+ */
+function sendControl(buf) {
+  const ctl = state.sockets?.[1];
+  if (!ctl || ctl.destroyed) return false;
+  try { ctl.write(buf); return true; } catch { return false; }
+}
+
+let clipSequence = 0;
+
+/** 把文字写进设备剪贴板。返回是否发成功。 */
+export function setClipboard(text) {
+  const body = Buffer.from(String(text ?? ''), 'utf8');
+  const buf = Buffer.alloc(1 + 8 + 1 + 4 + body.length);
+  let off = 0;
+  buf.writeUInt8(9, off); off += 1;              // TYPE_SET_CLIPBOARD
+  clipSequence += 1;
+  buf.writeBigInt64BE(BigInt(clipSequence), off); off += 8;
+  buf.writeUInt8(1, off); off += 1;              // paste = true（让设备侧标记为可粘贴）
+  buf.writeInt32BE(body.length, off); off += 4;
+  body.copy(buf, off);
+  return sendControl(buf);
+}
+
 async function frameHash() {
   if (!state.sfId) return null;
   const r = await adb(['exec-out', 'screencap', '-p', '-d', String(state.sfId)], 20000);
@@ -376,7 +409,16 @@ export async function input(kind, a = {}) {
     if (!/^[\w\s.,:/@#%&*()\-+=?!']{0,400}$/.test(txt)) return { ok: false, hint: 'text 含不支持的字符' };
     cmd = `input -d ${d} text "${txt.replace(/["\\$`]/g, '')}"`;
   } else if (kind === 'key') cmd = `input -d ${d} keyevent ${String(a.key || '').replace(/[^A-Z0-9_]/gi, '')}`;
-  else if (kind === 'paste') cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：从剪贴板粘贴，不经过输入法
+  else if (kind === 'paste') {
+    // 带 text 就先写剪贴板（走 scrcpy 控制通道，能写中文）；不带就粘现有内容。
+    if (a.text !== undefined && a.text !== null && String(a.text) !== '') {
+      if (!setClipboard(String(a.text))) {
+        return { ok: false, hint: '写剪贴板失败（控制通道没连上）。可以改用 kind:"text"（仅 ASCII）。' };
+      }
+      await sleep(250);   // 等设备侧 ClipData 落地
+    }
+    cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：从剪贴板粘贴，不经过输入法
+  }
   else return { ok: false, hint: `不认识的输入类型：${kind}` };
 
   const verify = a.verify !== false;
@@ -420,29 +462,32 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
       return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
     } catch { /* 文件没了就正常截 */ }
   }
-  const remotePng = `/sdcard/dsh-vd-${Date.now()}.png`;
+  const stamp = Date.now();
+  const local = `${dir}/vd-${stamp}.png`;
+  const remotePng = `/sdcard/dsh-vd-${stamp}.png`;
   const cap = await shell(`screencap -p -d ${state.sfId} ${remotePng}`);
   if (/Failed|invalid/i.test(cap)) return { ok: false, hint: `截图失败：${cap}` };
 
-  // 默认转成 540 宽 JPEG：实测文字完全可读，体积和 token 都省约 44%
-  // （raw PNG 1229 tokens → 540 宽 JPEG 691 tokens）。
-  let remote = remotePng;
-  if (format === 'jpeg') {
-    const jpgRemote = remotePng.replace(/\.png$/, '.jpg');
-    const conv = await shell(`ffmpeg -y -loglevel error -i ${remotePng} -vf scale=${Math.max(240, Math.min(1080, width))}:-1 -q:v 4 ${jpgRemote} 2>&1 | head -2`);
-    const ok = await shell(`ls ${jpgRemote} 2>/dev/null | wc -l`);
-    if (Number(String(ok).trim()) > 0) { remote = jpgRemote; await shell(`rm -f ${remotePng}`); }
-    else if (conv) return { ok: false, hint: `转 JPEG 失败（保留了原 PNG）：${conv}` };
-  }
-  await mkdir(dir, { recursive: true });
-  const local = join(dir, `vd-${Date.now()}.png`);
-  const pull = await adb(['pull', remote, local], 60000);
-  await shell(`rm -f ${remote}`);
+  const pull = await adb(['pull', remotePng, local], 60000);
+  await shell(`rm -f ${remotePng}`);
   if (!pull.ok) return { ok: false, hint: `拉取失败：${pull.err}` };
+
+  // 转成 540 宽 JPEG。**必须用本地 proot 的 ffmpeg**：设备上没有 ffmpeg
+  // （实测 `adb shell ffmpeg` → inaccessible or not found）。
+  let finalPath = local;
+  if (format === 'jpeg') {
+    const jpg = local.replace(/\.png$/, '.jpg');
+    const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
+    const conv = await new Promise((res) => {
+      execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local, '-vf', `scale=${targetW}:-1`, '-q:v', '4', jpg],
+        (e) => res(!e));
+    });
+    if (conv) { finalPath = jpg; }
+  }
   state.lastShotHash = hash;
-  state.lastShotPath = local;
+  state.lastShotPath = finalPath;
   return {
-    ok: true, path: local, displayId: state.displayId, unchanged: false,
+    ok: true, path: finalPath, displayId: state.displayId, unchanged: false,
     // **一定要带尺寸**：之前完全不返回，调用方只能猜坐标系。
     width: state.width, height: state.height,
     hint: `屏尺寸 ${state.width}x${state.height}；点击可以用归一化坐标 nx/ny（0..1）避免算错。`,
@@ -455,8 +500,8 @@ export async function mainShot(dir = '/tmp') {
   const remote = `/sdcard/dsh-main-${Date.now()}.png`;
   await shell(`screencap -p ${remote}`);
   const local = join(dir, `main-${Date.now()}.png`);
-  const pull = await adb(['pull', remote, local], 60000);
-  await shell(`rm -f ${remote}`);
+  const pull = await adb(['pull', remotePng, local], 60000);
+  await shell(`rm -f ${remotePng}`);
   return pull.ok ? { ok: true, path: local } : { ok: false, hint: pull.err };
 }
 
