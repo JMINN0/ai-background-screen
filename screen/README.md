@@ -77,33 +77,31 @@ FLAG_OWN_CONTENT_ONLY + FLAG_OWN_FOCUS  → 能托管，内容独立
 
 ## 已知限制
 
-### 重度 3D 游戏可以跑（但改造过的 App 要自己修）
+### ⚠️ 重度 3D 游戏画不出来（黑屏）
 
-虚拟屏跑重度 3D 游戏**是通的**：Minecraft 实测约 120fps（`--latency` 8.33ms/帧，8/8 张间隔截图 md5 全不同）。
+**实测结论：虚拟屏跑不了重度 3D 游戏。**
 
-如果某个游戏投上来就崩，先别怪屏——**同一份 APK 在主屏上也崩在同一行**，那就不是屏的问题。实测 ApexM 改造版的例子：
+对 Minecraft（标准版，`com.mojang.minecraftpe`，无任何改造）实测：
 
 ```
-主屏：     t=37s 死，Application Error 弹窗
-虚拟屏：   t=38s 死
-两边崩溃行逐字相同：
-  Fatal signal 11 (SIGSEGV) in tid dsh-hook-worker
-  #01 libdshnative.so (Java_com_dshx_NativeBridge_nativeCallOpenLevel+956)
+vdisplay_start → vdisplay_launch：都报成功，landedOnVd=true
+进程存活，logcat 显示 LICENSED、app-foreground 正常
+但 vdisplay_shot 截出来是**全黑**，48 秒内画面只变化 1 次
+多次测试：8–15 秒间进程退出，不稳定
 ```
 
-根因在改造版自己：`GameDefaultMap` 写成了包里不存在的地图，游戏弹出
-`The map specified on the commandline ... could not be found. Exiting.`，
-随后 hook worker 每 5 秒调一次 `nativeCallOpenLevel` 把它打崩。跟屏无关。
+而同一个游戏在真屏上：41 FPS、正常渲染 3D 画面。
 
-**排查顺序**：先在主屏跑一遍。主屏也崩 → 修 App；主屏正常但屏上崩 → 才是插件的事。
+**原因**：虚拟屏是软件合成，没有硬件合成层。3D 游戏的 SurfaceView 拿不到可用的硬件 buffer，
+画面写不进去，所以截图全黑；进程随后因为等不到 surface 或 ANR 而退出。
 
-**已知的虚拟屏真实限制**（和游戏无关）：
+改造过的 ApexM 更直接暴露了这点：它 hook 了引擎初始化，读到「窗口指针 = 0」
+（真屏是 `0x7237a3ab40`），于是 `GEngine` 恒为 0，引擎从来没起来过。
 
-- `video=false` 建不出屏——`new_display` 依赖视频通路，别去关编码器
-- 屏幕上默认会带二级 launcher / 导航栏 / 权限弹窗，AI 截图会混进这些 UI；
-  想要干净画面用 `systemDecorations: false`（scrcpy ≥3.1，实测有效）
+**轻量 App 不受影响**（微信、小红书、设置、浏览器、文档类都实测正常）。
+判断标准：**需要持续硬件 GPU 渲染到 Surface 的 App 不行**，UI 类 App 没问题。
 
-### 其他
+### 其他### 其他
 
 - 没有 root。虚拟屏上的 App 仍然受 SELinux 约束，读不了别人的 `/data/data`。
 - 虚拟屏与插件进程同生共死：引擎重启，屏自动消失，任务里的 App 也会结束。
