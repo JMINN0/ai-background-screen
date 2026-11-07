@@ -329,6 +329,7 @@ export async function stop({ forceStopApps = false } = {}) {
   state.child = null;
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   state.lastShotHash = null; state.lastShotPath = null;
+  state.lastShotImgWidth = 0;   // 不清的话 stop→start 后坐标换算会用上旧宽度（偏 44%）
   state.launchedPkgs = [];
   return {
     ok: true,
@@ -347,14 +348,57 @@ export async function stop({ forceStopApps = false } = {}) {
  * shot 报原始的 "Display Id is not valid"（复核实测踩到）。
  * 这里用两个客观信号交叉验证：屏还在不在 displayIds 里、SF id 还在不在 sfIds 里。
  */
+/**
+ * 重新解析当前 scrcpy 虚拟屏的 SurfaceFlinger display id。
+ *
+ * 为什么需要：屏幕一转向（游戏强制横屏就会），SurfaceFlinger 会**重建**这块虚拟屏
+ * 并分配一个新的 SF display id，而逻辑 displayId 保持不变。实测证据：
+ *
+ *   逻辑 id 110 / 空屏   → SF …8400646736，图层 0，截图 0% 非黑
+ *   逻辑 id 110 / MC 起  → SF …9638300942，图层 4，截图 95.45% 非黑
+ *   逻辑 id 110 / 转屏后 → SF 换新，缓存里的旧 id 不在列表里
+ *
+ * 早期版本把「缓存的 sfId 不在列表里」当成「屏已死」，于是每次截图都 forget() 杀掉
+ * scrcpy server 再重建一块空屏，结果永远是全黑——**根本不是 3D 渲染不出来**。
+ *
+ * @returns {Promise<string|null>} 唯一确定的 scrcpy SF id；0 个或多个时返回 null
+ */
+async function resolveScrcpySfId() {
+  const out = await shell(`dumpsys SurfaceFlinger --display-id 2>/dev/null | grep scrcpy`);
+  if (!String(out || '').trim()) return null;
+  const ids = [];
+  for (const line of String(out).split('\n')) {
+    // 形如：Display 11529215048987737530 (Virtual display): displayName="scrcpy"
+    const m = line.match(/Display\s+(\d+).*scrcpy/);
+    if (m) ids.push(m[1]);
+  }
+  if (ids.length !== 1) return null;   // 多个时分不清，宁可不更新
+  return ids[0];
+}
+
+/** 确保 state.sfId 是当前有效的；变了就更新，**不重建屏**。 */
+async function refreshSfId() {
+  if (!state.sfId) { const r = await resolveScrcpySfId(); if (r) state.sfId = r; return state.sfId; }
+  const cur = await resolveScrcpySfId();
+  if (!cur) return state.sfId;              // 查不到（可能刚好在转屏瞬间）→ 先用旧的
+  if (cur !== state.sfId) {
+    state.sfId = cur;                       // 转屏导致 id 变了 → 更新即可，不要杀 server
+  }
+  return state.sfId;
+}
+
 async function alive() {
   if (!state.displayId) return false;
   const [ids, sf] = await Promise.all([displayIds(), sfIds()]);
   // null = 查询失败（adb 抖动），不能据此判定屏没了 → 保守认为还活着
   if (!ids || !sf) return true;
   const hasDisplay = ids.has(String(state.displayId));
-  const hasSf = state.sfId ? sf.has(String(state.sfId)) : false;
-  return hasDisplay && hasSf;
+  if (!hasDisplay) return false;                 // 逻辑屏真没了 → 确实死了
+  if (state.sfId && sf.has(String(state.sfId))) return true;   // 缓存的 SF id 还有效
+  // 逻辑屏在、但缓存的 SF id 不在列表里 → **多半是转屏换了 id**，重新解析而不是判死
+  const fresh = await resolveScrcpySfId();
+  if (fresh) { state.sfId = fresh; return true; }
+  return false;
 }
 
 /** 状态不一致时，把内存状态清干净，免得后面每个工具都报假消息。 */
@@ -385,6 +429,7 @@ export async function status() {
     displayId: state.displayId,
     sfId: state.sfId,
     uptimeSec: state.startedAt ? Math.round((Date.now() - state.startedAt) / 1000) : 0,
+    width: state.width, height: state.height,   // 转屏后这两个值会变，坐标空间跟着变
     allDisplays: ids ? [...ids].sort((a, b) => a - b) : null,   // null 表示查询失败，不是没有屏
     scrcpyScreens: sf ? [...sf] : null,
     focusedApp: app.trim(),
@@ -493,11 +538,19 @@ export function setClipboard(text) {
 }
 
 async function frameHash() {
+  // 必须刷新 SF id：转屏后旧 id 失效，两次 screencap 都失败会让 before/after 都为 null，
+  // 于是 changed 变 null、调用方看到 ok=true —— **校验被静默关闭**（监督复核指出的高危项）。
+  await refreshSfId();
   if (!state.sfId) return null;
-  const r = await adb(['exec-out', 'screencap', '-p', '-d', String(state.sfId)], 20000);
-  if (!r.ok || !r.out) return null;
+  const capOnce = async () => {
+    const r = await adb(['exec-out', 'screencap', '-p', '-d', String(state.sfId)], 20000);
+    return r.ok && r.out ? r.out : null;
+  };
+  let buf = await capOnce();
+  if (!buf) { await refreshSfId(); buf = await capOnce(); }   // 卡在转屏瞬间时重试一次
+  if (!buf) return null;
   const { createHash } = await import('node:crypto');
-  return createHash('sha1').update(r.out, 'utf8').digest('hex');
+  return createHash('sha1').update(buf, 'utf8').digest('hex');
 }
 
 /**
@@ -591,6 +644,10 @@ export async function input(kind, a = {}) {
 export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) {
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
+
+  // **截图前先刷新 SF id**：转屏会让 SurfaceFlinger 重建虚拟屏并换新 id，
+  // 拿旧 id 去 screencap 会报 "Display Id is not valid"（或静默截到别的屏）。
+  await refreshSfId();
   if (!state.sfId) return { ok: false, hint: '没拿到这块屏的 SurfaceFlinger id，无法截图。' };
 
   // 只截一次：以前先用 exec-out 算哈希、再 screencap 存文件，同一帧截了两次，
@@ -599,7 +656,19 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   const local = `${dir}/vd-${stamp}.png`;
   const remotePng = `/sdcard/dsh-vd-${stamp}.png`;
   const cap = await shell(`screencap -p -d ${state.sfId} ${remotePng}`);
-  if (/Failed|invalid/i.test(cap)) return { ok: false, hint: `截图失败：${cap}` };
+  if (/Failed|invalid/i.test(cap)) {
+    // 可能刚好卡在转屏瞬间：强制重新解析（不沿用旧值）再试一次
+    const fresh = await resolveScrcpySfId();
+    if (fresh) state.sfId = fresh;
+    const cap2 = await shell(`screencap -p -d ${state.sfId} ${remotePng}`);
+    if (/Failed|invalid/i.test(cap2)) {
+      return {
+        ok: false,
+        hint: `截图失败：${cap2}\n当前缓存的 SF id=${state.sfId}，重新解析${fresh ? '得到 ' + fresh : '失败（没有 scrcpy 屏，或同时存在多块分不清）'}。`
+          + '\n可能虚拟屏已被销毁。可以先 vdisplay_status 确认，再 vdisplay_start 重建。',
+      };
+    }
+  }
 
   const pull = await adb(['pull', remotePng, local], 60000);
   await shell(`rm -f ${remotePng}`);
@@ -607,7 +676,25 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
 
   const { readFile: readBin } = await import('node:fs/promises');
   const { createHash } = await import('node:crypto');
-  const hash = createHash('sha1').update(await readBin(local)).digest('hex');
+  const pngBytes = await readBin(local);
+  const hash = createHash('sha1').update(pngBytes).digest('hex');
+
+  // 从 PNG 的 IHDR 读真实像素尺寸（宽高在字节 16..24，大端 32 位）。
+  // 为什么必须做：游戏强制横屏后这块屏会变成 1280x720，
+  // 如果坐标换算还按 720x1280 算，nx/ny 和 x/y 全都会错。
+  try {
+    if (pngBytes.length > 24 && pngBytes.readUInt32BE(12) === 0x49484452 /* 'IHDR' */) {
+      const w = pngBytes.readUInt32BE(16);
+      const h = pngBytes.readUInt32BE(20);
+      if (w > 0 && h > 0 && (w !== state.width || h !== state.height)) {
+        state.width = w;
+        state.height = h;
+        state.lastShotHash = null;    // 尺寸变了，旧的去重基准作废
+        state.lastShotPath = null;
+        state.lastShotImgWidth = 0;   // 旧的图片宽度也作废，否则坐标换算倍率会错
+      }
+    }
+  } catch { /* 读不出来就沿用旧值 */ }
   if (hash === state.lastShotHash && state.lastShotPath && state.lastShotPath !== local) {
     // 和上一张完全一样：删掉刚截的，复用上次那张，省一次模型看图
     try {
