@@ -115,15 +115,21 @@ async function displayIds() {
 }
 
 async function sfIds() {
-  const out = await shell(`dumpsys SurfaceFlinger --display-id 2>/dev/null | grep scrcpy`);
-  // 同上：查询失败返回 null，不要用空集合冒充"没有 scrcpy 屏"
-  if (!String(out || '').trim() || /error|not found|failed/i.test(String(out))) return null;
+  // 不要先 grep 再判空：grep 无匹配时输出为空，和"dumpsys 查询失败"长得一模一样，
+  // 于是屏真的没了也会被当成"查询失败"，alive() 保守判活，start() 复用一块死屏，
+  // 最后 am start --display 抛 SecurityException（性能测试那路实测踩到）。
+  // 现在拿全量输出：只要里面有 Display 行，就说明 dumpsys 正常工作过，
+  // 此时"没有 scrcpy 行"= 确实不存在虚拟屏，返回空集合。
+  const out = await shell(`dumpsys SurfaceFlinger --display-id 2>/dev/null`);
+  const text = String(out || '');
+  if (!/Display\s+\d+/.test(text)) return null;   // 一行 Display 都没有 → 查询失败
   const ids = new Set();
-  for (const line of out.split('\n')) {
-    const m = line.match(/Display (\d+)/);
+  for (const line of text.split('\n')) {
+    if (!/scrcpy/i.test(line)) continue;
+    const m = line.match(/Display\s+(\d+)/);
     if (m) ids.add(m[1]);
   }
-  return ids;
+  return ids;   // 空集合 = 确实没有 scrcpy 虚拟屏，不是查询失败
 }
 
 const state = {
