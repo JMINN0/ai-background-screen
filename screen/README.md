@@ -101,7 +101,36 @@ vdisplay_start → vdisplay_launch：都报成功，landedOnVd=true
 **轻量 App 不受影响**（微信、小红书、设置、浏览器、文档类都实测正常）。
 判断标准：**需要持续硬件 GPU 渲染到 Surface 的 App 不行**，UI 类 App 没问题。
 
-### 其他### 其他
+<details>
+<summary>技术细节与可能方案（展开）</summary>
+
+**根本原因（已溯源到 Android 框架层）**
+
+`VirtualDisplaySurface` 强制走 GLES 软件合成，不经过 HWC（Hardware Composer）。SurfaceView 依赖 HWC 硬件叠加层才能拿到 GPU 渲染的帧缓冲，软件合成路径下拿到的是空缓冲 → 黑屏。
+
+所有 `VIRTUAL_DISPLAY_FLAG_*` 组合都是策略标记，不改变合成方式（已逐一验证）。
+
+**验证当前设备是否支持硬件合成**
+
+```bash
+adb shell dumpsys SurfaceFlinger | grep -A 20 "Virtual displays"
+# 看到 "hwc" / "hardware composer" 字样 → 支持
+# 什么都没有 → 不支持，无解
+```
+
+**三条可能路径**
+
+| 方案 | 可行性 | 成本 |
+|---|---|---|
+| 芯片组 HWC 支持虚拟屏（Qualcomm 旗舰部分型号） | 设备依赖 | 低（查 dumpsys 即可） |
+| Root 后重定向 SurfaceFlinger layer | 技术可行 | 极高（需逆向 SF binder 接口） |
+| 改用 GLSurfaceView 的游戏（Unity 导出等） | 理论可能 | 中（需找对应 App 实测） |
+
+**scrcpy 的处理方式**：虚拟屏只用于轻量 App，重度游戏官方推荐走主屏镜像（`displayId=0`）。
+
+</details>
+
+### 其他
 
 - 没有 root。虚拟屏上的 App 仍然受 SELinux 约束，读不了别人的 `/data/data`。
 - 虚拟屏与插件进程同生共死：引擎重启，屏自动消失，任务里的 App 也会结束。

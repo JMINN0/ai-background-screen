@@ -150,7 +150,26 @@ const state = {
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false } = {}) {
+export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false, orientation } = {}) {
+  // 处理 orientation 参数：landscape 时自动交换宽高
+  let finalWidth = width;
+  let finalHeight = height;
+  if (orientation === 'landscape') {
+    // 横屏：确保宽 > 高
+    if (width < height) {
+      finalWidth = height;
+      finalHeight = width;
+    }
+  } else if (orientation === 'portrait') {
+    // 竖屏：确保高 > 宽
+    if (width > height) {
+      finalWidth = height;
+      finalHeight = width;
+    }
+  }
+  // 如果 orientation 是具体数值（旋转角度），这里暂时不处理，
+  // 因为 scrcpy new_display 不直接支持旋转参数，只支持尺寸。
+  // 旋转由 App 自己根据屏幕尺寸判断（横屏 App 看到宽>高的屏会自动横屏）。
   if (state.displayId) {
     if (state.systemDecorations === systemDecorations && await alive()) {
       // 复用分支以前不返回 canHost/flags，tools.js 把它当 false，
@@ -198,7 +217,7 @@ export async function start({ width = 720, height = 1280, dpi = 320, systemDecor
     // vd_system_decorations=false（scrcpy ≥3.1）：不加这个，虚拟屏上会自带
     // 二级桌面 launcher、导航栏和权限弹窗——AI 截图会把这些系统 UI 一起截进去，
     // 以为是自己要操作的界面。实测关掉后屏上窗口数=0，画面干净。
-    + `log_level=info tunnel_forward=true display_ime_policy=hide vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${width}x${height}/${dpi} `
+    + `log_level=info tunnel_forward=true display_ime_policy=hide vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${finalWidth}x${finalHeight}/${dpi} `
     + `control=true audio=false scid=${scid}`;
   // 把 server 的输出落到日志文件：出问题时没有日志只能瞎猜（刚踩过：服务秒退却不知道为什么）
   const logPath = '/tmp/dsh-vd-server.log';
@@ -269,7 +288,7 @@ export async function start({ width = 720, height = 1280, dpi = 320, systemDecor
     const added = [...now].filter((d) => !before.has(d));
     if (added.length) {
       state.displayId = added[0];
-      state.width = width; state.height = height;
+      state.width = finalWidth; state.height = finalHeight;
       state.systemDecorations = systemDecorations;
       break;
     }
