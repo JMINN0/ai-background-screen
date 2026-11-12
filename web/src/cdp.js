@@ -204,6 +204,13 @@ const SHIFT_MAP = {
   '"': "'", '<': ',', '>': '.', '?': '/', '~': '`',
 };
 
+/** 触摸手势的 id 计数器：每次手势递增，让页面看到的 pointerId 也跟着变。 */
+let __fingerSeq = 1 + Math.floor(Math.random() * 5);
+function nextFingerId() {
+  __fingerSeq = (__fingerSeq + 1) % 1000;
+  return __fingerSeq;
+}
+
 /** 数值夹紧。 */
 function clampNum(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));
@@ -651,7 +658,11 @@ export async function tapTouch(targetId, o = {}) {
   const points = 2 + Math.floor(Math.random() * 3);   // 1~4 个移动点，不是十几个
   const baseRx = 9 + Math.random() * 7;
   const baseRy = 11 + Math.random() * 8;
-  const fingerId = 1 + Math.floor(Math.random() * 3);
+  // 每次手势用一个递增的 touchPoint id。实测（2026-11-12）：传入不同的 id，
+  // 浏览器分配的 pointerId 会跟着递增（2、3、4…）；如果每次都用同一个 id，
+  // 页面看到的 pointerId 就恒为同一个值 —— 真实设备上每根新手指都会有新 id，
+  // 恒定是明显的机器特征（环境探针把它单独计了一条）。
+  const fingerId = nextFingerId();
 
   try {
     await withClient(targetId, async (snd) => {
