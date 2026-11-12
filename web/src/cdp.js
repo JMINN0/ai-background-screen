@@ -58,73 +58,80 @@ export async function ensure() {
     PORT = st.port || 9300 + Math.floor(Math.random() * 200);
     await saveState({ ...st, port: PORT });
   }
+
   for (let i = 0; i < 2; i += 1) {
     try {
       const r = await fetch(`${ENDPOINT()}/json/version`, { signal: AbortSignal.timeout(5000) });
       if (r.ok) {
         const j = await r.json();
-        return { ok: true, browser: j.Browser, port: PORT };
+        // 连上了。**顺便确认到底是哪个浏览器在应答** —— 三个 Chromium 共用同一个
+        // socket 名，光看进程名会猜错（残留进程、force-stop 竞态都会骗人，实测踩过）。
+        const actual = BROWSERS[identifyBrowser(j.Browser) || currentBrowser().key];
+        return {
+          ok: true,
+          browser: j.Browser,
+          port: PORT,
+          actualKey: actual.key,
+          note: actual.key !== currentBrowser().key
+            ? `注意：应答的其实是 ${actual.name}（${j.Browser}），不是配置的 ${currentBrowser().name}。\n`
+              + `要把工具切过去：web_browser { select: "${actual.key}" }`
+            : '',
+        };
       }
     } catch { /* 继续修复 */ }
     if (i === 0) {
       await adb(['forward', '--remove', `tcp:${PORT}`]);
       await adb(['forward', `tcp:${PORT}`, `localabstract:${currentBrowser().socket}`]);
-      await sleep(600);
+      await sleep(900);
     }
   }
-  const proc = await adb(['shell', `ps -A 2>/dev/null | grep -c ${currentBrowser().proc}`]);
+
+  // ---- 连不上。唯一可靠的判断是 socket 在不在 ----
+  // 以前这里数进程：ps | grep -c <proc>。那是错的 —— force-stop 之后会残留进程，
+  // 进程数还会因为时序不同而飘。实测过：Chrome 已被杀，进程数还报 1，
+  // 于是提示"切到 Chrome"，切过去照样连不上。
+  //
+  // devtools socket 存在 == 至少有一个 Chromium 浏览器真的准备好被连了。
   const sock = await adb(['shell', 'cat /proc/net/unix 2>/dev/null | grep -c devtools_remote']);
-  const alive = Number((proc.out || '0').trim()) > 0 && Number((sock.out || '0').trim()) > 0;
+  const sockAlive = Number((sock.out || '0').trim()) > 0;
 
-  // ---- 绝不能多开一个浏览器 ----
-  // 用户 2026-11-05 的教训：AI 打开了另一个浏览器 App，原来那个被关掉，
-  // 浏览器只记住"上次关闭前的标签页"，于是 60 多个标签一次性蒸发、找不回来。
-  // 所以这里先看看**别的**浏览器是不是在跑：
-  //   - 别的在跑 → 只许让用户自己切回来，绝不建议再启动一个
-  //   - 都没有   → 才给出启动当前这一个的建议
-  const others = [];
-  for (const b of Object.values(BROWSERS)) {
-    if (b.key === currentBrowser().key) continue;
-    const r = await adb(['shell', `ps -A 2>/dev/null | grep -c ${b.proc}`]);
-    if (Number((r.out || '0').trim()) > 0) others.push(b.name);
-  }
-
-  if (alive) {
+  if (sockAlive) {
+    // socket 在，但我们连不上 → 是我们这边的问题（forward 断了 / 端口被占）
     return {
       ok: false,
-      hint: `${currentBrowser().name} 在跑但 CDP 连不上（forward 可能残留）。跑一次 adb_reconnect 或重试。`,
+      hint: '有 Chromium 浏览器开着调试通道（devtools socket 存在），但本插件连不上。\n'
+        + '这是我们这边的问题，不是浏览器的：\n'
+        + '  · 先重试一次（工具会自动重建 forward）\n'
+        + '  · 还不行就跑 adb_reconnect，然后重试\n'
+        + `  · 确认端口 ${PORT} 没被别的工具占着`,
     };
   }
 
-  if (others.length) {
-    return {
-      ok: false,
-      hint: `${currentBrowser().name} 没在跑，但 ${others.join(' / ')} 正在运行。\n`
-        + `**直接改用正在运行的那个**（不需要启动任何东西）：\n`
-        + `  web_browser { select: "<改成 ${others[0]} 对应的 key>" }\n`
-        + '切过去之后它本来就在跑，**不要再 monkey 启动它**。\n'
-        + '多开一个 Chromium 会把已有那个挤掉，2026-11-05 因此丢过 60 多个标签。',
-    };
-  }
-
+  // socket 都没有 == 没有任何浏览器处于可调试状态
   return {
     ok: false,
-    hint: `浏览器没在运行（进程 ${(proc.out || '0').trim()}、socket ${(sock.out || '0').trim()}）。\n`
-      + '\n**推荐：用虚拟屏启动它，完全不打扰用户。** 实测主屏焦点不变：\n'
-      + '  vdisplay_start {}\n'
-      + `  vdisplay_launch { pkg: "${currentBrowser().pkg}" }\n`
-      + '然后重新 web_ensure 就能连上。浏览器跑在那块看不见的屏上，\n'
-      + 'CDP、标签、登录态全都正常，用户的主屏一直是他自己的东西。\n'
-      + '\n要先判断这个任务到底需不需要浏览器 —— 能用 adb shell 或 vdisplay 办到的就别开：\n'
-      + `  · 只是取数据/看接口 → 用 adb shell 或 web_fetch，不用浏览器\n`
+    hint: `现在没有任何 Chromium 浏览器开着调试通道（devtools socket 数为 0）。\n`
+      + `\n要先判断这个任务到底需不需要浏览器 —— 能用 adb shell 或 vdisplay 办到的就别开：\n`
+      + '  · 只是取数据/看接口 → 用 adb shell 或 web_fetch，不用浏览器\n'
       + `  · 要操作登录态页面 → 才需要 ${currentBrowser().name}\n`
       + '\n确实需要、而它又没在跑，按这两条选：\n'
-      + `  ① 不想打扰用户（他在用手机、主屏有东西）→ 用上面的虚拟屏方式\n`
-      + `  ② 用户没在忙、手机也不紧张 → 可以直接开：\n`
-      + `     adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
-      + '     它会把浏览器切到前台，开之前告诉用户一声。\n'
+      + `  ① 不想打扰用户（他在用手机、主屏有东西）→ 用虚拟屏启动，主屏焦点不动：\n`
+      + '       vdisplay_start {}\n'
+      + `       vdisplay_launch { pkg: "${currentBrowser().pkg}" }\n`
+      + '     注意 vdisplay_launch 会先 force-stop 目标 App，等于重启它。\n'
+      + `  ② 用户没在忙、手机也不紧张 → 直接开，但开之前告诉用户一声：\n`
+      + `       adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
       + '\nAndroid 没有"在后台启动一个 App"的接口；只有启动到虚拟屏才能既跑起来又不抢屏。',
   };
+}
+
+/** 从 /json/version 的 Browser 字符串认出是哪个浏览器。认不出返回 null。 */
+function identifyBrowser(browserString) {
+  const s = String(browserString || '');
+  if (/^Edg/i.test(s)) return 'edge';
+  if (/^Chrome/i.test(s)) return 'chrome';
+  if (/nubia/i.test(s)) return 'nubia';
+  return null;
 }
 
 export async function listTargets({ type = 'page' } = {}) {

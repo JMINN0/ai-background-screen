@@ -743,14 +743,30 @@ export async function input(kind, a = {}) {
   if (!verify) return { ok: true, displayId: d, out: out.trim(), changed: null };
 
   await sleep(Number(a.settleMs) || 500);
-  const after = await frameHash();
-  const changed = before && after ? before !== after : null;
+  let after = await frameHash();
+  let changed = before && after ? before !== after : null;
+
+  // 只查一次会误报。实测：给虚拟屏发 KEYCODE_BACK 退掉设置页，
+  // 画面确实变了（随后截是纯黑），但 500ms 那个时间点还没变完，
+  // 于是返回 changed:false —— AI 会以为没生效、重复操作，造成双击这类事故。
+  // 所以没变的时候再轮询几次，任一次变了就算生效。
+  if (changed === false) {
+    for (let i = 0; i < 4 && changed === false; i += 1) {
+      await sleep(400);
+      const again = await frameHash();
+      if (before && again && again !== before) {
+        after = again;
+        changed = true;
+      }
+    }
+  }
+
   return {
-    ok: changed !== false,          // 画面没变 = 这次操作大概率没生效
+    ok: changed !== false,          // 轮询完还是没变，才算这次操作大概率没生效
     displayId: d,
     changed,
     hint: changed === false
-      ? '画面没有变化，这一下可能没生效（坐标偏了 / 控件不可点 / 界面还没加载完）。建议重新截一张图确认位置，不要盲目重复点同一坐标。'
+      ? '画面在 2 秒内一直没有变化，这一下可能真的没生效（坐标偏了 / 控件不可点 / 界面还没加载完）。建议重新截一张图确认位置，不要盲目重复点同一坐标。'
       : undefined,
     out: out.trim(),
   };
