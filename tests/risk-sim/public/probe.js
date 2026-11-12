@@ -50,6 +50,7 @@
       let co = 1;
       try { co = e.getCoalescedEvents ? e.getCoalescedEvents().length : 1; } catch { co = -1; }
       P.pointers.push({
+        lag: performance.now() - e.timeStamp,   // 事件时间戳到处理时刻的延迟
         type: e.pointerType,
         id: e.pointerId,
         pressure: e.pressure,
@@ -203,6 +204,25 @@ function cdpProbe() {
         `合并采样最多 ${maxCo} 个（真实触摸屏通常 >1）`);
     } else {
       add('input.no-pointer-events', 'mid', true, '整个会话没有任何 pointer 事件');
+    }
+
+    // ===== 5.5 事件时间戳到处理时刻的延迟 =====
+    //
+    // 真实硬件：触摸在 T 时刻采样，经过输入管线到渲染进程，处理时已经过了 1~16ms，
+    // 而且这个延迟会抖（取决于帧、负载）。
+    // 注入事件：时间戳就是"现在"，延迟几乎为 0 且完全不抖 —— 这是个明显的机器特征。
+    if (P.pointers.length >= 5) {
+      const lags = P.pointers.map((p) => p.lag).filter((x) => typeof x === 'number');
+      if (lags.length >= 5) {
+        const mx = lags.reduce((a, b) => a + b, 0) / lags.length;
+        const sdv = Math.sqrt(lags.reduce((s2, x) => s2 + (x - mx) ** 2, 0) / (lags.length - 1));
+        raw.timestampLagMean = Number(mx.toFixed(2));
+        raw.timestampLagSd = Number(sdv.toFixed(2));
+        const tooInstant = Math.abs(mx) < 0.5 && sdv < 0.3;
+        add('input.timestamp-instant', 'mid', tooInstant,
+          `事件时间戳到处理延迟 均值 ${mx.toFixed(2)}ms / 标准差 ${sdv.toFixed(2)}ms`
+          + (tooInstant ? '（几乎为 0 且不抖，像注入）' : '（有延迟和抖动，像真实输入）'));
+      }
     }
 
     // ===== 6. 键盘 =====
