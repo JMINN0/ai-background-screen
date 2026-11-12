@@ -30,12 +30,30 @@ async function launchBrowser({ allowForeground = false } = {}) {
   const target = await adbTarget();
   // **不要用 monkey 启动浏览器**（2026-11-12 实测）：`monkey -p <pkg> -c LAUNCHER 1`
   // 会注入随机事件，实测 4/4 次都把系统的 `accelerometer_rotation` 从 0 翻成 1，
-  // 等于擅自替用户打开了自动旋转。同样的启动换成 `am start` 4/4 次都不变。
+  // 等于擅自替用户打开了自动旋转。RotationLockHistory 里的 caller 就是
+  // `MonkeyRotationEven#injectEvent`，直接指认。换成 `am start` 4/4 次都不变。
   // 用户明确禁止我们动自动旋转，所以这里必须走 am start。
-  await pexec(ADB, ['-s', target, 'shell', 'am', 'start',
+  const pkg = currentBrowser().pkg;
+  const started = await pexec(ADB, ['-s', target, 'shell', 'am', 'start',
     '-a', 'android.intent.action.MAIN',
     '-c', 'android.intent.category.LAUNCHER',
-    '-p', currentBrowser().pkg], { timeout: 20000 }).catch(() => {});
+    '-p', pkg], { timeout: 20000 }).then((r) => `${r.stdout || ''}`, () => '').catch(() => '');
+
+  // 有的 App 的 launcher Activity 用 intent 解析不到（实测 mixiaba 就是这样），
+  // 但明明在清单里声明了 MAIN/LAUNCHER。这种就退回显式组件启动 —— 依然不用 monkey。
+  if (/Error|unable to resolve/i.test(started)) {
+    const comp = await pexec(ADB, ['-s', target, 'shell',
+      'cmd', 'package', 'resolve-activity', '--brief', pkg], { timeout: 15000 })
+      .then((r) => {
+        const line = String(r.stdout || '').split('\n').map((s) => s.trim())
+          .filter((s) => s.includes('/')).pop();
+        return line || '';
+      }).catch(() => '');
+    if (comp) {
+      await pexec(ADB, ['-s', target, 'shell', 'am', 'start', '-n', comp], { timeout: 20000 })
+        .catch(() => {});
+    }
+  }
   for (let i = 0; i < 12; i += 1) {
     await sleep(700);
     const r = await cdp.ensure();
