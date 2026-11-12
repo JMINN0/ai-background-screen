@@ -24,41 +24,74 @@
 
 ---
 
-## 二、⚠️ 关键限制：抢了前台之后**还原不回去**
+## 二、抢了前台之后怎么还原
 
-用户提过"操作完要切回原来的 App"。**实测这台设备（Android 16）做不到。**
+**能还原，但有前提和风险。**
 
-试过的方式，全部失败：
+### 正确的方法
+
+```bash
+# 抢前台之前先记下来
+adb shell dumpsys activity activities | grep -m1 topResumedActivity
+#  → topResumedActivity=ActivityRecord{... u0 <包名>/<Activity全名> ...}
+
+# 操作完，用这一条还原
+adb shell am start -W -n <包名>/<Activity全名> --activity-no-animation
+```
+
+成功时返回：
+
+```
+Warning: Activity not started, its current task has been brought to the front
+Status: ok
+LaunchState: HOT
+```
+
+`brought to the front` 这句就是判据 —— 它复用了原来的 task，**滚动位置和界面状态都还在**。
+
+### 我一开始测错的原因
+
+最早试的是不带 `-W` 也不带 `--activity-no-animation` 的 `am start -n`，失败了，于是下了"还原不回去"的结论。**那个结论是错的。**
+
+实测 4 轮，3 轮成功。**唯一失败的那轮，是测试期间用户自己切到了别的 App** —— 我的"还原"把用户刚切过去的界面又顶掉了。
+
+### ⚠️ 必须先检查，否则会抢用户的操作
+
+还原前必须判断：**用户在我们操作期间自己切走了没有？**
+
+```
+记下抢前台之前的 foreground（A）
+操作完之后，如果当前 foreground 不是「我们抢的那个」（B），而是第三个 App（C）
+  → 说明用户自己动了，此时【不要还原】，否则会把用户的操作顶掉
+```
+
+判据（来自 dumpsys）：
+
+- 当前 `topResumedActivity` 是 **B（我们抢的）** → 用户没动，**可以还原**
+- 当前是 **A（原来的）** → 已经回去了，不用动
+- 当前是**别的 App** → 用户自己切了，**放弃还原，只报告**
+
+### 其他还原方式的实测结果
 
 | 方法 | 结果 |
 |---|---|
-| `am start -n <pkg>/<activity>` | Activity 启动了，但**没回到前台** |
-| `am start -a MAIN -c LAUNCHER -p <pkg>` | 失败 |
-| `am start -n ... -f 0x10000000`（NEW_TASK） | 失败 |
-| `input keyevent HOME` 再 `am start` | 落到桌面，不是原 App |
-| `am task move-to-front <taskId>` | **命令不存在** |
-| `am stack move-task <task> <stack>` | **抛异常** |
+| `am start -W -n ... --activity-no-animation` | ✅ **主力方式**（复用 task，状态保留） |
+| `am start -n ...`（不带 -W） | ❌ 不可靠 |
+| `am start -a MAIN -c LAUNCHER -p <pkg>` | ❌ 失败 |
+| `am start -n ... -f 0x10000000` | ❌ 失败 |
+| `input keyevent HOME` | 只能到桌面，**不是还原** |
+| `am task move-to-front` | ❌ Android 16 上不存在 |
+| `am stack move-task` | ❌ 抛异常 |
+| `am task lock` | ⚠️ 会进锁任务模式，别用 |
 
-**所以：**
+### 还原也可能失败的情况
 
-- 能保证的最好结果是「操作完回到桌面」（`input keyevent KEYCODE_HOME`）
-- **原 App 的原界面（滚动位置、对话框、输入状态）找不回来**
-- 用户得自己切回去
+- 原 App 在操作期间被系统回收 → task 没了，还原会**新启动一个实例**（滚动位置丢失）
+- 原界面是对话框/浮层而不是 Activity
+- 分屏、画中画、悬浮窗 → 焦点和 task 的关系会变
+- 用户期间自己切了 App（见上，**这时候不该还原**）
 
-**这直接决定了第 3、4 级的定位：不是"打扰一下就好"，而是"打扰了就得让用户自己收拾"。**
-
-所以第 3、4 级**必须满足至少一个条件**才允许用：
-
-1. 用户明确同意过
-2. 用户当前没在用什么（熄屏 / 停在一段视频上）
-3. 前两级确实做不到（不是"不方便"，是"做不到"）
-
-用完**必须**：
-
-- 回到桌面，不要停在抢来的那个 App 上
-- 在回复里明确告诉用户："刚才为了 XX 把 <App> 切到了前台，你可以点回去"
-
----
+**还原不保证成功，失败时要如实告诉用户，不要假装还原了。**
 
 ## 三、"模拟人操作"这个说法是错的
 
