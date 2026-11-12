@@ -341,6 +341,24 @@ web_attach { targetId: "...", wake: true }
 
 跟目标 App 无关（B 站用 `am start` 不变、微信用 `monkey` 就变），是 `monkey` 本身的问题。
 
+**铁证在这里。** `dumpsys window displays` 里的 `RotationLockHistory` 会记下每次旋转锁变更的
+时间、模式和 **caller**。跑完 4 次 `monkey` 之后它是这样的：
+
+```
+11-12 19:35:48.752: mode=USER_ROTATION_LOCKED, caller=MonkeyRotationEven#injectEvent
+11-12 19:35:48.753: mode=USER_ROTATION_FREE,   caller=MonkeyRotationEven#injectEvent
+11-12 19:35:57.278: mode=USER_ROTATION_LOCKED, caller=MonkeyRotationEven#injectEvent
+11-12 19:35:57.278: mode=USER_ROTATION_FREE,   caller=MonkeyRotationEven#injectEvent
+...（每次 monkey 都成对出现 LOCKED→FREE）
+```
+
+`monkey` 里有个专门注入旋转事件的分支，`MonkeyRotationEven#injectEvent`。每次成对切一次，
+净效果就是把自动旋转打开。换成 `am start` 后，同样的记录 **8 条 → 8 条，一条都不新增**。
+
+**这个 `RotationLockHistory` 是排查"谁动了旋转"最好的抓手**，比翻 logcat 强得多 ——
+它直接给出 caller 字符串，能区分是快捷开关（`RotationLockTile#handleClick`）、
+厂商定制、还是 scrcpy（`scrcpy#thawRotation`）。
+
 **所以启动浏览器一律用：**
 
 ```bash
