@@ -82,6 +82,13 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/strict.js') {
     return serveStatic(res, 'strict.js');
   }
+  // 环境指纹探针：页面能读到哪些"我不是真机"的信号
+  if (req.method === 'GET' && (url.pathname === '/probe' || url.pathname === '/probe.html')) {
+    return serveStatic(res, 'probe.html');
+  }
+  if (req.method === 'GET' && url.pathname === '/probe.js') {
+    return serveStatic(res, 'probe.js');
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/report') {
     let raw = '';

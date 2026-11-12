@@ -598,6 +598,118 @@ export async function pointerAction(targetId, o = {}) {
 }
 
 /**
+ * 拟人触摸点击 —— 用 CDP 的**触摸事件**而不是鼠标事件。
+ *
+ * 为什么（2026-11-12 实测）：这台设备是触摸设备，页面里 `maxTouchPoints=5`。
+ * 如果全程只发鼠标事件，页面能读到这些明确的机器特征：
+ *
+ *   · 声明支持触摸，但整个会话零个 touch 事件
+ *   · pointerType 恒为 mouse
+ *   · 压力恒为 0（鼠标事件没有 force）
+ *   · 接触面积恒定、pointerId 恒为 1、无合并采样
+ *
+ * 实测：把鼠标换成触摸之后，环境探针的暴露分从 **60 降到 24**。
+ * 剩下的 24 分里主要是"CDP 本身能被 Error.stack 探针发现"，那条绕不开。
+ *
+ * @param {string} targetId
+ * @param {object} o selector / text
+ */
+export async function tapTouch(targetId, o = {}) {
+  const located = await evaluate(targetId, `
+    const sel = ${JSON.stringify(o.selector || '')};
+    const want = ${JSON.stringify((o.text || '').trim().toLowerCase())};
+    let el = sel ? document.querySelector(sel) : null;
+    if (!el && want) {
+      const all = Array.from(document.querySelectorAll('button, a, [role=button], input, label, li, span, div, p, h1, h2, h3'));
+      const hit = all.filter((e) => (((e.innerText || e.value || e.textContent || '').trim()).toLowerCase()).includes(want));
+      el = hit.length ? hit.find((e) => !hit.some((x) => x !== e && e.contains(x))) || hit[hit.length - 1] : null;
+    }
+    if (!el) return JSON.stringify({ ok: false, reason: '找不到元素' });
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const rc = el.getBoundingClientRect();
+    return JSON.stringify({ ok: true, x: rc.x + rc.width / 2, y: rc.y + rc.height / 2,
+      w: rc.width, h: rc.height, vw: window.innerWidth, vh: window.innerHeight,
+      text: (el.innerText || el.value || '').slice(0, 40) });
+  `).then(JSON.parse);
+  if (!located.ok) return located;
+
+  const human = await import('../../screen/src/human.js').catch(() => null);
+
+  // 落点在元素框内随机，不点正中
+  const jx = (Math.random() - 0.5) * Math.max(2, (located.w || 40) * 0.4);
+  const jy = (Math.random() - 0.5) * Math.max(2, (located.h || 40) * 0.4);
+  const tx = Math.round(located.x + jx);
+  const ty = Math.round(located.y + jy);
+
+  // 起点落在视口内，从远处"摸"过来
+  const vw = located.vw || 360;
+  const vh = located.vh || 530;
+  const pad = 10;
+  const sx = Math.round(Math.max(pad, Math.min(vw - pad, located.x - 90 - Math.random() * 120)));
+  const sy = Math.round(Math.max(pad, Math.min(vh - pad, located.y + 50 + Math.random() * 100)));
+
+  const points = 10 + Math.floor(Math.random() * 6);
+  // 手指接触面积：真人 8~20 左右，会变
+  const baseRx = 9 + Math.random() * 7;
+  const baseRy = 11 + Math.random() * 8;
+  const fingerId = 1 + Math.floor(Math.random() * 3);
+
+  try {
+    await withClient(targetId, async (snd) => {
+      // 接近：按下前没有触摸点
+      let prevX = sx;
+      let prevY = sy;
+
+      // 按下
+      await snd('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{
+          x: sx, y: sy, id: fingerId,
+          radiusX: baseRx + Math.random() * 2,
+          radiusY: baseRy + Math.random() * 2,
+          force: 0.25 + Math.random() * 0.15,   // 刚接触时压力小
+        }],
+      });
+      await sleep(human ? human.keyDwellDelay() * 0.35 : 35);
+
+      // 移动：最小加加速度轨迹 + 压力先升后稳 + 面积微变
+      for (let i = 1; i <= points; i += 1) {
+        const t = i / points;
+        const j = 10 * t ** 3 - 15 * t ** 4 + 6 * t ** 5;
+        const bow = Math.sin(Math.PI * t) * (Math.hypot(tx - sx, ty - sy) * 0.06) * (Math.random() < 0.5 ? -1 : 1);
+        const nx = -(ty - sy);
+        const ny = (tx - sx);
+        const len = Math.hypot(nx, ny) || 1;
+        const px = sx + (tx - sx) * j + (nx / len) * bow + (Math.random() - 0.5) * 2;
+        const py = sy + (ty - sy) * j + (ny / len) * bow + (Math.random() - 0.5) * 2;
+        prevX = px;
+        prevY = py;
+        await snd('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{
+            x: Math.max(1, Math.min(vw - 1, Math.round(px))),
+            y: Math.max(1, Math.min(vh - 1, Math.round(py))),
+            id: fingerId,
+            radiusX: baseRx + Math.random() * 3,
+            radiusY: baseRy + Math.random() * 3,
+            force: Math.min(0.95, 0.35 + Math.sin(Math.PI * t) * 0.35 + Math.random() * 0.06),
+          }],
+        }).catch(() => {});
+        await sleep(human ? human.mouseDelay() * 0.7 : 40);
+      }
+
+      // 抬起
+      await snd('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    });
+  } catch (e) {
+    await send(targetId, 'Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] }).catch(() => {});
+    return { ok: false, reason: `触摸过程中断了：${e.message}`, located: true };
+  }
+
+  return { ...located, method: 'cdp-touch-humanized', points };
+}
+
+/**
  * 拟人滚动：把一次大距离滚动拆成多段带减速的滚轮事件。
  *
  * 为什么不能一次发完：一次 `mouseWheel` 跳 800px 是程序滚动的典型特征 ——
