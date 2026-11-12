@@ -1,77 +1,102 @@
 # 风控靶场实测结果
 
-## 基线 vs 拟人化输入
+## 最终成绩：100 / 100
 
 | 方式 | 分数 | 失败项 |
 |---|---|---|
-| **JS `dispatchEvent`（旧）** | **46 / 100** | bh.trusted(20)、bh.input-without-keys(18)、bh.click-without-mousedown、bh.mouse-missing |
-| **Android 输入注入（新）** | **92 / 100** | 只剩 bh.mouse-missing(6) |
+| JS `dispatchEvent` | 46 / 100 | bh.trusted(20)、bh.input-without-keys(18)、bh.click-without-mousedown、bh.mouse-missing |
+| Android 注入 `input motionevent` | 92 / 100 | bh.mouse-missing(6) |
+| **CDP `Input.dispatchMouseEvent` + 拟人轨迹** | **100 / 100** | **无** |
 
-**+46 分，翻了一倍。**
-
-## 关键突破：`isTrusted` 变成 true
-
-之前用 JS 的 `dispatchEvent` 派发事件，靶场直接判 `isTrusted=false` —— 这一项权重 20，是最重的扣分点。
-
-改用 **Android 层输入注入**（`adb shell input motionevent`）后：
+满分那次的指标：
 
 ```json
-"clicks": [
-  {"trusted": true, "x": 68, "y": 449, "type": "down"},
-  {"trusted": true, "x": 68, "y": 449, "type": "click", "target": "BUTTON"}
-],
-"behaviorAnalysis": {"untrustedEvents": [], "untrustedCount": 0}
+{
+  "score": 100,
+  "fails": [],
+  "behaviorAnalysis": {
+    "mouseStraightness": 0.312,     // 越接近 1 越像机器人走直线
+    "mouseDtCv": 4.49,              // 移动间隔变异系数，太小 = 太规律
+    "clicksWithDown": "2/2",        // 每次 click 都有对应 mousedown
+    "untrustedEvents": [],
+    "untrustedCount": 0
+  }
+}
 ```
 
-**全部事件零不可信。** 原因：对浏览器来说，通过 Android 输入系统进来的事件就是真实输入，和手指按下去没有区别。
+## 关键发现：两条路各有短板，合起来才满分
 
-这条说明——**操作浏览器时，能用系统输入就别用 JS 派发**。
+### 1. JS 派发（46 分）—— `isTrusted` 是死穴
 
-## 仍然失败的项
+用 `dispatchEvent` 派发事件，浏览器标记 `isTrusted=false`，这一项权重 20，直接判死。
+文字通过 DOM 赋值还拿不到按键事件（`input-without-keys`，权重 18）。
 
-`bh.mouse-missing`（权重 6）：「鼠标移动采样只有 2 个，不足以判人」
+**无论怎么伪造轨迹都修不掉。**
 
-试过的办法都不行：
+### 2. Android 注入（92 分）—— 事件可信，但采样不够
 
-| 办法 | 结果 |
+`input motionevent` 从系统输入栈进来，浏览器看到 `isTrusted=true`（真正的突破）。
+但虚拟屏路径下浏览器**每次注入只响应一两个移动事件**：
+
+| 注入方式 | mousemove 采样数 |
 |---|---|
-| 5 个事件的点击 | 2 个采样 |
-| 10 个事件 + 25ms 间隔 | 2 个采样 |
-| 15 个事件的长距离接近轨迹 + 20ms 间隔 | 2 个采样 |
-| `input swipe`（内部生成连续 MOVE） | 2 个采样 |
+| 5 个事件的点击 | 2 |
+| 10 个事件 + 25ms 间隔 | 2 |
+| 15 个事件的长距离轨迹 | 2 |
+| `input swipe` | 2 |
 
-**判断**：虚拟屏上的浏览器只对每次注入响应一两个移动事件，换注入方式改不了。可能是虚拟屏的输入通道或浏览器的事件合并策略导致的，**在无 root 前提下暂时无解**。
+采样数不够（< 3），`bh.mouse-missing`（权重 6）判失败。
 
-## 做不到的事（实测确认）
+### 3. CDP `Input.dispatchMouseEvent`（100 分）—— 补上了采样
+
+CDP 的 Input 域走浏览器内部输入管道，**产生的事件同样是 `isTrusted=true`**，
+而且能一次发任意多个 `mouseMoved`。
+
+实测：12 次 mousemove → 12 个采样，全部可信。
+
+**但它单独用只有 84 分**，因为轨迹和时序是"完美"的：
+
+| 问题 | 现象 | 修法 |
+|---|---|---|
+| `bh.mouse-straight`(8) | 直线度 1.0 | 用 `human.js` 的曲线轨迹 |
+| `bh.mouse-timing`(8) | 间隔变异系数 0.076 | 用对数正态抖动延迟 |
+
+**两者合起来才是满分**：CDP 提供可信事件 + 足够采样，`human.js` 提供人形轨迹和节奏。
+
+## 满分方案
+
+```js
+// 1. 用 human.js 生成带弯曲和抖动的轨迹
+const { buildSwipe } = await import('../screen/src/human.js');
+const s = buildSwipe(startX, startY, targetX, targetY, { points: 14 });
+
+// 2. 逐个通过 CDP 发送
+for (const e of s.events) {
+  if (e.action === 'DOWN') {
+    await cdp.send(tid, 'Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 1 });
+  } else if (e.action === 'MOVE') {
+    await cdp.send(tid, 'Input.dispatchMouseEvent',
+      { type: 'mouseMoved', x: e.x, y: e.y, buttons: 1 });
+  } else {
+    await cdp.send(tid, 'Input.dispatchMouseEvent',
+      { type: 'mouseReleased', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 0 });
+  }
+  // 3. 延迟用对数正态抖动，不要固定值
+  await new Promise(r => setTimeout(r, jitterMs()));
+}
+```
+
+## 做不到的事（实测确认，别再试）
 
 | 路径 | 结果 |
 |---|---|
-| `sendevent` 写真实触摸屏 | ❌ SELinux Enforcing 拒绝（Permission denied） |
+| `sendevent` 写真实触摸屏 | ❌ SELinux Enforcing 拒绝 |
 | `/dev/uinput` 造输入设备 | ❌ 需 root |
-| `input motionevent --axis PRESSURE` | ⚠️ 语法接受但**不生效**，浏览器收到的压力恒为 1 |
+| `input motionevent --axis PRESSURE` | ⚠️ 语法接受但不生效，压力恒为 1 |
 
-所以：**行为分布可以像人，事件本身无法做到与真人不可区分。**
+## 注意
 
-## 复测方法
+这个分数只说明**通过了我们自己写的靶场**。靶场是规则阈值式的（直线度、变异系数、权重求和），
+真实的商业风控会用模型和行为序列分析，不是同一回事。**别把 100 分当成"能过任何风控"。**
 
-```bash
-# 1. 起靶场
-cd tests/risk-sim && node server.mjs &
-
-# 2. 起虚拟屏 + 投浏览器
-cd screen && node bin/vdisplay.mjs start
-node bin/vdisplay.mjs launch com.microsoft.emmx
-
-# 3. 浏览器打开 http://127.0.0.1:3081/
-
-# 4. 注入拟人点击（注意用 status 给的 displayId，dumpsys 里的可能是残留）
-node -e "
-import('./src/human.js').then(h => {
-  const t = h.buildTap(133, 909, { size: 167 });
-  console.log(h.toShellCommand(t.events, { displayId: <正确id> }));
-});
-" | xargs -I{} adb -s 127.0.0.1:5555 shell "{}"
-
-# 5. 读分数
-# 在页面执行 window.RiskDetect.run() 看 summary.score
-```
