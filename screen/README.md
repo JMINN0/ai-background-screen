@@ -23,6 +23,55 @@ Android 上「造虚拟屏」有两条路，差别是生死攸关的：
 
 需要 `com.android.shell` 拥有 `ADD_TRUSTED_DISPLAY` 权限。一部分机型有（这台 nubia 有），Pixel 和部分 Android 15 没有（见 scrcpy issue #5523）。插件启动时会先检查，没有就明确报错，不会硬撑。
 
+## 命令行版本（给任何 agent 用，不限于 DSH）
+
+同一个包也带 CLI，**不需要装 DSH**。Claude Code、opencode、Codex、Cursor 只要能跑 bash 就能用。
+
+```bash
+vdisplay start                          # 建一块看不见的屏
+vdisplay launch com.tencent.mm          # 把微信投上去
+vdisplay shot --out /tmp/wx.jpg         # 截图
+vdisplay input tap --nx 0.5 --ny 0.9    # 归一化坐标点击
+vdisplay status
+vdisplay stop
+```
+
+完整命令：
+
+```
+vdisplay start [--width 720] [--height 1280] [--dpi 320]
+               [--orientation landscape|portrait] [--hwc auto|on|off]
+vdisplay stop [--forceStopApps]
+vdisplay status
+vdisplay launch <包名> [Activity]
+vdisplay shot [--out 路径] [--width 540] [--format jpeg|png]
+vdisplay main-shot [--out 路径]
+vdisplay input tap   --x 100 --y 200        或 --nx 0.5 --ny 0.5
+vdisplay input swipe --x1 100 --y1 200 --x2 300 --y2 400 [--ms 400]
+vdisplay input text  --text "要输入的字"
+vdisplay input key   --key KEYCODE_BACK
+vdisplay input paste [--text "要粘的内容"]
+vdisplay daemon stop
+```
+
+加 `--json` 输出机器可读的完整结果。
+
+### 为什么需要一个守护进程
+
+虚拟屏跟"建它的那个进程"同生共死。CLI 每次调用都是新进程，退出就把屏带走了 —— 所以 `vdisplay shot` 这种一次性命令没法直接工作。
+
+做法是常驻一个 `vdisplayd`，把屏握在手里，CLI 通过回环 HTTP 把命令发进去：
+
+```
+vdisplay（CLI）──HTTP──> vdisplayd（常驻，持有虚拟屏）
+```
+
+**CLI 会自动拉起守护进程**，你不用管。它闲置 10 分钟且没有虚拟屏时会自己退出，不留垃圾进程。
+
+状态文件在 `$DSH_HOME/plugin-screen/cli-daemon.json`，里面是 `{pid, port}`。
+
+查看守护进程：`vdisplay daemon`；让它退出：`vdisplay daemon stop`。
+
 ## 八个工具
 
 | 工具 | 作用 |

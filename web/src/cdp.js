@@ -174,16 +174,32 @@ export async function openTab(rawUrl, { reuse = true } = {}) {
 /** 只关带本插件标记的标签。用户的一个都不碰。 */
 export async function closeOwnTabs() {
   const st = await loadState();
-  if (!st.marker) return { ok: true, closed: 0, reason: '没有标记，什么都不关' };
-  const targets = await listTargets();
-  const tracked = new Set(st.tabs || []);
-  // 双保险：URL 带标记的算我们的；state 里记过 id 的也算（点链接跳转后 URL 会丢标记）。
-  const mine = targets.filter((t) => (t.url || '').includes(st.marker) || tracked.has(t.id));
+
+  // 浏览器已经关掉时 listTargets() 会抛异常。以前这里直接抛出去，
+  // 于是 saveState 永远走不到 —— 状态里残留的 tabs/adopted 再也清不掉，
+  // "收工"之后 web_tabs 仍把用户的标签标成"已接管"。所以先兜住。
+  let mine = [];
+  let browserDown = false;
+  if (st.marker) {
+    try {
+      const targets = await listTargets();
+      const tracked = new Set(st.tabs || []);
+      // 双保险：URL 带标记的算我们的；state 里记过 id 的也算（点链接跳转后 URL 会丢标记）。
+      mine = targets.filter((t) => (t.url || '').includes(st.marker) || tracked.has(t.id));
+    } catch {
+      browserDown = true;
+    }
+  }
+
   for (const t of mine) {
     await send(null, 'Target.closeTarget', { targetId: t.id }).catch(() => {});
   }
-  await saveState({ ...st, tabs: [] });
-  return { ok: true, closed: mine.length };
+
+  // 不管浏览器在不在，状态都要清干净：
+  //   tabs    —— 已经关掉的标签不该留着
+  //   adopted —— 不清的话"收工"之后 web_tabs 仍把用户标签标成"已接管"，自相矛盾，而且无限增长
+  await saveState({ ...st, tabs: [], adopted: [] });
+  return { ok: true, closed: mine.length, ...(browserDown ? { reason: '浏览器没在运行，只清了本地状态' } : {}) };
 }
 
 
@@ -375,7 +391,16 @@ async function wsUrl(targetId) {
 async function client(targetId) {
   const url = targetId ? await wsUrl(targetId) : `${ENDPOINT().replace('http', 'ws')}/devtools/browser`;
   const ws = new WebSocket(url);
-  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws 连接失败')); });
+  // 握手本身也要超时。原版只挂 onopen/onerror：若 socket 半死不活两边都不触发，
+  // 这个 Promise 就永远不 settle，整个工具调用挂住。
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => {
+      try { ws.close(); } catch { /* ignore */ }
+      rej(new Error('ws 握手超时（5s）'));
+    }, 5000);
+    ws.onopen = () => { clearTimeout(t); res(); };
+    ws.onerror = () => { clearTimeout(t); rej(new Error('ws 连接失败')); };
+  });
   let id = 0;
   const pending = new Map();
   ws.onmessage = (e) => {

@@ -24,7 +24,8 @@
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "bin"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -41,5 +42,9 @@
     "@deepseek-ai/dsh-tools": {
       "optional": true
     }
+  },
+  "bin": {
+    "vdisplay": "./bin/vdisplay.mjs",
+    "vdisplayd": "./bin/vdisplayd.mjs"
   }
 }
