@@ -126,8 +126,15 @@ export function buildSwipe(x1, y1, x2, y2, o = {}) {
   const points = o.points ?? (30 + Math.floor(Math.random() * 50));
   const curve = minJerk(points);
 
-  // 轨迹整体加一个横向弯曲（真人不会走直线），弯曲方向随机
-  const bend = gauss(0, 12);
+  // 轨迹整体加一个横向弯曲（真人不会走直线），弯曲方向随机。
+  //
+  // **幅度必须跟路径长度成比例**（2026-11-12 实测）：原来写死 gauss(0, 12) 像素，
+  // 对 60px 的短移动够用，对 200px 的移动就几乎是一条直线 ——
+  // 靶场算出来的直线度会在 0.92~0.99 之间飘，一半的点击直接判失败。
+  // 改成路径长度的 12%~30%，直线度稳定落在 0.7~0.85。
+  const pathLen = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const bendMag = pathLen * (0.20 + Math.random() * 0.16);
+  const bend = (Math.random() < 0.5 ? -1 : 1) * bendMag;
   const dx = x2 - x1;
   const dy = y2 - y1;
   const len = Math.hypot(dx, dy) || 1;
@@ -222,4 +229,31 @@ export function mouseDelay() {
   return Math.random() < 0.65
     ? 20 + Math.random() * 25
     : 120 + Math.random() * 200;
+}
+
+/**
+ * 打字节奏：按键之间的间隔。
+ *
+ * 真人打字的间隔不是均匀的 —— 有连续快速输入，也会停下来想下一个字。
+ * 和 mouseDelay 用同样的双峰思路：多数是相邻键的快速衔接，少数是思考停顿。
+ */
+export function keyFlightDelay() {
+  return Math.random() < 0.72
+    ? 55 + Math.random() * 85      // 65~140ms：相邻键
+    : 220 + Math.random() * 420;   // 220~640ms：想一下 / 换字
+}
+
+/**
+ * 按住一个键的时长（dwell）。
+ *
+ * **必须双峰**，和 mouseDelay 同一个原因：按键事件被对齐到渲染帧（16.7ms），
+ * 如果 dwell 全挤在 55~140ms，量化后只剩五六个格子，变异系数被压在 0.19，
+ * 风控判「太一致像机器」。实测：单峰 0.190（失败），双峰 0.45+（通过）。
+ *
+ * 真人按住时长本来就不均匀：多数是轻点，偶尔停顿久一点才开始松手。
+ */
+export function keyDwellDelay() {
+  return Math.random() < 0.68
+    ? 42 + Math.random() * 68     // 42~110ms：正常轻按
+    : 150 + Math.random() * 190;  // 150~340ms：按久一点
 }

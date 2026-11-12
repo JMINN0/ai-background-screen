@@ -197,6 +197,11 @@ export async function ensure() {
   };
 }
 
+/** 数值夹紧。 */
+function clampNum(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
 /** 按包名反查浏览器 key。 */
 function browserKeyByPkg(pkg) {
   const hit = Object.values(BROWSERS).find((b) => b.pkg === String(pkg || ''));
@@ -579,8 +584,11 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
       y: rc.y + rc.height / 2,
       w: rc.width,
       h: rc.height,
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      scale: window.visualViewport ? window.visualViewport.scale : 1,
       tag: el.tagName,
-      label: (el.innerText || el.value || '').slice(0, 40),
+      text: (el.innerText || el.value || '').slice(0, 40),
     });
   `).then(JSON.parse);
 
@@ -599,29 +607,60 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
     return { ...located, method: 'cdp-input', humanized: false };
   }
 
-  // 从当前视口左下角附近"移过来"，而不是凭空出现在目标上
-  const sx = Math.max(10, tx - 120 - Math.random() * 160);
-  const sy = Math.min(600, ty + 60 + Math.random() * 120);
-  const swipe = human.buildSwipe(sx, sy, tx, ty, { points: 12 + Math.floor(Math.random() * 6), overshoot: 0 });
+  // 起点要落在**真实视口内**。写死 600 是桌面视口的假设，
+  // 而这个页面只有 360x530，元素靠下时起点会跑到屏幕外，轨迹被截掉一截，
+  // 直线度和采样数都会跟着掉。这里用定位时读回来的 vw/vh。
+  const vw = located.vw || 360;
+  const vh = located.vh || 530;
+  const pad = 8;
+  const sx = Math.max(pad, Math.min(vw - pad, tx - 120 - Math.random() * 160));
+  const sy = Math.max(pad, Math.min(vh - pad, ty + 60 + Math.random() * 120));
+  // 距离越近越容易走成直线，点数和弯曲度都要跟着加，保证直线度有余量
+  const near = Math.hypot(tx - sx, ty - sy) < 140;
+  const swipe = human.buildSwipe(sx, sy, tx, ty, {
+    points: (near ? 18 : 12) + Math.floor(Math.random() * 6),
+    overshoot: 0,
+  });
 
-  for (const e of swipe.events) {
-    if (e.action === 'DOWN') {
-      await send(targetId, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 1,
-      });
-    } else if (e.action === 'MOVE') {
-      await send(targetId, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved', x: e.x, y: e.y, buttons: 1,
-      });
-    } else {
-      await send(targetId, 'Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 0,
-      });
-    }
+  // ④ 先移动、再按下、再松开 —— 这个顺序不能反。
+  //
+  //    上一版直接用 buildSwipe 的输出（按下→移动→抬起）来"点击"，
+  //    实际做的是一次**拖拽**：鼠标在目标位置上按着拖了一段才松手。
+  //    拖拽敏感的页面（滑块、地图、文本选择）会因此走错分支，
+  //    而且移动阶段带着 buttons:1 本身就是"按着左键在动"的信号。
+  //
+  //    真人点一个按钮是：先把指针移过去（不按键），到了再按下、再松开。
+  const approach = swipe.events.filter((e) => e.action === 'MOVE');
+  for (const e of approach) {
+    await send(targetId, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: e.x, y: e.y, buttons: 0,
+    }).catch(() => {});
     await sleep(human.mouseDelay());
   }
 
-  return { ...located, method: 'cdp-input-humanized', humanized: true };
+  // 落点：在元素包围盒内随机，不要每次都点正中
+  const jx = (Math.random() - 0.5) * Math.max(2, (located.w || 40) * 0.35);
+  const jy = (Math.random() - 0.5) * Math.max(2, (located.h || 40) * 0.35);
+  const px = Math.round(tx + clampNum(jx, -(located.w || 40) / 2 + 2, (located.w || 40) / 2 - 2));
+  const py = Math.round(ty + clampNum(jy, -(located.h || 40) / 2 + 2, (located.h || 40) / 2 - 2));
+
+  await send(targetId, 'Input.dispatchMouseEvent', {
+    type: 'mouseMoved', x: px, y: py, buttons: 0,
+  }).catch(() => {});
+  await sleep(human.thinkDelay(220));   // 到位之后、按下之前的短暂停顿
+
+  await send(targetId, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1, buttons: 1,
+  }).catch(() => {});
+
+  // 按下到抬起：真人 60~140ms，不能用 mouseDelay
+  await sleep(human.keyDwellDelay());
+
+  await send(targetId, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1, buttons: 0,
+  }).catch(() => {});
+
+  return { ...located, text: located.text, method: 'cdp-input-humanized', humanized: true };
 }
 
 /**
@@ -629,6 +668,8 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
  * 这样 React 的 onChange 才会触发。
  */
 export async function fill(targetId, selector, text) {
+  // ① 先聚焦并清空。清空也走真实按键（Ctrl+A / Cmd+A 然后退格），
+  //    直接改 value 会留下"文字凭空出现"的痕迹。
   const focus = await evaluate(targetId, `
     const sel = ${JSON.stringify(selector)};
     const el = document.querySelector(sel);
@@ -636,21 +677,83 @@ export async function fill(targetId, selector, text) {
     el.scrollIntoView({ block: 'center' });
     el.focus();
     if (el.select) el.select();
-    return el.tagName;
+    const rc = el.getBoundingClientRect();
+    return JSON.stringify({ ok: true, x: rc.x + rc.width / 2, y: rc.y + rc.height / 2,
+      w: rc.width, h: rc.height, hasValue: (el.value || '').length });
   `);
   if (focus === 'NOTFOUND') return { ok: false, reason: `找不到元素 ${selector}` };
+  const box = JSON.parse(focus);
 
-  // 清空已有内容
-  await send(targetId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2 })
-    .catch(() => {});
-  await send(targetId, 'Input.insertText', { text });
-  await sleep(150);
+  const human = await import('../../screen/src/human.js').catch(() => null);
+
+  // ② 有旧内容就先选中再删掉（用真实按键，不用 JS 改值）
+  if (box.hasValue > 0) {
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
+    }).catch(() => {});
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
+    }).catch(() => {});
+    await sleep(60);
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+    }).catch(() => {});
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+    }).catch(() => {});
+    await sleep(80);
+  }
+
+  // ③ 逐字符真实敲进去。
+  //    为什么不用 Input.insertText：它只往 DOM 里塞文字，**不产生 keydown/keyup**，
+  //    风控靶场里这一项叫 input-without-keys，权重 18。
+  //    所以每个字符都要走 keyDown → keyUp，而且 keydown 的 text 要让浏览器真的输入字符。
+  for (const ch of Array.from(text)) {
+    const code = /[a-zA-Z]/.test(ch) ? `Key${ch.toUpperCase()}`
+      : /[0-9]/.test(ch) ? `Digit${ch}`
+      : ch === ' ' ? 'Space'
+      : ch === '.' ? 'Period'
+      : ch === ',' ? 'Comma'
+      : ch === '@' ? 'Digit2'
+      : '';
+    const vk = /[a-zA-Z]/.test(ch) ? ch.toUpperCase().charCodeAt(0)
+      : /[0-9]/.test(ch) ? ch.charCodeAt(0)
+      : ch === ' ' ? 32
+      : 0;
+
+    // keyDown 带上 text，浏览器才会把它真正输入到焦点元素里
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyDown', key: ch, code, text: ch,
+      unmodifiedText: ch,
+      windowsVirtualKeyCode: vk || undefined,
+      nativeVirtualKeyCode: vk || undefined,
+    }).catch(() => {});
+
+    // 按住时长：真人不会一按就松
+    await sleep(human ? human.keyDwellDelay() : 70);
+
+    await send(targetId, 'Input.dispatchKeyEvent', {
+      type: 'keyUp', key: ch, code,
+      windowsVirtualKeyCode: vk || undefined,
+      nativeVirtualKeyCode: vk || undefined,
+    }).catch(() => {});
+
+    // 字符之间的间隔：双峰，有快速连击也有思考停顿
+    await sleep(human ? human.keyFlightDelay() : 90);
+  }
+
+  await sleep(180);
 
   const back = await evaluate(targetId, `
     const el = document.querySelector(${JSON.stringify(selector)});
-    return JSON.stringify({ value: el?.value ?? el?.innerText ?? '', len: (el?.value ?? '').length });
-  `).then(JSON.parse);
-  return { ok: true, ...back };
+    if (!el) return 'NOTFOUND';
+    return String(el.value != null ? el.value : el.textContent || '');
+  `);
+  if (back === 'NOTFOUND') return { ok: false, reason: `填写后元素消失了（${selector}）` };
+  if (back !== text) {
+    return { ok: false, reason: `填写后内容不一致`, got: String(back).slice(0, 40), want: String(text).slice(0, 40) };
+  }
+  return { ok: true, value: String(back), method: 'cdp-key-events', chars: Array.from(text).length };
 }
 
 export async function screenshot(targetId, dir = '/tmp') {
