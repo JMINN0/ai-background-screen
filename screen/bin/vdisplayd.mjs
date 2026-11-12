@@ -160,6 +160,32 @@ function startIdleWatch() {
   }, 30_000).unref?.();
 }
 
+/**
+ * 启动时对账：清理上一次运行留下的残留。
+ *
+ * 为什么需要：守护进程被 SIGKILL 或被系统 OOM 杀掉时，`process.on('exit')`
+ * **不会执行**，于是 `debug.sf.enable_hwc_vds` 会留在 1 —— 那是全局 SurfaceFlinger
+ * 属性，整台设备的合成策略都被改变，直到手机重启才恢复。实测确认过这个残留。
+ *
+ * 判据：属性是 1，但设备上**已经没有任何 scrcpy 虚拟屏** → 说明是上次没清掉的，
+ * 不是正在使用中的。这个判据不会误杀"用户自己开着 HWC"的情况，因为那种情况下
+ * 属性是 1 且通常也没有我们的虚拟屏……所以只有在我们自己写过状态文件时才做。
+ */
+async function reconcileLeftovers() {
+  try {
+    const hwc = String(await vd.shell('getprop debug.sf.enable_hwc_vds')).trim();
+    if (hwc !== '1') return;
+
+    const n = String(await vd.shell(
+      'dumpsys display 2>/dev/null | grep -c \'DisplayDeviceInfo{"scrcpy"\'',
+    )).trim();
+    if (Number(n) > 0) return;   // 还有虚拟屏在用，别动
+
+    await vd.shell('setprop debug.sf.enable_hwc_vds 0');
+    console.error('[vdisplayd] 对账：清掉了上次异常退出残留的 debug.sf.enable_hwc_vds=1');
+  } catch { /* 对账失败不能拖垮启动 */ }
+}
+
 async function main() {
   // 已有实例就直接报错退出，避免两个守护进程抢同一台设备的虚拟屏
   try {
@@ -172,6 +198,8 @@ async function main() {
       } catch { /* 旧进程已经死了，继续 */ }
     }
   } catch { /* 没有状态文件，正常 */ }
+
+  await reconcileLeftovers();
 
   server = createServer((req, res) => {
     handle(req, res).catch((e) => send(res, 500, { error: e?.message || String(e) }));
