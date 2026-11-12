@@ -57,7 +57,17 @@ async function launchBrowser({ allowForeground = false } = {}) {
   for (let i = 0; i < 12; i += 1) {
     await sleep(700);
     const r = await cdp.ensure();
-    if (r.ok) return r;
+    if (r.ok) {
+      // 这条路径**一定会把浏览器切到前台**（am start 不带 --display 就是这样）。
+      // 想让浏览器不出来，只能用虚拟屏：vdisplay_start + vdisplay_launch。
+      // 必须如实告诉调用方，否则它会以为用户没被打扰。
+      return {
+        ...r,
+        note: '⚠️ 浏览器已被切到前台，用户会看到。\n'
+          + '不想打扰用户的话，改用虚拟屏启动：vdisplay_start {} → vdisplay_launch { pkg }，\n'
+          + '实测这样浏览器跑在看不见的屏上，主屏焦点不变。',
+      };
+    }
   }
   return { ok: false, hint: '拉起后仍然连不上，可能被系统回收了。' };
 }

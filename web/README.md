@@ -433,6 +433,27 @@ Android 上 `Target.createTarget` 在浏览器后台时会失败。这时候**�
 `chrome_devtools_remote_<pid>`，只有一个用无后缀的名字 —— 所以 socket 名不能写死，
 必须按 `/json/version` 的 `Android-Package` 认身份。插件现在用 `discoverSockets()` 这么做。
 
+### ⚠️ 启动浏览器一定会抢前台 —— 只有虚拟屏能避免
+
+**实测结论（2026-11-12，截图为证）：**
+
+| 启动方式 | 用户会看到 |
+|---|---|
+| `am start -a MAIN -c LAUNCHER -p <pkg>` | **浏览器弹到前台** |
+| `am start --display <虚拟屏id> ...`（即 `vdisplay_launch`） | **主屏不变** |
+
+Android 没有"在后台启动一个 App"的接口，普通启动必然切前台。**只有把它投到虚拟屏上，才能既跑起来又不打扰用户。**
+
+所以流程应该是：
+
+```
+vdisplay_start {}                          ← 先建一块看不见的屏
+vdisplay_launch { pkg: "<浏览器包名>" }      ← 投上去，主屏不受影响
+web_ensure {}                              ← 这才连 CDP
+```
+
+插件的 `web_ensure { allowForeground: true }` 也能自己拉起浏览器，**但它走的是普通 `am start`，一定会弹前台**，返回结果里会明确告诉你这一点。
+
 ### 什么时候该开浏览器，什么时候不该
 
 插件自己不会启动浏览器，但会给 AI 一份判断依据。顺序是这样：
