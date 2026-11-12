@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>风控检测报告看板</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font:14px/1.6 system-ui,"PingFang SC",sans-serif; background:#0e1116; color:#e6edf3; padding:16px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#8b949e; font-size:12px; margin-bottom:16px; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; margin-bottom:12px; cursor:pointer; }
+  .card:hover { border-color:#388bfd; }
+  .head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .score { font-size:22px; font-weight:700; }
+  .s-hi { color:#3fb950; } .s-mid { color:#d29922; } .s-lo { color:#f85149; }
+  .fails { color:#f85149; font-size:12px; margin-top:6px; word-break:break-all; }
+  pre { white-space:pre-wrap; font-size:11px; background:#0d1117; padding:10px; border-radius:8px; max-height:420px; overflow:auto; }
+  .empty { color:#484f58; text-align:center; padding:40px 0; }
+  button { padding:7px 14px; border-radius:7px; border:1px solid #30363d; background:#21262d; color:#e6edf3; cursor:pointer; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>风控检测报告</h1>
+<div class="sub">每次自动化跑完点"运行检测"就会在这里留一份。点卡片看完整数据。</div>
+<button id="refresh">刷新</button>
+<div id="list" style="margin-top:14px"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const color = (n) => n >= 80 ? 's-hi' : n >= 50 ? 's-mid' : 's-lo';
+
+async function load() {
+  const r = await fetch('/api/reports');
+  const j = await r.json();
+  const list = $('#list');
+  if (!j.count) { list.innerHTML = '<div class="empty">还没有报告。去测试页点一次「运行风控检测」。</div>'; return; }
+
+  list.innerHTML = j.items.slice().reverse().map((it) => `
+    <div class="card" data-id="${it.id}">
+      <div class="head">
+        <div><b>#${it.id}</b> <span class="sub">${new Date(it.at).toLocaleString('zh-CN')}</span></div>
+        <div class="score ${color(it.score ?? 0)}">${it.score ?? '—'}<span style="font-size:12px;font-weight:400">/100</span></div>
+      </div>
+      <div class="sub">失败 ${it.failed ?? '?'} 项</div>
+      ${it.failedChecks?.length ? `<div class="fails">❌ ${it.failedChecks.join(' · ')}</div>` : '<div class="ok" style="font-size:12px">✅ 全部通过</div>'}
+    </div>`).join('');
+
+  for (const el of document.querySelectorAll('.card')) {
+    el.addEventListener('click', async () => {
+      const r2 = await fetch('/api/report/' + el.dataset.id);
+      const j2 = await r2.json();
+      el.insertAdjacentHTML('beforeend', `<pre>${escapeHtml(JSON.stringify(j2.report, null, 2))}</pre>`);
+    }, { once: true });
+  }
+}
+function escapeHtml(s) { return s.replace(/[&<>]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c])); }
+
+$('#refresh').addEventListener('click', load);
+load();
+</script>
+</body>
+</html>

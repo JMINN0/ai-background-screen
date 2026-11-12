@@ -100,9 +100,10 @@ export async function ensure() {
     return {
       ok: false,
       hint: `${currentBrowser().name} 没在跑，但 ${others.join(' / ')} 正在运行。\n`
-        + '**不要启动新的浏览器**——多开一个会把用户现有标签弄丢（2026-11-05 丢过 60 多个）。\n'
-        + `正确做法：请用户自己把 ${currentBrowser().name} 切到前台，或者改用正在运行的 ${others[0]}`
-        + '（web_browser { select: "..." }）。',
+        + `**直接改用正在运行的那个**（不需要启动任何东西）：\n`
+        + `  web_browser { select: "<改成 ${others[0]} 对应的 key>" }\n`
+        + '切过去之后它本来就在跑，**不要再 monkey 启动它**。\n'
+        + '多开一个 Chromium 会把已有那个挤掉，2026-11-05 因此丢过 60 多个标签。',
     };
   }
 
@@ -114,11 +115,15 @@ export async function ensure() {
       + `  vdisplay_launch { pkg: "${currentBrowser().pkg}" }\n`
       + '然后重新 web_ensure 就能连上。浏览器跑在那块看不见的屏上，\n'
       + 'CDP、标签、登录态全都正常，用户的主屏一直是他自己的东西。\n'
-      + '\n其他两条路（都会让浏览器弹到前台）：\n'
-      + `  · 让用户自己打开 ${currentBrowser().name}\n`
-      + `  · adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
-      + 'Android 没有"在后台启动一个 App"的接口，普通启动一定会切前台；\n'
-      + '只有启动到虚拟屏才能既跑起来又不抢屏。',
+      + '\n要先判断这个任务到底需不需要浏览器 —— 能用 adb shell 或 vdisplay 办到的就别开：\n'
+      + `  · 只是取数据/看接口 → 用 adb shell 或 web_fetch，不用浏览器\n`
+      + `  · 要操作登录态页面 → 才需要 ${currentBrowser().name}\n`
+      + '\n确实需要、而它又没在跑，按这两条选：\n'
+      + `  ① 不想打扰用户（他在用手机、主屏有东西）→ 用上面的虚拟屏方式\n`
+      + `  ② 用户没在忙、手机也不紧张 → 可以直接开：\n`
+      + `     adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
+      + '     它会把浏览器切到前台，开之前告诉用户一声。\n'
+      + '\nAndroid 没有"在后台启动一个 App"的接口；只有启动到虚拟屏才能既跑起来又不抢屏。',
   };
 }
 

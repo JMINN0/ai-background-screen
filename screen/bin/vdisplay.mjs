@@ -142,7 +142,8 @@ function human(action, r) {
     case 'shot':
     case 'mainShot':
       if (r.ok === false || !r.path) return `截图失败：${r.hint || r.error || '未知原因'}`;
-      return `截图：${r.path}${r.width ? `（${r.width}px）` : ''}`;
+      return `截图：${r.path}${r.width ? `（${r.width}px）` : ''}`
+        + (r.copyError ? `\n⚠️ ${r.copyError}` : '');
 
     case 'status':
       if (!r.running) return '虚拟屏没有在运行。';
@@ -181,6 +182,12 @@ async function main() {
     if (sub === 'stop') {
       const st = await readDaemon();
       if (!st) { console.error('守护进程没在跑。'); process.exit(1); }
+      // 必须断言：state 文件被写坏成负数时，process.kill(-1) 会给**整个进程组**发信号。
+      // 之前用 pkill 空模式杀掉用户 Shizuku 是同一种事故。
+      if (!Number.isInteger(st.pid) || st.pid <= 1) {
+        console.error(`状态文件里的 pid 不合法（${st.pid}），拒绝执行 kill。请删掉 ${STATE_FILE} 再试。`);
+        process.exit(1);
+      }
       try { process.kill(st.pid, 'SIGTERM'); } catch { /* 已经死了 */ }
       console.log(`已让守护进程（pid ${st.pid}）退出。`);
       return;
@@ -194,7 +201,16 @@ async function main() {
   let action = cmd;
   let args = {};
 
-  const num = (k) => (flags[k] === undefined ? undefined : Number(flags[k]));
+  // 数字参数必须校验。以前 `Number(true)` = 1、`Number('abc')` = NaN，
+  // 用户漏写一个值就会静默点错坐标或按默认尺寸建屏，没有任何提示。
+  const num = (k) => {
+    const v = flags[k];
+    if (v === undefined) return undefined;
+    if (v === true) { console.error(`参数 --${k} 缺少值。`); process.exit(1); }
+    const n = Number(v);
+    if (!Number.isFinite(n)) { console.error(`参数 --${k} 不是合法数字：「${v}」。`); process.exit(1); }
+    return n;
+  };
   const str = (k) => (flags[k] === undefined || flags[k] === true ? undefined : String(flags[k]));
 
   if (cmd === 'start') {
@@ -246,7 +262,10 @@ async function main() {
     try {
       await copyFile(result.path, str('out'));
       result.path = str('out');
-    } catch { /* 搬不动就用原路径 */ }
+    } catch (e) {
+      // 以前这里静默吞掉，用户会去 --out 找文件却找不到。必须说出来。
+      result.copyError = `拷贝到 ${str('out')} 失败：${e.message}（截图实际在 ${result.path}）`;
+    }
   }
 
   process.stdout.write(`${human(action, result)}\n`);

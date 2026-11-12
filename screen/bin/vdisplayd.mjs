@@ -15,7 +15,7 @@
  */
 
 import { createServer } from 'node:http';
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,10 +33,24 @@ let server = null;
 
 async function writeState(port) {
   await mkdir(STATE_DIR, { recursive: true });
-  await writeFile(STATE_FILE, JSON.stringify({ pid: process.pid, port, startedAt: Date.now() }, null, 2));
+  // 原子写：先写临时文件再 rename。直接 writeFile 会留一个"读得到半截 JSON"的窗口，
+  // CLI 那边解析失败会当成"没守护进程"而再拉一个 —— 冷启动并发时会雪崩。
+  const tmp = `${STATE_FILE}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify({ pid: process.pid, port, startedAt: Date.now() }, null, 2));
+  await rename(tmp, STATE_FILE);
 }
 
+/**
+ * 清状态文件。**只删自己写的那一份**。
+ *
+ * 不加这个校验的话，两个实例并存时（冷启动竞态真的会发生），
+ * 先退出的那个会把另一个的 state 删掉，对方就变成"活着但隐身"的幽灵进程。
+ */
 async function clearState() {
+  try {
+    const cur = JSON.parse(await readFile(STATE_FILE, 'utf8'));
+    if (cur?.pid && cur.pid !== process.pid) return;   // 不是自己的，别动
+  } catch { /* 文件不存在或读不了，那就删 */ }
   try { await unlink(STATE_FILE); } catch { /* 没有就算了 */ }
 }
 
@@ -127,6 +141,9 @@ async function handle(req, res) {
 
 async function shutdown(reason) {
   try { await vd.stop({ forceStopApps: false }); } catch { /* 尽力而为 */ }
+  // vd.stop() 正常会恢复 HWC，但它可能因为 adb 不通而失败；
+  // 这里同步再兜一次，保证全局属性不留残。
+  try { vd.restoreHwcSync(); } catch { /* ignore */ }
   await clearState();
   if (server) { try { server.close(); } catch { /* ignore */ } }
   process.exit(0);
@@ -174,6 +191,13 @@ async function main() {
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
     process.on(sig, () => { shutdown(sig).catch(() => process.exit(0)); });
   }
+
+  // 最后一道保险：不管从哪条路退出，都同步把 HWC 属性恢复原值。
+  // 这个属性是全局的 —— 留着 1 会一直影响整台设备的合成策略，直到重启手机。
+  // 注意 SIGKILL 抓不到，那种情况下只能靠下次 vd.start() 重新对账。
+  process.on('exit', () => {
+    try { vd.restoreHwcSync(); } catch { /* 退出中，尽力而为 */ }
+  });
   process.on('uncaughtException', (e) => {
     console.error('[vdisplayd] uncaught:', e?.message || e);
   });

@@ -22,11 +22,11 @@
  * mBaseDisplayInfo 那一段永远不带这两个标志，别拿它判断（我踩过）。
  */
 
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -375,6 +375,39 @@ export async function start({ width = 720, height = 1280, dpi = 320, systemDecor
     // HWC 是否生效：true 表示这次的屏有硬件合成，3D 游戏能正常渲染
     hwc: state.hwcChanged || state.hwcPrev === '1',
   };
+}
+
+/**
+ * **同步**把 HWC 属性恢复原值。只给进程退出钩子用 —— 那里不能 await。
+ *
+ * 为什么必须有：debug.sf.enable_hwc_vds 是全局 SurfaceFlinger 属性，
+ * 开着的时候整台设备的合成策略都变了。正常路径 stop() 会恢复它，
+ * 但守护进程被 SIGKILL / OOM 杀掉时 stop() 根本不会执行 ——
+ * 属性就永远停在 1，直到手机重启。
+ *
+ * SIGKILL 抓不到，所以这个函数也只能覆盖 SIGTERM/正常退出。
+ * 但对 OOM 和时间超时这两种最常见的情况是有效的。
+ */
+export function restoreHwcSync() {
+  if (!state.hwcChanged) return false;
+  let target = process.env.ADB_TARGET || '127.0.0.1:5555';
+  try {
+    const dir = process.env.DSH_ADB_STATE_DIR
+      || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'plugin-adb');
+    const st = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+    const port = Number(st?.port);
+    if (Number.isInteger(port) && port > 0 && port < 65536) target = `127.0.0.1:${port}`;
+  } catch { /* 读不到就用默认回环地址 */ }
+
+  const ADBBIN = process.env.ADB_BIN || 'adb';
+  try {
+    execFileSync(ADBBIN, ['-s', target, 'shell',
+      `setprop debug.sf.enable_hwc_vds ${state.hwcPrev || '0'}`], { timeout: 5000 });
+    state.hwcChanged = false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 销毁虚拟屏。 */

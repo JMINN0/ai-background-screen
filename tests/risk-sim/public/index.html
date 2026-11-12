@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>账户登录 — 风控检测靶场</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font: 15px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0e1116; color: #e6edf3; padding: 16px 16px 120px;
+  }
+  h1 { font-size: 19px; margin: 8px 0 4px; }
+  .sub { color: #8b949e; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  label { display: block; font-size: 13px; color: #8b949e; margin: 12px 0 6px; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 12px 14px; border-radius: 9px; border: 1px solid #30363d;
+    background: #0d1117; color: #e6edf3; font-size: 16px; outline: none;
+  }
+  input:focus { border-color: #388bfd; }
+  button {
+    padding: 12px 18px; border-radius: 9px; border: 1px solid #30363d; background: #21262d;
+    color: #e6edf3; font-size: 15px; margin: 8px 8px 0 0; cursor: pointer;
+  }
+  button.primary { background: #238636; border-color: #2ea043; }
+  button.warn { background: #9e6a03; border-color: #bb8009; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .row button { margin: 0; flex: 1 1 auto; }
+  #result { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  .meter { height: 10px; background: #21262d; border-radius: 6px; overflow: hidden; margin: 10px 0; }
+  .meter > i { display: block; height: 100%; background: #238636; width: 0; transition: width .4s; }
+  .pad { height: 900px; background: linear-gradient(#161b22, #0e1116); border-radius: 12px; margin: 14px 0; display: flex; align-items: center; justify-content: center; color: #484f58; font-size: 13px; }
+  .fails { color: #f85149; }
+  .ok { color: #3fb950; }
+  code { background: #21262d; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>账户登录</h1>
+<div class="sub">风控检测靶场 · 所有数据只发到本机</div>
+
+<div class="card">
+  <label>账号</label>
+  <input type="text" id="user" placeholder="请输入手机号或邮箱" autocomplete="off">
+  <label>密码</label>
+  <input type="password" id="pass" placeholder="请输入密码" autocomplete="off">
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="btn-login">登录</button>
+    <button id="btn-forgot">忘记密码</button>
+  </div>
+</div>
+
+<div class="card">
+  <label>交互区（让自动化去点）</label>
+  <div class="row">
+    <button data-tap="a">选项 A</button>
+    <button data-tap="b">选项 B</button>
+    <button data-tap="c">选项 C</button>
+  </div>
+  <div class="pad">↓ 往下滚一滚，行为会被记录 ↓</div>
+  <div class="row">
+    <button data-tap="d">选项 D</button>
+    <button data-tap="e">选项 E</button>
+  </div>
+</div>
+
+<div class="card">
+  <label>检测</label>
+  <button class="warn" id="btn-run" style="width:100%">运行风控检测并上报</button>
+  <div class="meter"><i id="bar"></i></div>
+  <div id="result" class="sub">还没检测。</div>
+</div>
+
+<script src="/detect.js?v=2"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let taps = [];
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-tap]');
+    if (b) { taps.push(b.dataset.tap); b.style.outline = '2px solid #3fb950'; }
+  });
+
+  $('btn-login').addEventListener('click', () => {
+    alert('演示用，不会真的登录。\n账号：' + ($('user').value || '(空)'));
+  });
+  $('btn-forgot').addEventListener('click', () => { $('user').focus(); });
+
+  $('btn-run').addEventListener('click', async () => {
+    $('result').textContent = '检测中…';
+    const R = await window.RiskDetect.run();
+    R.interaction = { taps };
+
+    const s = R.summary;
+    $('bar').style.width = s.score + '%';
+    $('bar').style.background = s.score >= 80 ? '#238636' : s.score >= 50 ? '#9e6a03' : '#da3633';
+
+    const fails = R.checks.filter((c) => !c.ok);
+    const lines = [];
+    lines.push(`人机评分：${s.score}/100`);
+    lines.push(`通过 ${s.passed} 项，失败 ${s.failed} 项（权重 ${s.gotWeight}/${s.totalWeight}）`);
+    lines.push('');
+    if (fails.length) {
+      lines.push('❌ 可疑项：');
+      for (const f of fails) lines.push(`  · [${f.category}] ${f.id}  权重${f.weight}\n    ${f.detail}`);
+    } else {
+      lines.push('✅ 没有触发任何检测项。');
+    }
+    lines.push('');
+    lines.push('—— 完整数据已上报，去 /dashboard 看 ——');
+    $('result').textContent = lines.join('\n');
+
+    try {
+      const r = await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(R),
+      });
+      const j = await r.json();
+      if (j.ok) $('result').textContent += `\n报告编号 #${j.id}`;
+    } catch (e) {
+      $('result').textContent += `\n上报失败：${e.message}`;
+    }
+  });
+})();
+</script>
+</body>
+</html>
