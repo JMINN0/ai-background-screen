@@ -51,12 +51,81 @@ async function saveState(s) {
 }
 
 /** 探活；挂了就重建 forward（Edge 被杀会留下失效的 forward）。 */
+/**
+ * 找出这台设备上所有可连的 devtools 通道，并认出每个通道属于哪个 App。
+ *
+ * **为什么不能写死 `chrome_devtools_remote`**（2026-11-12 实测）：
+ * 多个 Chromium 浏览器同时存在时，它们会各自绑定 `chrome_devtools_remote_<pid>`，
+ * 只有其中一个用无后缀的名字。写死名字的后果是永远只连到"碰巧拿到无后缀名"那个，
+ * 其余浏览器看起来就像"没有通道"。这一条解释了之前 Chrome 时好时坏的怪现象。
+ *
+ * 判身份的可靠依据：`/json/version` 返回体里的 `Android-Package` 字段，
+ * 它直接写着这个通道属于哪个包名，比看进程名、看 socket 名都准。
+ *
+ * 连不上的条目是残留 socket（进程已死但 inode 还在），直接跳过。
+ */
+export async function discoverSockets() {
+  const r = await adb(['shell', "cat /proc/net/unix 2>/dev/null | grep devtools | sed 's/.*@//'"]);
+  const names = [...new Set(String(r.out || '').split('\n').map((x) => x.trim()).filter(Boolean))];
+  const found = [];
+
+  for (const name of names) {
+    const port = 9500 + Math.floor(Math.random() * 400);   // 独立端口探测，不干扰主端口
+    const fwd = await adb(['forward', `tcp:${port}`, `localabstract:${name}`]);
+    if (!fwd.ok) continue;
+    await sleep(250);
+    try {
+      const v = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(2500) });
+      if (v.ok) {
+        const j = await v.json();
+        found.push({ socket: name, pkg: j['Android-Package'] || '', browser: j.Browser || '' });
+      }
+    } catch { /* 残留 socket：进程没了，连不上 */ }
+    await adb(['forward', '--remove', `tcp:${port}`]);
+  }
+  return found;
+}
+
 export async function ensure() {
   // 端口不写死：两个 agent 同时 forward 同一端口会互相覆盖（隔壁逆向会话实测踩过）。
   if (!PORT) {
     const st = await loadState();
     PORT = st.port || 9300 + Math.floor(Math.random() * 200);
     await saveState({ ...st, port: PORT });
+  }
+
+  // 先扫一遍所有 devtools 通道，按包名找到目标浏览器真正的那个 socket
+  const all = await discoverSockets().catch(() => []);
+  const want = currentBrowser();
+  const hit = all.find((x) => x.pkg === want.pkg);
+
+  if (hit) {
+    await adb(['forward', '--remove', `tcp:${PORT}`]);
+    const f = await adb(['forward', `tcp:${PORT}`, `localabstract:${hit.socket}`]);
+    if (f.ok) {
+      await sleep(200);
+      try {
+        const r = await fetch(`${ENDPOINT()}/json/version`, { signal: AbortSignal.timeout(5000) });
+        if (r.ok) {
+          const j = await r.json();
+          return { ok: true, browser: j.Browser, port: PORT, actualKey: want.key, socket: hit.socket, note: '' };
+        }
+      } catch { /* 落到下面的兜底 */ }
+    }
+  }
+
+  // 没找到目标浏览器：把"现在有哪些能连"如实报出来
+  if (all.length) {
+    const list = all.map((x) => `  · ${x.pkg}（${x.browser}，socket: ${x.socket}）`).join('\n');
+    const firstKey = browserKeyByPkg(all[0].pkg);
+    return {
+      ok: false,
+      hint: `${want.name} 没有开启调试通道。当前能连的有：\n${list}\n\n`
+        + (firstKey
+          ? `要改用正在跑的那个：web_browser { select: "${firstKey}" }\n`
+          : '这些包里没有本插件认识的浏览器。\n')
+        + '**不要启动第二个 Chromium 浏览器** —— 会挤掉已有的那个（2026-11-05 因此丢过 60 多个标签）。',
+    };
   }
 
   for (let i = 0; i < 2; i += 1) {
@@ -123,6 +192,12 @@ export async function ensure() {
       + `       adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
       + '\nAndroid 没有"在后台启动一个 App"的接口；只有启动到虚拟屏才能既跑起来又不抢屏。',
   };
+}
+
+/** 按包名反查浏览器 key。 */
+function browserKeyByPkg(pkg) {
+  const hit = Object.values(BROWSERS).find((b) => b.pkg === String(pkg || ''));
+  return hit ? hit.key : null;
 }
 
 /** 从 /json/version 的 Browser 字符串认出是哪个浏览器。认不出返回 null。 */

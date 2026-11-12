@@ -29,7 +29,7 @@
 | 浏览器 | 包名 | 版本 | 通道 | 最高到达 | 状态 |
 |---|---|---|---|---|---|
 | **Edge** | `com.microsoft.emmx` | EdgA/156.0.4314.56 | `@chrome_devtools_remote` | **L3** | ✅ 实测可用（L2 有条件） |
-| **Chrome** | `com.android.chrome` | Chrome/157.0.8103.38 | `@chrome_devtools_remote` | **L3** | ⚠️ 实测可用，但重启后不可靠 |
+| **Chrome** | `com.android.chrome` | Chrome/157.0.8103.38 | `@chrome_devtools_remote_<pid>` | **L3** | ⚠️ 可用；之前"连不上"是 socket 名找错了 |
 | **Lemur Browser** | `com.lemurbrowser.exts` | Chrome/154.0.8037.127 | `@chrome_devtools_remote` | **L3**（截图除外） | ⚠️ 实测受限 |
 | **红魔浏览器** | `cn.nubia.browser` | V8.1.4.2026081811a | 未观察到 | **未到 L0** | ❓ 未能验证 |
 | **mixiaba** | `mixiaba.com.Browser` | 5.5.4.2 | 未观察到 | **未到 L0** | ❓ 未能验证 |
@@ -128,6 +128,48 @@
 同样的限制：没做正向对照，所以只写"未观察到"。
 
 ---
+
+---
+
+## 最重要的发现：socket 名不是固定的
+
+这一条解释了我之前所有的困惑。
+
+**多个 Chromium 浏览器同时存在时，每个会绑定 `chrome_devtools_remote_<pid>`，只有其中一个用无后缀的名字。** 实测：
+
+```
+@chrome_devtools_remote          → com.microsoft.emmx    (Edge)
+@chrome_devtools_remote_32148    → com.lemurbrowser.exts (Lemur)
+@chrome_devtools_remote_31115    → 无响应（Chrome 已 force-stop，残留条目）
+```
+
+**写死 `chrome_devtools_remote` 的后果**：永远只连到"碰巧拿到无后缀名"的那个（通常是第一个启动的），
+其余浏览器看起来就像"没有通道"。
+
+这解释了之前几件看起来互相矛盾的事：
+
+- 为什么 Chrome 有时能用、有时连不上 —— 取决于它启动时是不是"第一个"
+- 为什么 Chrome 重启后 socket 从 5 个涨到 11 个 —— 每次重启都加一个带新 PID 后缀的，
+  旧的没清掉就成了残留条目（**不是网络命名空间，上一版的归因是错的**）
+- 为什么切到 Lemur 却连到了 Edge —— forward 指向的是无后缀那个
+
+### 正确的识别方法
+
+`/json/version` 返回体里有 `Android-Package` 字段，直接写着这个通道属于哪个包：
+
+```json
+{ "Android-Package": "com.microsoft.emmx", "Browser": "EdgA/156.0.4314.56", ... }
+```
+
+所以流程应该是：
+
+1. 枚举 `/proc/net/unix` 里所有 `devtools` 相关的 socket 名（**不要按固定名字 grep**）
+2. 逐个 `adb forward` 到临时端口，请求 `/json/version`
+3. 读 `Android-Package` 认身份；连不上的就是残留，跳过
+4. 选目标浏览器对应的那个 socket
+
+插件里已经按这个改了：`cdp.discoverSockets()`。实测能同时认出 Edge 和 Lemur，
+并正确跳过残留的 Chrome 条目。
 
 ## 方法论上的坑（测的时候踩到或者差点踩到）
 

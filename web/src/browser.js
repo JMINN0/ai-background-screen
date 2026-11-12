@@ -11,6 +11,10 @@ export const BROWSERS = {
   edge: { key: 'edge', pkg: 'com.microsoft.emmx', name: 'Edge', proc: 'emmx', socket: 'chrome_devtools_remote' },
   chrome: { key: 'chrome', pkg: 'com.android.chrome', name: 'Chrome', proc: 'com.android.chrome', socket: 'chrome_devtools_remote' },
   nubia: { key: 'nubia', pkg: 'cn.nubia.browser', name: '红魔浏览器', proc: 'cn.nubia.browser', socket: 'chrome_devtools_remote' },
+  // 2026-11-12 实测可用：Chromium 154，除 Page.captureScreenshot 外 L3 全通过。
+  // 注意它的 socket 名带 PID 后缀（chrome_devtools_remote_<pid>），
+  // 所以 socket 字段不再写死 —— 由 cdp.discoverSockets() 按 Android-Package 认。
+  lemur: { key: 'lemur', pkg: 'com.lemurbrowser.exts', name: 'Lemur Browser', proc: 'lemurbrowser', socket: 'chrome_devtools_remote' },
 };
 
 // 默认还是 Edge——用户平时就用它，不该被我改掉
