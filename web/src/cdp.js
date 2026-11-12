@@ -64,7 +64,14 @@ async function saveState(s) {
  *
  * 连不上的条目是残留 socket（进程已死但 inode 还在），直接跳过。
  */
-export async function discoverSockets() {
+// 扫描要 N 次 adb 往返（每个 socket 一次 forward + 一次 HTTP），而每个工具调用都会先 ensure()。
+// 不加缓存的话，一次点击要付 8~9 轮 adb 往返的代价。TTL 取得短，避免缓存到已经消失的通道。
+let SOCK_CACHE = { at: 0, list: [] };
+const SOCK_TTL_MS = 4000;
+
+export async function discoverSockets({ force = false } = {}) {
+  if (!force && Date.now() - SOCK_CACHE.at < SOCK_TTL_MS) return SOCK_CACHE.list;
+
   const r = await adb(['shell', "cat /proc/net/unix 2>/dev/null | grep devtools | sed 's/.*@//'"]);
   const names = [...new Set(String(r.out || '').split('\n').map((x) => x.trim()).filter(Boolean))];
   const found = [];
@@ -83,6 +90,7 @@ export async function discoverSockets() {
     } catch { /* 残留 socket：进程没了，连不上 */ }
     await adb(['forward', '--remove', `tcp:${port}`]);
   }
+  SOCK_CACHE = { at: Date.now(), list: found };
   return found;
 }
 
@@ -95,9 +103,9 @@ export async function ensure() {
   }
 
   // 先扫一遍所有 devtools 通道，按包名找到目标浏览器真正的那个 socket
-  const all = await discoverSockets().catch(() => []);
   const want = currentBrowser();
-  const hit = all.find((x) => x.pkg === want.pkg);
+  let all = await discoverSockets().catch(() => []);
+  let hit = all.find((x) => x.pkg === want.pkg);
 
   if (hit) {
     await adb(['forward', '--remove', `tcp:${PORT}`]);
@@ -110,49 +118,44 @@ export async function ensure() {
           const j = await r.json();
           return { ok: true, browser: j.Browser, port: PORT, actualKey: want.key, socket: hit.socket, note: '' };
         }
-      } catch { /* 落到下面的兜底 */ }
+      } catch { /* 落到下面重扫 */ }
+    }
+    // 缓存里的 socket 可能已经随浏览器重启失效了 —— 强制重扫一次再试
+    all = await discoverSockets({ force: true }).catch(() => []);
+    hit = all.find((x) => x.pkg === want.pkg);
+    if (hit) {
+      await adb(['forward', '--remove', `tcp:${PORT}`]);
+      const f2 = await adb(['forward', `tcp:${PORT}`, `localabstract:${hit.socket}`]);
+      if (f2.ok) {
+        await sleep(250);
+        try {
+          const r = await fetch(`${ENDPOINT()}/json/version`, { signal: AbortSignal.timeout(5000) });
+          if (r.ok) {
+            const j = await r.json();
+            return { ok: true, browser: j.Browser, port: PORT, actualKey: want.key, socket: hit.socket, note: '' };
+          }
+        } catch { /* 真的连不上，进失败分支 */ }
+      }
     }
   }
 
-  // 没找到目标浏览器：把"现在有哪些能连"如实报出来
+  // 目标浏览器没在跑。**先把可能残留的 forward 清掉** ——
+  // 不清的话，下面的任何 fetch 都可能连到上一次 ensure() 留下的那个浏览器，
+  // 表现为"要 Lemur 却悄悄操作了 Edge"。这个坑是审查抓出来的。
+  await adb(['forward', '--remove', `tcp:${PORT}`]);
+
+  // 把"现在有哪些真的能连"如实报出来，并优先推荐**本插件认识的**浏览器
   if (all.length) {
     const list = all.map((x) => `  · ${x.pkg}（${x.browser}，socket: ${x.socket}）`).join('\n');
-    const firstKey = browserKeyByPkg(all[0].pkg);
+    const known = all.find((x) => browserKeyByPkg(x.pkg));
     return {
       ok: false,
       hint: `${want.name} 没有开启调试通道。当前能连的有：\n${list}\n\n`
-        + (firstKey
-          ? `要改用正在跑的那个：web_browser { select: "${firstKey}" }\n`
-          : '这些包里没有本插件认识的浏览器。\n')
+        + (known
+          ? `要改用正在跑的那个：web_browser { select: "${browserKeyByPkg(known.pkg)}" }\n`
+          : '这些包里没有本插件认识的浏览器（可能是别的 App 的 WebView）。\n')
         + '**不要启动第二个 Chromium 浏览器** —— 会挤掉已有的那个（2026-11-05 因此丢过 60 多个标签）。',
     };
-  }
-
-  for (let i = 0; i < 2; i += 1) {
-    try {
-      const r = await fetch(`${ENDPOINT()}/json/version`, { signal: AbortSignal.timeout(5000) });
-      if (r.ok) {
-        const j = await r.json();
-        // 连上了。**顺便确认到底是哪个浏览器在应答** —— 三个 Chromium 共用同一个
-        // socket 名，光看进程名会猜错（残留进程、force-stop 竞态都会骗人，实测踩过）。
-        const actual = BROWSERS[identifyBrowser(j.Browser) || currentBrowser().key];
-        return {
-          ok: true,
-          browser: j.Browser,
-          port: PORT,
-          actualKey: actual.key,
-          note: actual.key !== currentBrowser().key
-            ? `注意：应答的其实是 ${actual.name}（${j.Browser}），不是配置的 ${currentBrowser().name}。\n`
-              + `要把工具切过去：web_browser { select: "${actual.key}" }`
-            : '',
-        };
-      }
-    } catch { /* 继续修复 */ }
-    if (i === 0) {
-      await adb(['forward', '--remove', `tcp:${PORT}`]);
-      await adb(['forward', `tcp:${PORT}`, `localabstract:${currentBrowser().socket}`]);
-      await sleep(900);
-    }
   }
 
   // ---- 连不上。唯一可靠的判断是 socket 在不在 ----

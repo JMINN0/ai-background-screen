@@ -284,6 +284,9 @@ web_attach { targetId: "...", wake: true }
 
 唤醒的做法是 `Target.activateTarget` 激活它，然后轮询等渲染进程自己恢复（约 5~7 秒）。**不重载页面，不丢滚动位置和表单。**
 
+**但有个副作用**：`activateTarget` 会让那个标签变成浏览器里**当前选中的标签** ——
+如果用户正开着浏览器看别的页面，他的视图会被切走。所以 `wake` 是 opt-in，调用前先问用户。
+
 **但有个副作用要说清**：`Target.activateTarget` 会把那个标签变成浏览器里**当前选中的标签**。如果用户正开着浏览器看别的页面，他的视图会被切走。所以 `wake` 是 opt-in 的，调用前先问用户。
 
 只有激活等不醒才退回 `Page.reload` —— 那一步才会丢滚动位置和未提交的表单，工具会明确告诉你走的是哪条路。
@@ -383,7 +386,9 @@ Android 上 `Target.createTarget` 在浏览器后台时会失败。这时候**�
 
 **完整的实测记录和数据在 [BROWSERS.md](BROWSERS.md)**，那里按 L0–L3 分层写，并标了每条结论是【实测】还是【推断】。这份 README 里的表格是摘要。
 
-三个 Chromium 浏览器共用同一个 socket 名，**同一时刻只能有一个在跑**。
+**多个 Chromium 浏览器可以同时跑**（实测 Edge + Lemur 并存）。它们各自绑
+`chrome_devtools_remote_<pid>`，只有一个用无后缀的名字 —— 所以 socket 名不能写死，
+必须按 `/json/version` 的 `Android-Package` 认身份。插件现在用 `discoverSockets()` 这么做。
 
 ### 什么时候该开浏览器，什么时候不该
 
@@ -486,7 +491,7 @@ forward 残留了。清理办法二选一：
 
 **两个浏览器都开着，行为诡异**
 
-它们抢同一个 devtools socket。关掉一个。
+两个都在跑时各自绑带 PID 后缀的 socket，插件会自动找对的那个。
 
 ---
 
@@ -552,7 +557,7 @@ print([b for b in d['dsh']['profile']['bundles'] if 'plugin-web' in b])"
 |---|---|
 | 浏览器没在跑就不能用 | 插件不主动启动浏览器（铁律一） |
 | 浏览器在后台时建不了新标签 | Android 系统限制，`Target.createTarget` 会失败 |
-| 两个 Chromium 浏览器同时开着会冲突 | 它们抢同一个 devtools socket |
+| ~~两个 Chromium 浏览器冲突~~ | **已不成立**：各用带 PID 后缀的 socket，插件按 Android-Package 认身份 |
 | Firefox / 国产内核浏览器用不了 | 它们不支持 CDP |
 
 ---
