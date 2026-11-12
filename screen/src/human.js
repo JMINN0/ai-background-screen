@@ -257,3 +257,28 @@ export function keyDwellDelay() {
     ? 42 + Math.random() * 68     // 42~110ms：正常轻按
     : 150 + Math.random() * 190;  // 150~340ms：按久一点
 }
+
+/**
+ * 滚轮/触控板滑动的减速曲线。
+ *
+ * 真人滑动不会一次跳到底：手指/滚轮先快后慢，最后再补一两下小的。
+ * 返回一组归一化的增量比例（和为 1），按这个比例切分总距离。
+ *
+ * @param {number} steps 分段数
+ */
+export function scrollSteps(steps = 5) {
+  const n = Math.max(2, Math.min(12, steps + Math.floor(Math.random() * 3) - 1));
+  const w = [];
+  for (let i = 0; i < n; i += 1) {
+    // 前段权重大，尾段变小，模拟"冲出去—减速—微调"
+    w.push(Math.pow(1 - i / n, 1.8) + Math.random() * 0.35);
+  }
+  const sum = w.reduce((a, b) => a + b, 0);
+  return w.map((x) => x / sum);
+}
+
+/** 滚动两步之间的间隔：早期连续，收尾时会停一下。 */
+export function scrollDelay(idx, total) {
+  const tail = idx / Math.max(1, total - 1);
+  return (28 + Math.random() * 55) * (1 + tail * 1.6);
+}

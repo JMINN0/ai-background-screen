@@ -521,6 +521,148 @@ export async function send(targetId, method, params) {
   try { return await c.send(method, params); } finally { c.close(); }
 }
 
+/**
+ * 拟人双击 / 右键 / 悬停 —— 都走同一条"移过去 → 再做动作"的路。
+ *
+ * @param {string} targetId
+ * @param {object} o
+ * @param {string} [o.selector] CSS 选择器
+ * @param {string} [o.text] 或按可见文字找
+ * @param {string} [o.action] dblclick | rightclick | hover
+ */
+export async function pointerAction(targetId, o = {}) {
+  const action = o.action || 'hover';
+  const located = await evaluate(targetId, `
+    const sel = ${JSON.stringify(o.selector || '')};
+    const want = ${JSON.stringify((o.text || '').trim().toLowerCase())};
+    let el = sel ? document.querySelector(sel) : null;
+    if (!el && want) {
+      const all = Array.from(document.querySelectorAll('button, a, [role=button], input, label, li, span, div, p, h1, h2, h3'));
+      const hit = all.filter((e) => (((e.innerText || e.value || e.textContent || '').trim()).toLowerCase()).includes(want));
+      el = hit.length ? hit.find((e) => !hit.some((x) => x !== e && e.contains(x))) || hit[hit.length - 1] : null;
+    }
+    if (!el) return JSON.stringify({ ok: false, reason: '找不到元素' });
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const rc = el.getBoundingClientRect();
+    return JSON.stringify({ ok: true, x: rc.x + rc.width / 2, y: rc.y + rc.height / 2,
+      w: rc.width, h: rc.height, vw: window.innerWidth, vh: window.innerHeight,
+      text: (el.innerText || el.value || '').slice(0, 40) });
+  `).then(JSON.parse);
+  if (!located.ok) return located;
+
+  const human = await import('../../screen/src/human.js').catch(() => null);
+  const pad = 8;
+  const sx = Math.max(pad, Math.min((located.vw || 360) - pad, located.x - 100 - Math.random() * 120));
+  const sy = Math.max(pad, Math.min((located.vh || 530) - pad, located.y + 50 + Math.random() * 90));
+  const swipe = human ? human.buildSwipe(sx, sy, located.x, located.y, { points: 10 }) : null;
+  const px = Math.round(located.x + (Math.random() - 0.5) * Math.min(6, (located.w || 40) * 0.2));
+  const py = Math.round(located.y + (Math.random() - 0.5) * Math.min(6, (located.h || 40) * 0.2));
+
+  await withClient(targetId, async (snd) => {
+    if (swipe) {
+      for (const e of swipe.events.filter((x) => x.action === 'MOVE')) {
+        await snd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: e.x, y: e.y, buttons: 0 }).catch(() => {});
+        await sleep(human.mouseDelay());
+      }
+    }
+    await snd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py, buttons: 0 }).catch(() => {});
+    await sleep(human ? human.thinkDelay(200) : 150);
+
+    if (action === 'hover') return;   // 悬停就是移过去停住
+
+    if (action === 'rightclick') {
+      await snd('Input.dispatchMouseEvent', { type: 'mousePressed', x: px, y: py, button: 'right', clickCount: 1, buttons: 2 });
+      await sleep(human ? human.keyDwellDelay() : 90);
+      await snd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'right', clickCount: 1, buttons: 0 });
+      return;
+    }
+
+    // dblclick：两次点击之间的间隔要短（真人 100~250ms），太长就变成两次单击
+    await snd('Input.dispatchMouseEvent', { type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1, buttons: 1 });
+    await sleep(human ? human.keyDwellDelay() : 80);
+    await snd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1, buttons: 0 });
+    await sleep(100 + Math.random() * 120);
+    await snd('Input.dispatchMouseEvent', { type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 2, buttons: 1 });
+    await sleep(human ? human.keyDwellDelay() : 80);
+    await snd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 2, buttons: 0 });
+  });
+
+  return { ...located, action, method: 'cdp-input-humanized' };
+}
+
+/**
+ * 拟人滚动：把一次大距离滚动拆成多段带减速的滚轮事件。
+ *
+ * 为什么不能一次发完：一次 `mouseWheel` 跳 800px 是程序滚动的典型特征 ——
+ * 真实滚轮/触控板是一串带加速度的增量，而且尾部还会减量微调。
+ *
+ * @param {string} targetId
+ * @param {object} o
+ * @param {number} [o.deltaY] 纵向总距离（正数向下）
+ * @param {number} [o.deltaX] 横向总距离
+ * @param {number} [o.x] 滚动位置 x，默认视口中间
+ * @param {number} [o.y] 滚动位置 y，默认视口中间
+ */
+export async function scroll(targetId, o = {}) {
+  const deltaY = Number(o.deltaY || 0);
+  const deltaX = Number(o.deltaX || 0);
+  if (!deltaY && !deltaX) return { ok: false, reason: 'deltaY 和 deltaX 都是 0' };
+
+  const human = await import('../../screen/src/human.js').catch(() => null);
+  const geo = await evaluate(targetId, `
+    return JSON.stringify({ vw: window.innerWidth, vh: window.innerHeight,
+      sx: window.scrollX, sy: window.scrollY });
+  `).then(JSON.parse);
+
+  const x = o.x != null ? o.x : Math.round(geo.vw / 2 + (Math.random() - 0.5) * geo.vw * 0.3);
+  const y = o.y != null ? o.y : Math.round(geo.vh / 2 + (Math.random() - 0.5) * geo.vh * 0.3);
+  const parts = human ? human.scrollSteps(5) : [0.45, 0.3, 0.15, 0.07, 0.03];
+
+  await withClient(targetId, async (snd) => {
+    for (let i = 0; i < parts.length; i += 1) {
+      await snd('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x, y,
+        deltaX: Math.round(deltaX * parts[i]),
+        deltaY: Math.round(deltaY * parts[i]),
+      }).catch(() => {});
+      await sleep(human ? human.scrollDelay(i, parts.length) : 60);
+    }
+  });
+
+  await sleep(120);
+  const after = await evaluate(targetId, `
+    return JSON.stringify({ sx: window.scrollX, sy: window.scrollY });
+  `).then(JSON.parse);
+
+  return {
+    ok: true,
+    movedY: after.sy - geo.sy,
+    movedX: after.sx - geo.sx,
+    steps: parts.length,
+    method: 'cdp-wheel-humanized',
+  };
+}
+
+/**
+ * 一次操作里复用同一条连接。
+ *
+ * 为什么需要：`send()` 每调用一次就新建并关闭一条 WebSocket。一次拟人点击要发
+ * 十几到二十条命令，等于开同样数量的连接 —— 慢，而且任何一条卡在握手或超时上
+ * 都会让整次操作半途而废（鼠标停在"按下了没松开"的状态）。
+ *
+ * @param {string} targetId
+ * @param {(send: Function) => Promise<any>} fn
+ */
+export async function withClient(targetId, fn) {
+  const c = await client(targetId);
+  try {
+    return await fn((method, params, timeout) => c.send(method, params, timeout));
+  } finally {
+    c.close();
+  }
+}
+
 export async function navigate(targetId, url) {
   await send(targetId, 'Page.navigate', { url });
   await sleep(1200);
@@ -626,17 +768,11 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
   //
   //    上一版直接用 buildSwipe 的输出（按下→移动→抬起）来"点击"，
   //    实际做的是一次**拖拽**：鼠标在目标位置上按着拖了一段才松手。
-  //    拖拽敏感的页面（滑块、地图、文本选择）会因此走错分支，
-  //    而且移动阶段带着 buttons:1 本身就是"按着左键在动"的信号。
-  //
   //    真人点一个按钮是：先把指针移过去（不按键），到了再按下、再松开。
+  //
+  //    整段操作复用**一条**连接：十几条命令各开一个新 WebSocket 太慢，
+  //    而且中途任何一条卡住都会留下"按下了没松开"的脏状态。
   const approach = swipe.events.filter((e) => e.action === 'MOVE');
-  for (const e of approach) {
-    await send(targetId, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved', x: e.x, y: e.y, buttons: 0,
-    }).catch(() => {});
-    await sleep(human.mouseDelay());
-  }
 
   // 落点：在元素包围盒内随机，不要每次都点正中
   const jx = (Math.random() - 0.5) * Math.max(2, (located.w || 40) * 0.35);
@@ -644,21 +780,30 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
   const px = Math.round(tx + clampNum(jx, -(located.w || 40) / 2 + 2, (located.w || 40) / 2 - 2));
   const py = Math.round(ty + clampNum(jy, -(located.h || 40) / 2 + 2, (located.h || 40) / 2 - 2));
 
-  await send(targetId, 'Input.dispatchMouseEvent', {
-    type: 'mouseMoved', x: px, y: py, buttons: 0,
-  }).catch(() => {});
-  await sleep(human.thinkDelay(220));   // 到位之后、按下之前的短暂停顿
+  try {
+    await withClient(targetId, async (snd) => {
+      for (const e of approach) {
+        await snd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: e.x, y: e.y, buttons: 0 }).catch(() => {});
+        await sleep(human.mouseDelay());
+      }
+      await snd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px, y: py, buttons: 0 }).catch(() => {});
+      await sleep(human.thinkDelay(220));   // 到位之后、按下之前的短暂停顿
 
-  await send(targetId, 'Input.dispatchMouseEvent', {
-    type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1, buttons: 1,
-  }).catch(() => {});
-
-  // 按下到抬起：真人 60~140ms，不能用 mouseDelay
-  await sleep(human.keyDwellDelay());
-
-  await send(targetId, 'Input.dispatchMouseEvent', {
-    type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1, buttons: 0,
-  }).catch(() => {});
+      await snd('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: px, y: py, button: 'left', clickCount: 1, buttons: 1,
+      });
+      await sleep(human.keyDwellDelay());   // 真人按下到抬起 60~140ms
+      await snd('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1, buttons: 0,
+      });
+    });
+  } catch (e) {
+    // 失败时补发一次 released，别把页面留在"按着不放"的状态
+    await send(targetId, 'Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1, buttons: 0,
+    }).catch(() => {});
+    return { ok: false, reason: `点击过程中连接断了：${e.message}`, located: true, pressed: 'cleanup-sent' };
+  }
 
   return { ...located, text: located.text, method: 'cdp-input-humanized', humanized: true };
 }
