@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网络层指纹检测</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:#0d0f13;color:#e8eaf0}
+.wrap{padding:14px;max-width:540px;margin:0 auto}
+h1{font-size:18px;margin:4px 0 3px}
+.sub{font-size:11px;color:#8b93a7;margin-bottom:12px;line-height:1.5}
+.card{background:#171b22;border:1px solid #242c3a;border-radius:10px;padding:12px;margin-bottom:10px}
+button{width:100%;padding:12px;font-size:14px;border-radius:8px;border:1px solid #1f6feb;
+       background:#1f6feb;color:#fff;cursor:pointer}
+#out{font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.55;
+     white-space:pre-wrap;word-break:break-all;color:#9fb4d4;max-height:420px;overflow:auto}
+.v{padding:9px 11px;border-radius:8px;font-size:13px;margin-bottom:10px}
+.v-bot{background:#4a1d22;border:1px solid #7d2b33;color:#ff9aa5}
+.v-sus{background:#4a3d1d;border:1px solid #7d6a2b;color:#ffd98a}
+.v-ok{background:#1d4a2b;border:1px solid #2b7d46;color:#8ce0a8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>网络层指纹检测</h1>
+  <div class="sub">服务端看到的东西和你自己说的一样吗？真风控一定做交叉比对。</div>
+  <div class="card">
+    <button id="run">上报并检测</button>
+  </div>
+  <div id="verdict"></div>
+  <div class="card"><div id="out">还没跑。</div></div>
+</div>
+<script>
+document.getElementById('run').addEventListener('click', async () => {
+  const payload = {
+    ua: navigator.userAgent,
+    uaData: navigator.userAgentData ? {
+      brands: navigator.userAgentData.brands,
+      mobile: navigator.userAgentData.mobile,
+      platform: navigator.userAgentData.platform,
+    } : null,
+    languages: navigator.languages,
+    platform: navigator.platform,
+    webdriver: navigator.webdriver,
+    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    maxTouchPoints: navigator.maxTouchPoints,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    clientTs: Date.now(),
+  };
+  const out = document.getElementById('out');
+  out.textContent = '上传中…';
+  try {
+    const r = await fetch('/api/net', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    const v = document.getElementById('verdict');
+    v.className = 'v ' + (d.risk >= 45 ? 'v-bot' : d.risk >= 20 ? 'v-sus' : 'v-ok');
+    v.textContent = `风险分 ${d.risk}/100 —— ${d.verdict}`;
+    const L = [];
+    L.push('—— 服务端看到的（你控制不了）——');
+    L.push(JSON.stringify(d.server, null, 1));
+    L.push('');
+    L.push('—— 发现的矛盾 ——');
+    if (!d.flags.length) L.push('（无）');
+    d.flags.forEach(f => L.push(`⚠️ ${f.id}: ${f.detail}`));
+    out.textContent = L.join('\n');
+  } catch (e) {
+    out.textContent = '失败：' + e.message;
+  }
+});
+</script>
+</body>
+</html>

@@ -96,6 +96,78 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/video.js') {
     return serveStatic(res, 'video.js');
   }
+  // 网络层指纹检测：服务端看到的东西和客户端自报的做交叉比对
+  if (req.method === 'GET' && (url.pathname === '/net' || url.pathname === '/net.html')) {
+    return serveStatic(res, 'net.html');
+  }
+  if (req.method === 'POST' && url.pathname === '/api/net') {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    let body = {};
+    try { body = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false }); }
+
+    const h = req.headers;
+    const order = Object.keys(h);                 // 头的插入顺序
+    const uaHdr = h['user-agent'] || '';
+    const flags = [];
+
+    // ① UA 一致性：请求头和页面自报是否一致
+    if (body.ua && body.ua !== uaHdr) {
+      flags.push({ id: 'net.ua-mismatch', detail: `头里的 UA 和页面自报不一致` });
+    }
+    // ② Accept-Language 与 navigator.languages
+    const al = String(h['accept-language'] || '');
+    const langs = Array.isArray(body.languages) ? body.languages : [];
+    if (al && langs.length && !langs.some((l) => al.startsWith(l)) && !al.startsWith(langs[0] || 'xx')) {
+      flags.push({ id: 'net.lang-mismatch', detail: `头 ${al} vs 页面 ${langs.join(',')}` });
+    }
+    // ③ 浏览器该有的头有没有
+    const expected = ['host', 'connection', 'sec-fetch-mode', 'sec-fetch-site', 'accept-encoding', 'accept-language'];
+    const missing = expected.filter((k) => !h[k]);
+    if (missing.length) {
+      flags.push({ id: 'net.missing-headers', detail: `缺少常见浏览器头：${missing.join(',')}` });
+    }
+    // ④ 代理痕迹
+    if (h['x-forwarded-for'] || h['via'] || h['forwarded']) {
+      flags.push({ id: 'net.proxy-headers', detail: '出现了代理相关头' });
+    }
+    // ⑤ UA 与 UA-CH 是否矛盾
+    const secChUa = h['sec-ch-ua'];
+    if (secChUa && uaHdr) {
+      const m = uaHdr.match(/Chrome\/(\d+)/);
+      // 要专门取 Chromium 那一条的版本号。
+      // 之前用 /(\d+)/ 抓第一个数字，抓到的是 "Not)A;Brand";v="8" 的 8，
+      // 把正常请求误判成"UA 和 sec-ch-ua 矛盾"。这是检测器的 bug，不是真暴露。
+      const cm = secChUa.match(/Chromium";v="(\d+)"/);
+      if (m && cm && m[1] !== cm[1]) {
+        flags.push({ id: 'net.ua-ch-mismatch', detail: `UA 里 Chrome/${m[1]}，sec-ch-ua 里 Chromium/${cm[1]}` });
+      }
+    }
+    // ⑥ 自动化标记
+    if (body.webdriver === true) flags.push({ id: 'net.webdriver', detail: 'navigator.webdriver = true' });
+    // ⑦ 无头特征
+    if (String(uaHdr).includes('Headless')) flags.push({ id: 'net.headless-ua', detail: 'UA 含 Headless' });
+    if (body.screen && body.screen.w === 0) flags.push({ id: 'net.zero-screen', detail: 'screen.width = 0' });
+
+    const risk = Math.min(100, flags.length * 20);
+    const verdict = risk >= 45 ? '明显是自动化' : risk >= 20 ? '有可疑点' : '网络层没有明显破绽';
+
+    return json(res, 200, {
+      risk, verdict, flags,
+      server: {
+        httpVersion: req.httpVersion,
+        method: req.method,
+        headerOrder: order,
+        userAgent: uaHdr,
+        acceptLanguage: h['accept-language'] || '',
+        secChUa: secChUa || '',
+        secFetchMode: h['sec-fetch-mode'] || '',
+        acceptEncoding: h['accept-encoding'] || '',
+        remoteAddress: req.socket && req.socket.remoteAddress,
+        note: 'Node http 只拿得到协商后的信息，拿不到完整 TLS ClientHello（JA3/JA4 需要解析原始报文）',
+      },
+    });
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/report') {
     let raw = '';
