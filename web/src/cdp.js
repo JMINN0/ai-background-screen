@@ -553,7 +553,9 @@ export async function readPage(targetId) {
  * 用原生 click()，React/Vue 也会走合成事件。
  */
 export async function click(targetId, { selector = '', text = '' } = {}) {
-  return evaluate(targetId, `
+  // ① 先只定位，不点。用 JS 点击（el.click()）产生的事件 isTrusted=false，
+  //    风控靶场里这一项权重最重。所以定位和点击必须分开：定位用 JS，点击走 CDP Input。
+  const located = await evaluate(targetId, `
     const sel = ${JSON.stringify(selector)};
     const want = ${JSON.stringify(text)};
     let el = null;
@@ -566,14 +568,60 @@ export async function click(targetId, { selector = '', text = '' } = {}) {
         const t = ((e.innerText || e.value || e.textContent || '').trim()).toLowerCase();
         return t && t.includes(target);
       });
-      // 取最内层：一个元素的子元素也命中时，优先子元素
       el = hit.length ? hit.find((e) => !hit.some((o) => o !== e && e.contains(o))) || hit[hit.length - 1] : null;
     }
     if (!el) return JSON.stringify({ ok: false, reason: '找不到元素（selector=' + sel + ' text=' + want + '）' });
     el.scrollIntoView({ block: 'center' });
-    el.click();
-    return JSON.stringify({ ok: true, tag: el.tagName, text: (el.innerText || el.value || '').slice(0, 40) });
+    const rc = el.getBoundingClientRect();
+    return JSON.stringify({
+      ok: true,
+      x: rc.x + rc.width / 2,
+      y: rc.y + rc.height / 2,
+      w: rc.width,
+      h: rc.height,
+      tag: el.tagName,
+      label: (el.innerText || el.value || '').slice(0, 40),
+    });
   `).then(JSON.parse);
+
+  if (!located.ok) return located;
+
+  // ② 拟人点击：带弯曲的接近轨迹 + 双峰时序 + 目标区域内的随机落点。
+  //    这些参数为什么这么定，见 screen/src/human.js 的注释。
+  const human = await import('../../screen/src/human.js').catch(() => null);
+  const tx = located.x;
+  const ty = located.y;
+
+  if (!human) {
+    // 退路：模块加载不到就退回原生 CDP 点击，至少事件是可信的
+    await send(targetId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 1 });
+    await send(targetId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 0 });
+    return { ...located, method: 'cdp-input', humanized: false };
+  }
+
+  // 从当前视口左下角附近"移过来"，而不是凭空出现在目标上
+  const sx = Math.max(10, tx - 120 - Math.random() * 160);
+  const sy = Math.min(600, ty + 60 + Math.random() * 120);
+  const swipe = human.buildSwipe(sx, sy, tx, ty, { points: 12 + Math.floor(Math.random() * 6), overshoot: 0 });
+
+  for (const e of swipe.events) {
+    if (e.action === 'DOWN') {
+      await send(targetId, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 1,
+      });
+    } else if (e.action === 'MOVE') {
+      await send(targetId, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: e.x, y: e.y, buttons: 1,
+      });
+    } else {
+      await send(targetId, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: e.x, y: e.y, button: 'left', clickCount: 1, buttons: 0,
+      });
+    }
+    await sleep(human.mouseDelay());
+  }
+
+  return { ...located, method: 'cdp-input-humanized', humanized: true };
 }
 
 /**
