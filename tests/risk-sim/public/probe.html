@@ -55,6 +55,24 @@
 
 <script src="/probe.js"></script>
 <script>
+// 自动上报：页面加载 2.5 秒后自己跑一次探针并 POST 给服务端。
+// 这样测试端不需要用 Runtime.evaluate 去读结果 —— 避免"读取动作本身"污染实验。
+setTimeout(function(){
+  try {
+    var r = window.EnvProbe.run();
+    fetch('/api/probe-report', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        auto: true,
+        exposure: r.exposure,
+        hits: r.signals.filter(function(x){return x.hit;}).map(function(x){return x.id;}),
+      }),
+    });
+  } catch (e) { /* ignore */ }
+}, 2500);
+</script>
+<script>
   document.getElementById('run').addEventListener('click', () => {
     const r = window.EnvProbe.run();
     const v = document.getElementById('verdict');

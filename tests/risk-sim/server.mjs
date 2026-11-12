@@ -36,6 +36,7 @@ const MIME = {
 
 /** 内存里留最近 100 份，同时落盘 */
 const reports = [];
+const probeReports = [];
 
 function json(res, code, obj) {
   const body = JSON.stringify(obj, null, 2);
@@ -100,6 +101,19 @@ async function handle(req, res) {
   if (req.method === 'GET' && (url.pathname === '/net' || url.pathname === '/net.html')) {
     return serveStatic(res, 'net.html');
   }
+  // 只记录不校验：用来让页面自己上报探针结果，避免我们用 Runtime.evaluate 去读
+  if (req.method === 'POST' && url.pathname === '/api/probe-report') {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    let body = {};
+    try { body = JSON.parse(raw || '{}'); } catch { /* ignore */ }
+    probeReports.push({ at: new Date().toISOString(), body });
+    return json(res, 200, { ok: true, n: probeReports.length });
+  }
+  if ((req.method === 'GET') && url.pathname === '/api/probe-report') {
+    return json(res, 200, { reports: probeReports });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/net') {
     let raw = '';
     for await (const chunk of req) raw += chunk;

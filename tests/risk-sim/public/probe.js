@@ -78,24 +78,40 @@
     });
   }
 
-  /** 探查 CDP 是否连着：DataDome 公开的那一招。 */
-  function cdpProbe() {
-    let hit = false;
-    let msg = '';
-    try {
-      const err = new Error();
-      let frames = 0;
-      Object.defineProperty(err, 'stack', {
-        configurable: true,
-        get() { hit = true; frames += 1; return ''; },
-      });
-      // 触发 stack 读取
-      void err.stack;
-      msg = hit ? `stack getter 被触发 ${frames} 次` : '没触发';
-    } catch (e) {
-      msg = '探测失败：' + e.message;
-    }
-    return { hit, msg };
+  /**
+ * 探查 CDP 是否连着。
+ *
+ * **上一版这里是错的**（2026-11-12 自己发现）：原来写成
+ *   Object.defineProperty(err, 'stack', { get() { hit = true; } });
+ *   void err.stack;
+ * 自己直接读自己定义的 getter，当然每次都触发 —— 那不是检测 CDP，
+ * 那只是证明了"JS 能调用自己的 getter"。
+ *
+ * 正确用法（DataDome 那招）：定义 getter 之后**不要自己读**，
+ * 而是把对象交给 console.log，让 CDP 客户端为了构建 preview 去读 .stack。
+ * 没有 CDP 连着的时候，浏览器不会构建 preview，getter 就不会被调用。
+ */
+function cdpProbe() {
+  let hit = false;
+  try {
+    const err = new Error('probe');
+    Object.defineProperty(err, 'stack', {
+      configurable: true,
+      get() { hit = true; return ''; },
+    });
+    // 关键：交给 console，不自己读
+    console.log(err);
+    // 再补一条：原型链上放 Proxy 的 ownKeys trap
+    const proxyTarget = {};
+    const proxied = new Proxy(proxyTarget, {
+      ownKeys(t) { hit = true; return Reflect.ownKeys(t); },
+    });
+    console.groupEnd(proxied);
+  } catch (e) {
+    return { hit: false, msg: '探测异常：' + e.message };
+  }
+  return { hit, msg: hit ? 'console 触发时 getter/trap 被调用了' : '没有触发（说明没有 CDP 在读 console）' };
+
   }
 
   function run() {
