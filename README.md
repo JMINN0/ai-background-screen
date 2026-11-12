@@ -10,6 +10,12 @@
 
 ---
 
+## 零、实测报告
+
+**[tests/risk-sim/FULL-REPORT.md](tests/risk-sim/FULL-REPORT.md)** —— 六个本地靶场的完整实测记录。
+
+一句话结论：网络层 0 暴露、行为层 0 破绽、环境层 6/100、系统层无 root 碰不到。
+
 ## 零、AI 必读：操作方式怎么选
 
 **[OPERATION-PRIORITY.md](OPERATION-PRIORITY.md) 是给 AI 看的操作准则**，动手前先读。
