@@ -1,6 +1,6 @@
 # 稳定性与兼容性说明
 
-版本：2026.1105.1908 ｜ 最后验证：2026-11-05 ｜ 验证环境：nubia REDMAGIC NX809J / Android 16 (SDK 36) / Chrome & Edge (Chromium 156)
+版本：2026.1112 ｜ 最后验证：2026-11-12 ｜ 验证环境：nubia REDMAGIC NX809J / Android 16 (SDK 36) / Chrome 157 与 Edge 156
 
 ## 一句话
 
@@ -23,8 +23,9 @@ CDP 通道本身稳定可用；但"浏览器在后台"这个场景有明确限�
 
 ## 已适配
 
-- Chrome（`com.android.chrome`，默认）
-- Edge（`com.microsoft.emmx`，设 `WEB_BROWSER_PKG=com.microsoft.emmx WEB_BROWSER_NAME=Edge` 切回）
+- Edge（`com.microsoft.emmx`，默认，75 个标签实测通过）
+- Chrome（`com.android.chrome`，2026-11-12 补测全流程通过）
+- ❌ 红魔浏览器（`cn.nubia.browser`）**不支持**：虽是 Chromium 内核，但不暴露 `chrome_devtools_remote` socket
 - Chromium 156（Android 版）
 - 端口随机化（9300–9500），避免多实例冲突
 - 标签页用 URL 标记 `#dsh-<marker>` 双重保护，关闭时只碰自己开的标签
@@ -34,13 +35,15 @@ CDP 通道本身稳定可用；但"浏览器在后台"这个场景有明确限�
 1. **非 Chromium 浏览器**（Firefox / 国产内核浏览器不支持 CDP，本插件原理上不能用于它们）
 2. 其他 Android 版本
 3. 浏览器被系统低内存回收后的自动恢复：有重连逻辑，但只在 Edge 上实测过
-4. Chrome 首次启动的欢迎页/登录页会不会影响 CDP 连接（还没在这台机器上跑过 Chrome 的完整流程）
+4. ~~Chrome 的完整流程~~ —— 2026-11-12 已补测，通过
 
 ## 已知限制（重要）
 
 1. **不主动拉起浏览器**。除非调用方明确传 `allowForeground:true`，否则只报错不唤醒——用户可能刚主动关掉浏览器，擅自唤醒会打断他。
 2. **浏览器在后台时无法新建标签**。Android 上 `Target.createTarget` 在后台会失败（"Could not create a Tab"）。按用户规则本插件**不会退回 `newWindow:true` 偷偷开窗**，而是返回 `needsUserConfirm` 让 Agent 去问用户。
 3. **同一时刻只有一个 Chromium 能绑定 devtools socket**。Chrome 和 Edge 都开着时会冲突，需要先关掉不用的那个。
+4. **后台标签会被 Chromium 冻结**，冻结后对 CDP 完全无响应。`web_attach` 会探测出来，带 `wake:true` 可唤醒（激活 + 等渲染进程恢复，不重载不丢状态）。
+5. **启动浏览器会抢前台**。要避免就用虚拟屏启动（`vdisplay_start` + `vdisplay_launch`），实测主屏焦点不变。
 4. **填表用 `Input.insertText`**，不是直接改 DOM 的 value——因为 React/Vue 的 value tracker 会把直接赋值当成"没变化"，onChange 不触发。这是实测踩过的坑。
 
 ## 依赖

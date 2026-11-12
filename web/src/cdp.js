@@ -109,8 +109,16 @@ export async function ensure() {
   return {
     ok: false,
     hint: `浏览器没在运行（进程 ${(proc.out || '0').trim()}、socket ${(sock.out || '0').trim()}）。\n`
-      + `让用户自己打开 ${currentBrowser().name} 最稳（起来后本插件会自动接上）。\n`
-      + `确实需要短时占用前台拉起它：adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1`,
+      + '\n**推荐：用虚拟屏启动它，完全不打扰用户。** 实测主屏焦点不变：\n'
+      + '  vdisplay_start {}\n'
+      + `  vdisplay_launch { pkg: "${currentBrowser().pkg}" }\n`
+      + '然后重新 web_ensure 就能连上。浏览器跑在那块看不见的屏上，\n'
+      + 'CDP、标签、登录态全都正常，用户的主屏一直是他自己的东西。\n'
+      + '\n其他两条路（都会让浏览器弹到前台）：\n'
+      + `  · 让用户自己打开 ${currentBrowser().name}\n`
+      + `  · adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
+      + 'Android 没有"在后台启动一个 App"的接口，普通启动一定会切前台；\n'
+      + '只有启动到虚拟屏才能既跑起来又不抢屏。',
   };
 }
 
