@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>严苛模式 · 行为检测</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #12141a; color: #e8eaf0; }
+  .wrap { padding: 16px; max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 19px; margin: 6px 0 4px; }
+  .sub { font-size: 12px; color: #8b93a7; margin-bottom: 16px; }
+  .card { background: #1b1f28; border: 1px solid #2a3040; border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; color: #8b93a7; margin: 10px 0 5px; }
+  input { width: 100%; padding: 11px 12px; font-size: 15px; border-radius: 8px;
+          border: 1px solid #333b4d; background: #12151c; color: #e8eaf0; }
+  input:focus { outline: none; border-color: #3d7eff; }
+  .row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { flex: 1; min-width: 96px; padding: 12px 10px; font-size: 14px; border-radius: 8px;
+           border: 1px solid #333b4d; background: #232a36; color: #e8eaf0; cursor: pointer; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button:active { transform: scale(0.98); }
+  .zone { min-height: 120px; }
+  #out { font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5;
+         white-space: pre-wrap; word-break: break-all; color: #9fb4d4; max-height: 340px; overflow: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>严苛模式 · 行为检测</h1>
+  <div class="sub">比风控检测靶场严得多。专门抓机器特征。</div>
+
+  <div class="card">
+    <label>账号</label>
+    <input id="user" placeholder="手机号或邮箱" autocomplete="off">
+    <label>备注</label>
+    <input id="note" placeholder="随便打几个字" autocomplete="off">
+    <div class="row">
+      <button class="primary" id="btn-login">登录</button>
+      <button id="btn-clear">清空</button>
+    </div>
+  </div>
+
+  <div class="card zone">
+    <label>交互区（让自动化去点）</label>
+    <div class="row">
+      <button id="a">选项 A</button>
+      <button id="b">选项 B</button>
+      <button id="c">选项 C</button>
+    </div>
+    <div class="row">
+      <button id="d">选项 D</button>
+      <button id="e">选项 E</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="btn-run">跑严苛检测</button>
+    </div>
+    <div id="out">还没跑。</div>
+  </div>
+</div>
+
+<script src="/strict.js"></script>
+<script>
+  document.getElementById('btn-run').addEventListener('click', () => {
+    const r = window.StrictDetect.run();
+    const lines = [];
+    lines.push(`分数 ${r.score} / 100   (${r.gotWeight}/${r.totalWeight})`);
+    lines.push(`判定：${r.verdict.label} → ${r.verdict.action}`);
+    lines.push(`通过 ${r.passed}  失败 ${r.failed}`);
+    lines.push('');
+    lines.push('—— 未通过 ——');
+    r.checks.filter((c) => !c.pass).forEach((c) => {
+      lines.push(`❌ ${c.id} (${c.weight})  ${c.detail}`);
+    });
+    lines.push('');
+    lines.push('—— 全部 ——');
+    r.checks.forEach((c) => {
+      lines.push(`${c.pass ? '✅' : '❌'} ${c.id} (${c.weight})`);
+    });
+    document.getElementById('out').textContent = lines.join('\n');
+    window.__strictLast = r;
+  });
+
+  ['a', 'b', 'c', 'd', 'e'].forEach((id) => {
+    document.getElementById(id).addEventListener('click', (e) => {
+      e.target.style.background = '#1f6feb';
+      setTimeout(() => { e.target.style.background = ''; }, 160);
+    });
+  });
+  document.getElementById('btn-login').addEventListener('click', () => {
+    document.getElementById('out').textContent = '已提交（模拟）';
+  });
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    document.getElementById('user').value = '';
+    document.getElementById('note').value = '';
+  });
+</script>
+</body>
+</html>

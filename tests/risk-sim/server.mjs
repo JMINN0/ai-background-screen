@@ -75,6 +75,13 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/detect.js') {
     return serveStatic(res, 'detect.js');
   }
+  // 严苛模式：比 detect.js 严得多，专门抓机器特征
+  if (req.method === 'GET' && (url.pathname === '/strict' || url.pathname === '/strict.html')) {
+    return serveStatic(res, 'strict.html');
+  }
+  if (req.method === 'GET' && url.pathname === '/strict.js') {
+    return serveStatic(res, 'strict.js');
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/report') {
     let raw = '';

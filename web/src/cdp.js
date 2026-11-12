@@ -197,6 +197,13 @@ export async function ensure() {
   };
 }
 
+/** 需要 Shift 才能打出的符号 → 基础键。 */
+const SHIFT_MAP = {
+  '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8',
+  '(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\', ':': ';',
+  '"': "'", '<': ',', '>': '.', '?': '/', '~': '`',
+};
+
 /** 数值夹紧。 */
 function clampNum(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));
@@ -854,24 +861,39 @@ export async function fill(targetId, selector, text) {
   //    风控靶场里这一项叫 input-without-keys，权重 18。
   //    所以每个字符都要走 keyDown → keyUp，而且 keydown 的 text 要让浏览器真的输入字符。
   for (const ch of Array.from(text)) {
-    const code = /[a-zA-Z]/.test(ch) ? `Key${ch.toUpperCase()}`
-      : /[0-9]/.test(ch) ? `Digit${ch}`
-      : ch === ' ' ? 'Space'
-      : ch === '.' ? 'Period'
-      : ch === ',' ? 'Comma'
-      : ch === '@' ? 'Digit2'
+    // 大写字母和符号在真实键盘上必须按住 Shift 才能打出来。
+    // 不发 Shift 的 keydown/keyup，页面就会看到「字符出现了但 Shift 从没被按过」——
+    // 严苛检测器把这条单独计了 12 分。
+    const needShift = /^[A-Z!@#$%^&*()_+{}|:"<>?~]$/.test(ch);
+    const base = needShift ? (/^[A-Z]$/.test(ch) ? ch.toLowerCase() : SHIFT_MAP[ch] || ch) : ch;
+
+    const code = /[a-zA-Z]/.test(base) ? `Key${base.toUpperCase()}`
+      : /[0-9]/.test(base) ? `Digit${base}`
+      : base === ' ' ? 'Space'
+      : base === '.' ? 'Period'
+      : base === ',' ? 'Comma'
       : '';
-    const vk = /[a-zA-Z]/.test(ch) ? ch.toUpperCase().charCodeAt(0)
-      : /[0-9]/.test(ch) ? ch.charCodeAt(0)
-      : ch === ' ' ? 32
+    const vk = /[a-zA-Z]/.test(base) ? base.toUpperCase().charCodeAt(0)
+      : /[0-9]/.test(base) ? base.charCodeAt(0)
+      : base === ' ' ? 32
       : 0;
+
+    // 按下 Shift（用 rawKeyDown：修饰键不该产生 keypress）
+    if (needShift) {
+      await send(targetId, 'Input.dispatchKeyEvent', {
+        type: 'rawKeyDown', key: 'Shift', code: 'ShiftLeft',
+        windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16, modifiers: 8, location: 1,
+      }).catch(() => {});
+      await sleep(18 + Math.random() * 40);
+    }
 
     // keyDown 带上 text，浏览器才会把它真正输入到焦点元素里
     await send(targetId, 'Input.dispatchKeyEvent', {
       type: 'keyDown', key: ch, code, text: ch,
-      unmodifiedText: ch,
+      unmodifiedText: needShift ? base : ch,
       windowsVirtualKeyCode: vk || undefined,
       nativeVirtualKeyCode: vk || undefined,
+      modifiers: needShift ? 8 : 0,
     }).catch(() => {});
 
     // 按住时长：真人不会一按就松
@@ -881,7 +903,17 @@ export async function fill(targetId, selector, text) {
       type: 'keyUp', key: ch, code,
       windowsVirtualKeyCode: vk || undefined,
       nativeVirtualKeyCode: vk || undefined,
+      modifiers: needShift ? 8 : 0,
     }).catch(() => {});
+
+    // 松开 Shift —— 有按下就必须有抬起，否则又是一条「Shift 没配对」的机器特征
+    if (needShift) {
+      await sleep(15 + Math.random() * 35);
+      await send(targetId, 'Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Shift', code: 'ShiftLeft',
+        windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16, modifiers: 0, location: 1,
+      }).catch(() => {});
+    }
 
     // 字符之间的间隔：双峰，有快速连击也有思考停顿
     await sleep(human ? human.keyFlightDelay() : 90);

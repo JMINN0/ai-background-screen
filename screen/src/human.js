@@ -238,9 +238,16 @@ export function mouseDelay() {
  * 和 mouseDelay 用同样的双峰思路：多数是相邻键的快速衔接，少数是思考停顿。
  */
 export function keyFlightDelay() {
-  return Math.random() < 0.72
-    ? 55 + Math.random() * 85      // 65~140ms：相邻键
-    : 220 + Math.random() * 420;   // 220~640ms：想一下 / 换字
+  // 用对数正态，参数和严苛检测器里的"真人参考分布"对齐（中位 132ms，σ 0.55）。
+  // 为什么不能继续用双峰：严苛模式用 KS 检验比对分布形状，双峰的形状和
+  // 对数正态差得远，实测 KS 距离 0.73（阈值 0.7）直接判失败。
+  // 但真人确实会中途停顿，所以保留 12% 的长尾（这一部分本来就在对数正态的尾部里，
+  // 只是拉得更长一点，用来模拟"想一下下一个词"）。
+  const z = Math.sqrt(-2 * Math.log(Math.max(1e-9, Math.random())))
+    * Math.cos(2 * Math.PI * Math.random());
+  let d = Math.exp(Math.log(132) + 0.55 * z);
+  if (Math.random() < 0.12) d *= 2.2 + Math.random() * 1.6;   // 偶尔想一下
+  return d;
 }
 
 /**
