@@ -377,11 +377,11 @@ Android 上 `Target.createTarget` 在浏览器后台时会失败。这时候**�
 
 | 浏览器 | 包名 | 能不能用 | 实测结果 |
 |---|---|---|---|
-| **Edge** | `com.microsoft.emmx` | ✅ 可用 | EdgA/156，75 个标签正常读写接管 |
+| **Edge** | `com.microsoft.emmx` | ✅ 可用 | EdgA/156，L0–L3 全通过。**注意**：75 个标签里约一半被浏览器冻结，需先唤醒才能操作 |
 | **Chrome** | `com.android.chrome` | ✅ 可用 | Chrome/157，全流程通过 |
-| **红魔浏览器** | `cn.nubia.browser` | ❌ **不可用** | V8.1.4（Chromium 内核），但**不暴露 `chrome_devtools_remote` socket**，`/proc/net/unix` 里查不到。厂商裁掉了，不是配置问题 |
+| **红魔浏览器** | `cn.nubia.browser` | ❓ **未能验证** | V8.1.4（Chromium 内核）。启动后全表枚举 abstract socket**没有观察任何 devtools 通道**。但没做名字遍历和进程反查，所以只能写"未观察到"，不能断言"不支持" |
 
-**红魔浏览器这条以前写的是"已验证"，是错的**（当时只看了进程名，没验 socket）。要支持它只能换浏览器，没有别的办法。
+**完整的实测记录和数据在 [BROWSERS.md](BROWSERS.md)**，那里按 L0–L3 分层写，并标了每条结论是【实测】还是【推断】。这份 README 里的表格是摘要。
 
 三个 Chromium 浏览器共用同一个 socket 名，**同一时刻只能有一个在跑**。
 
