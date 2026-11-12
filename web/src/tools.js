@@ -137,12 +137,65 @@ export async function shot(args) {
   return { text: `已保存：${r.path}（${r.bytes} 字节）` };
 }
 
-export async function close() {
-  const tabs = await cdp.closeOwnTabs().catch((e) => ({ ok: false, reason: e.message }));
+/** 列出浏览器里所有标签（包括用户自己的），供选择和接管。 */
+export async function tabs() {
+  const ch = await cdp.ensure();
+  if (!ch.ok) return { text: `通道不可用：${ch.hint}` };
+
+  const list = await cdp.listAllTabs().catch((e) => ({ error: e.message }));
+  if (list.error) return { text: `读取标签失败：${list.error}` };
+  if (!list.length) return { text: '浏览器里没有打开的页面标签。' };
+
+  const lines = [`共 ${list.length} 个标签（${ch.browser}）：`, ''];
+  list.forEach((t, i) => {
+    const who = t.mine ? '插件开的' : (t.adopted ? '已接管' : '你自己的');
+    lines.push(`${i + 1}. [${who}] ${t.title || '(无标题)'}`);
+    lines.push(`   ${t.url}`);
+    lines.push(`   targetId: ${t.targetId}`);
+  });
+  lines.push('');
+  lines.push('要用其中一个：web_attach { targetId: "..." }。接管不会改地址、不会刷新。');
+  return { text: lines.join('\n') };
+}
+
+/** 接管一个已有标签（典型场景：用户已经登录好的页面）。 */
+export async function attach(args) {
+  const targetId = String(args?.targetId || '').trim();
+  if (!targetId) return { text: '需要 targetId。先跑 web_tabs 看当前有哪些标签。' };
+
+  const ch = await cdp.ensure();
+  if (!ch.ok) return { text: `通道不可用：${ch.hint}` };
+
+  const r = await cdp.attachTab(targetId).catch((e) => ({ ok: false, hint: e.message }));
+  if (!r.ok) return { text: r.hint };
+  return {
+    text: `已接管标签：${r.title || '(无标题)'}\n${r.url}\n\n`
+      + '现在可以用 web_read / web_click / web_fill 操作它。\n'
+      + '没有改地址、没有刷新、没有重新登录。\n'
+      + '注意：这是用户的标签，web_close 关它需要先征得用户同意。',
+  };
+}
+
+/** 关闭本插件标签，或关闭指定的某一个（用户的标签需 confirm）。 */
+export async function close(args) {
+  const targetId = String(args?.targetId || '').trim();
+
+  // 关指定的一个
+  if (targetId) {
+    const ch = await cdp.ensure();
+    if (!ch.ok) return { text: `通道不可用：${ch.hint}` };
+    const r = await cdp.closeTab(targetId, { confirm: args?.confirm === true })
+      .catch((e) => ({ ok: false, hint: e.message }));
+    if (!r.ok) return { text: r.hint };
+    return { text: `已关闭标签：${r.title || targetId}${r.userOwned ? '（用户自己的标签，已确认）' : ''}` };
+  }
+
+  // 关本插件开的所有标签 + 清理端口转发
+  const tabsClosed = await cdp.closeOwnTabs().catch((e) => ({ ok: false, reason: e.message }));
   const rel = await cdp.release().catch((e) => ({ ok: false, reason: e.message }));
-  const lines = [`关闭本插件标签：${tabs.closed ?? 0} 个（你原有的标签一个没动）`];
+  const lines = [`关闭本插件标签：${tabsClosed.closed ?? 0} 个（你原有的标签一个没动）`];
   lines.push(rel.removed ? `已移除端口转发 ${rel.removed}` : '端口转发无需清理');
-  if (tabs.reason) lines.push(`说明：${tabs.reason}`);
+  if (tabsClosed.reason) lines.push(`说明：${tabsClosed.reason}`);
   return { text: lines.join('\n') };
 }
 

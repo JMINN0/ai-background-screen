@@ -24,7 +24,7 @@ const pexec = promisify(execFile);
 const ADB = process.env.ADB_BIN || 'adb';
 // 浏览器不写死：由 src/browser.js 管，默认 Edge，调用时可以切换。
 // Chromium 系的 devtools socket 都叫 chrome_devtools_remote，同一时刻只允许一个进程绑定。
-import { currentBrowser } from './browser.js';
+import { BROWSERS, currentBrowser } from './browser.js';
 let PORT = Number(process.env.WEB_CDP_PORT || 0);   // 0 = 自动挑
 const ENDPOINT = () => `http://127.0.0.1:${PORT}`;
 const STATE_DIR = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'plugin-web');
@@ -75,13 +75,42 @@ export async function ensure() {
   const proc = await adb(['shell', `ps -A 2>/dev/null | grep -c ${currentBrowser().proc}`]);
   const sock = await adb(['shell', 'cat /proc/net/unix 2>/dev/null | grep -c devtools_remote']);
   const alive = Number((proc.out || '0').trim()) > 0 && Number((sock.out || '0').trim()) > 0;
+
+  // ---- 绝不能多开一个浏览器 ----
+  // 用户 2026-11-05 的教训：AI 打开了另一个浏览器 App，原来那个被关掉，
+  // 浏览器只记住"上次关闭前的标签页"，于是 60 多个标签一次性蒸发、找不回来。
+  // 所以这里先看看**别的**浏览器是不是在跑：
+  //   - 别的在跑 → 只许让用户自己切回来，绝不建议再启动一个
+  //   - 都没有   → 才给出启动当前这一个的建议
+  const others = [];
+  for (const b of Object.values(BROWSERS)) {
+    if (b.key === currentBrowser().key) continue;
+    const r = await adb(['shell', `ps -A 2>/dev/null | grep -c ${b.proc}`]);
+    if (Number((r.out || '0').trim()) > 0) others.push(b.name);
+  }
+
+  if (alive) {
+    return {
+      ok: false,
+      hint: `${currentBrowser().name} 在跑但 CDP 连不上（forward 可能残留）。跑一次 adb_reconnect 或重试。`,
+    };
+  }
+
+  if (others.length) {
+    return {
+      ok: false,
+      hint: `${currentBrowser().name} 没在跑，但 ${others.join(' / ')} 正在运行。\n`
+        + '**不要启动新的浏览器**——多开一个会把用户现有标签弄丢（2026-11-05 丢过 60 多个）。\n'
+        + `正确做法：请用户自己把 ${currentBrowser().name} 切到前台，或者改用正在运行的 ${others[0]}`
+        + '（web_browser { select: "..." }）。',
+    };
+  }
+
   return {
     ok: false,
-    hint: alive
-      ? `${currentBrowser().name} 在跑但 CDP 连不上（forward 可能残留）。跑一次 adb_reconnect 或重试。`
-      : `浏览器没在运行（进程 ${(proc.out || '0').trim()}、socket ${(sock.out || '0').trim()}）。`
-        + `\n短时占用前台把它拉起来：adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1`
-        + `\n或者让用户自己打开 ${currentBrowser().name}。起来后本插件会自动接上。`,
+    hint: `浏览器没在运行（进程 ${(proc.out || '0').trim()}、socket ${(sock.out || '0').trim()}）。\n`
+      + `让用户自己打开 ${currentBrowser().name} 最稳（起来后本插件会自动接上）。\n`
+      + `确实需要短时占用前台拉起它：adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1`,
   };
 }
 
@@ -149,6 +178,108 @@ export async function closeOwnTabs() {
   return { ok: true, closed: mine.length };
 }
 
+
+/**
+ * 列出浏览器里**所有**页面标签，包括用户自己的。
+ *
+ * 以前这个插件只能看见自己开的标签 —— 那是 2026-11-05 之后刻意加的限制，
+ * 起因是工具擅自动了用户的浏览器，把他 60 多个标签弄丢了。
+ * 现在列出全部是安全的：列出只是读，不碰任何人。
+ *
+ * mine    = 本插件开的（URL 带 #dsh-<marker>，或 state.tabs 里记过）
+ * adopted = 用户自己的标签，但这次会话里被 web_attach 接管了
+ * 其余    = 用户自己的，本插件没碰过
+ */
+export async function listAllTabs() {
+  const st = await loadState();
+  const marker = st.marker || '';
+  const tracked = new Set(st.tabs || []);
+  const adopted = new Set(st.adopted || []);
+  const targets = await listTargets();
+  return targets.map((t) => {
+    const url = t.url || '';
+    const isMine = Boolean((marker && url.includes(marker)) || tracked.has(t.id));
+    return {
+      targetId: t.id,
+      title: (t.title || '').slice(0, 90),
+      url: url.slice(0, 200),
+      mine: isMine,
+      adopted: !isMine && adopted.has(t.id),
+    };
+  });
+}
+
+/**
+ * 接管一个已经存在的标签。
+ *
+ * **只登记，不导航、不刷新、不改 URL。** 目的是让 AI 能直接操作
+ * 用户已经登录好的那个页面，而不是每次重新开一个再走一遍登录。
+ *
+ * 接管之后 web_read / web_click / web_fill 都能用；
+ * 但 web_close 关它之前必须显式 confirm —— 用户自己的标签不能悄悄关掉。
+ */
+export async function attachTab(targetId) {
+  const targets = await listTargets();
+  const t = targets.find((x) => x.id === targetId);
+  if (!t) {
+    return { ok: false, hint: `标签 ${targetId} 不存在（可能已经被关掉了）。先跑一次 web_tabs 看当前有哪些。` };
+  }
+  const st = await loadState();
+  const marker = st.marker || `dsh-${Math.random().toString(36).slice(2, 10)}`;
+  await saveState({
+    ...st,
+    marker,
+    port: PORT,
+    adopted: [...new Set([...(st.adopted || []), targetId])],
+  });
+  return {
+    ok: true,
+    targetId,
+    title: (t.title || '').slice(0, 90),
+    url: (t.url || '').slice(0, 200),
+  };
+}
+
+/**
+ * 关掉一个指定的标签。
+ *
+ * 安全线分两种：
+ *   - 本插件自己开的（URL 带标记，或 state.tabs 记过）→ 直接关
+ *   - 用户自己的（包括接管来的）→ 必须 confirm:true，否则拒绝并说明原因
+ *
+ * 这条线是 2026-11-05 事故换来的：工具擅自动用户的浏览器，
+ * 60 多个标签一次性没了，而且找不回来。
+ */
+export async function closeTab(targetId, { confirm = false } = {}) {
+  const st = await loadState();
+  const marker = st.marker || '';
+  const targets = await listTargets();
+  const t = targets.find((x) => x.id === targetId);
+  if (!t) return { ok: false, hint: `标签 ${targetId} 不存在（可能已经关了）。` };
+
+  const url = t.url || '';
+  const createdByUs = Boolean((marker && url.includes(marker)) || (st.tabs || []).includes(targetId));
+  const title = (t.title || '').slice(0, 90);
+  const shownUrl = url.slice(0, 160);
+
+  if (!createdByUs && !confirm) {
+    const adopted = (st.adopted || []).includes(targetId);
+    return {
+      ok: false,
+      needsUserConfirm: true,
+      hint: `这是${adopted ? '你已接管的用户标签' : '用户自己的标签'}，本插件不擅自关闭。\n`
+        + `  标题：${title || '(无标题)'}\n`
+        + `  地址：${shownUrl}\n`
+        + '要先问用户，得到同意后再带 confirm:true 重试。',
+    };
+  }
+
+  await send(null, 'Target.closeTarget', { targetId }).catch(() => {});
+  const nextTabs = (st.tabs || []).filter((x) => x !== targetId);
+  const nextAdopted = (st.adopted || []).filter((x) => x !== targetId);
+  await saveState({ ...st, tabs: nextTabs, adopted: nextAdopted });
+  return { ok: true, targetId, title, userOwned: !createdByUs };
+}
 
 async function wsUrl(targetId) {
   const targets = await listTargets({ type: null });

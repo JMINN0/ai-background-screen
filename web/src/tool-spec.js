@@ -110,19 +110,65 @@ export function shotSpec() {
   };
 }
 
+export function tabsSpec() {
+  return {
+    name: 'web_tabs',
+    description: [
+      'List every page tab in the browser — the user\'s own tabs included, not just this plugin\'s.',
+      WHY,
+      '',
+      'Each entry says whose it is: 插件开的 (we created it), 已接管 (the user\'s, adopted this session),',
+      'or 你自己的 (the user\'s, untouched). Listing is read-only; it changes nothing.',
+      '',
+      'Use this when the user says "用我已经开着的那个页面" — find the tab here, then web_attach it.',
+    ].join('\n'),
+    parameters: {},
+    output: out('Every open tab with its title, URL, targetId, and who owns it.'),
+  };
+}
+
+export function attachSpec() {
+  return {
+    name: 'web_attach',
+    description: [
+      'Take over an existing tab by targetId, so this plugin\'s other tools can drive it.',
+      WHY,
+      '',
+      'It only registers the tab. It does NOT navigate, reload, or change the URL — the point is to',
+      'reuse a page the user is already signed in to, instead of opening a fresh tab and logging in again.',
+      '',
+      'The tab stays the user\'s: web_close will refuse to close it unless the call carries confirm:true.',
+      'Get the targetId from web_tabs first.',
+    ].join('\n'),
+    parameters: {
+      targetId: { type: 'string', required: true, description: 'targetId from web_tabs.' },
+    },
+    output: out('The adopted tab\'s title and URL.'),
+  };
+}
+
 export function closeSpec() {
   return {
     name: 'web_close',
     description: [
-      'Close every tab this plugin created and remove the adb forward.',
+      'Close a tab, or finish up by closing every tab this plugin created and removing the adb forward.',
       WHY,
-      'Only tabs carrying our #dsh-<marker> tag are closed. Tabs the user owns are never touched.',
       '',
-      'Call it when the task is done — leaving a stale forwards behind is what makes later',
+      'Without targetId: closes only tabs carrying our #dsh-<marker> tag, then drops the forward.',
+      'The user\'s tabs are never touched on this path.',
+      '',
+      'With targetId: closes that one tab. Tabs this plugin created close straight away; a tab the user',
+      'owns (including one adopted via web_attach) is REFUSED unless you pass confirm:true — because',
+      'closing the user\'s tabs is exactly how 60+ of them were lost once. Ask the user first.',
+      '',
+      'Call the no-argument form when the task is done — a stale forward is what makes later',
       'connections hang with "socket hang up".',
     ].join('\n'),
-    parameters: {},
-    output: out('How many of our tabs were closed and whether the forward was removed.'),
+    parameters: {
+      targetId: { type: 'string', description: 'Optional. Close just this tab instead of all of ours.' },
+      confirm: { type: 'boolean', description: 'Required to close a tab the user owns. Only pass it after the user agrees.' },
+    },
+    output: out('How many tabs were closed and whether the forward was removed.'),
   };
 }
 

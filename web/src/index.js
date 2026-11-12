@@ -8,7 +8,7 @@
  * 引擎自带的那份在 /opt/dsh/node_modules。只写裸包名会让 apply 直接失败、工具一个都不注册。
  */
 
-import { clickSpec, closeSpec, ensureSpec, fillSpec, openSpec, readSpec, shotSpec, browserSpec } from './tool-spec.js';
+import { attachSpec, browserSpec, clickSpec, closeSpec, ensureSpec, fillSpec, openSpec, readSpec, shotSpec, tabsSpec } from './tool-spec.js';
 import * as T from './tools.js';
 
 export const name = 'dsh-go-plugin-web';
@@ -73,7 +73,9 @@ export async function apply(ctx) {
             [clickSpec, (a) => T.click(a)],
             [fillSpec, (a) => T.fill(a)],
             [shotSpec, (a) => T.shot(a)],
-            [closeSpec, () => T.close()],
+            [tabsSpec, () => T.tabs()],
+            [attachSpec, (a) => T.attach(a)],
+            [closeSpec, (a) => T.close(a)],
             [browserSpec, (a) => T.browser(a)],
           ];
           for (const [spec, exec] of defs) {
