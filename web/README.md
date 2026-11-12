@@ -272,6 +272,20 @@ web_click { targetId: "ABC123", text: "创建仓库" }
 
 接管之后 `web_read` / `web_click` / `web_fill` 都能用它。但它的归属仍然是用户的——`web_close` 关它照样要 `confirm:true`。
 
+**休眠标签**：标签多、浏览器又退到后台时，Chromium 会把没在用的标签冻结。这类标签在 `web_tabs` 里照样列出来，但对 CDP 完全无响应。
+
+实测（Edge 后台、75 个标签）：约一半处于冻结状态，`Runtime.evaluate`、`Page.setWebLifecycleState`、`Target.activateTarget` 全部超时。
+
+`web_attach` 会先实测探测，发现冻结就告诉你，要唤醒带 `wake:true`：
+
+```
+web_attach { targetId: "...", wake: true }
+```
+
+唤醒的做法是 `Target.activateTarget` 激活它，然后轮询等渲染进程自己恢复（约 5~7 秒）。**这一步不会重载页面，不丢状态。** 只有等不醒才退回 `Page.reload`，那一步会丢滚动位置和未提交的表单。
+
+实在不行让用户在浏览器里点一下那个标签，立刻就恢复。
+
 ### `web_close`
 
 两种用法。

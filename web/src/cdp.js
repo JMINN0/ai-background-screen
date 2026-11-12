@@ -218,12 +218,24 @@ export async function listAllTabs() {
  * 接管之后 web_read / web_click / web_fill 都能用；
  * 但 web_close 关它之前必须显式 confirm —— 用户自己的标签不能悄悄关掉。
  */
-export async function attachTab(targetId) {
+export async function attachTab(targetId, { wake = false } = {}) {
   const targets = await listTargets();
   const t = targets.find((x) => x.id === targetId);
   if (!t) {
     return { ok: false, hint: `标签 ${targetId} 不存在（可能已经被关掉了）。先跑一次 web_tabs 看当前有哪些。` };
   }
+
+  // 先实测能不能驱动。冻结的标签在 /json/list 里照样存在，看不出来。
+  let frozen = !(await probe(targetId));
+  let woke = false;
+
+  let reloaded = false;
+  if (frozen && wake) {
+    const w = await wakeTab(targetId);
+    if (w.ok) { frozen = false; woke = true; reloaded = w.reloaded === true; }
+    else return { ok: false, hint: w.hint };
+  }
+
   const st = await loadState();
   const marker = st.marker || `dsh-${Math.random().toString(36).slice(2, 10)}`;
   await saveState({
@@ -237,6 +249,9 @@ export async function attachTab(targetId) {
     targetId,
     title: (t.title || '').slice(0, 90),
     url: (t.url || '').slice(0, 200),
+    frozen,
+    woke,
+    reloaded,
   };
 }
 
@@ -279,6 +294,66 @@ export async function closeTab(targetId, { confirm = false } = {}) {
   const nextAdopted = (st.adopted || []).filter((x) => x !== targetId);
   await saveState({ ...st, tabs: nextTabs, adopted: nextAdopted });
   return { ok: true, targetId, title, userOwned: !createdByUs };
+}
+
+/**
+ * 探一下这个标签的渲染进程还活不活。
+ *
+ * 实测背景（Edge 后台、75 个标签）：约一半标签对 CDP 完全无响应 ——
+ * Runtime.evaluate 超时、Page.setWebLifecycleState 超时、Target.activateTarget
+ * 返回成功但照样唤不醒。只有 Page.reload 能把它拉回来。
+ * 判断一个标签好不好用，不能看它在 /json/list 里在不在（冻结的也在），只能实测。
+ */
+export async function probe(targetId, timeout = 3000) {
+  let c;
+  try { c = await client(targetId); } catch { return false; }
+  try {
+    await c.send('Runtime.evaluate', { expression: '1', returnByValue: true }, timeout);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    c.close();
+  }
+}
+
+/**
+ * 唤醒一个被浏览器休眠的标签。
+ *
+ * 手段只有 Page.reload —— 这会**重新加载页面**：滚动位置、未提交的表单、
+ * SPA 内部状态都会丢。所以不自动做，由调用方显式要求。
+ */
+export async function wakeTab(targetId) {
+  // 两步，尽量只用第一步。
+  //
+  // ① Target.activateTarget —— 浏览器级命令，冻结的标签也收得到。
+  //    实测激活之后等 1.5 秒左右渲染进程会自己恢复，**页面状态一点不丢**。
+  //    所以先轮询等它醒，别急着 reload。
+  // ② 实在不醒才 Page.reload —— 这一步会丢滚动位置和未提交的表单，是下策。
+  //
+  // 踩过的坑：激活之后立刻发 Page.reload 会失败（ws 都连不上），必须给渲染进程时间。
+  const act = await send(null, 'Target.activateTarget', { targetId }).then(() => true).catch(() => false);
+  if (!act) return { ok: false, hint: '激活这个标签失败，它可能已经被关掉了。' };
+
+  for (const wait of [1200, 1800, 2500]) {
+    await sleep(wait);
+    if (await probe(targetId, 2500)) return { ok: true, reloaded: false };
+  }
+
+  const rel = await send(targetId, 'Page.reload', {}).then(() => true).catch(() => false);
+  if (!rel) {
+    return {
+      ok: false,
+      hint: '标签激活了但它一直不响应，重新加载也发不出去。'
+        + '\n让用户在浏览器里手动点一下这个标签，通常立刻恢复。',
+    };
+  }
+
+  await sleep(2500);
+  const alive = await probe(targetId, 6000);
+  return alive
+    ? { ok: true, reloaded: true }
+    : { ok: false, hint: '重新加载之后仍然无响应，这个标签可能是坏的。换一个，或者让用户重新打开页面。' };
 }
 
 async function wsUrl(targetId) {

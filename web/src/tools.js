@@ -166,10 +166,33 @@ export async function attach(args) {
   const ch = await cdp.ensure();
   if (!ch.ok) return { text: `通道不可用：${ch.hint}` };
 
-  const r = await cdp.attachTab(targetId).catch((e) => ({ ok: false, hint: e.message }));
+  const r = await cdp.attachTab(targetId, { wake: args?.wake === true })
+    .catch((e) => ({ ok: false, hint: e.message }));
   if (!r.ok) return { text: r.hint };
+
+  const head = `已接管标签：${r.title || '(无标题)'}\n${r.url}`;
+
+  if (r.frozen) {
+    return {
+      text: head + '\n\n'
+        + '⚠️ 但这个标签被浏览器休眠了，现在驱动不了它。\n'
+        + '标签多、浏览器又退到后台时很常见——它在标签列表里照样显示，但对 CDP 完全无响应。\n\n'
+        + '要唤醒它，带 wake:true 重新调用：\n'
+        + `  web_attach { targetId: "${targetId}", wake: true }\n`
+        + '唤醒是激活那个标签并等它自己恢复（约 5~7 秒），页面状态不会丢；\n'
+        + '实在不醒才会重新加载（那一步会丢滚动位置和未提交的表单）。\n'
+        + '或者最简单的：请用户在浏览器里点一下那个标签，它立刻就好了。',
+    };
+  }
+
+  const note = r.woke
+    ? (r.reloaded
+      ? '（这个标签原本休眠，已重新加载唤醒——滚动位置和未提交的表单可能丢了）\n'
+      : '（这个标签原本休眠，已激活唤醒，页面状态没有动）\n')
+    : '';
+
   return {
-    text: `已接管标签：${r.title || '(无标题)'}\n${r.url}\n\n`
+    text: head + '\n' + note + '\n'
       + '现在可以用 web_read / web_click / web_fill 操作它。\n'
       + '没有改地址、没有刷新、没有重新登录。\n'
       + '注意：这是用户的标签，web_close 关它需要先征得用户同意。',

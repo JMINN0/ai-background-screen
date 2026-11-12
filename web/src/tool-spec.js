@@ -142,8 +142,9 @@ export function attachSpec() {
     ].join('\n'),
     parameters: {
       targetId: { type: 'string', required: true, description: 'targetId from web_tabs.' },
+      wake: { type: 'boolean', description: 'If the tab is asleep (Chromium freezes background tabs — common when the browser has many), reload it to revive it. Reloading loses scroll position and unsaved form input, so only pass this after the user agrees.' },
     },
-    output: out('The adopted tab\'s title and URL.'),
+    output: out('The adopted tab\'s title, URL, and whether it was asleep (frozen) or had to be woken.'),
   };
 }
 
