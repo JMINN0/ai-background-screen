@@ -641,64 +641,59 @@ export async function tapTouch(targetId, o = {}) {
   const tx = Math.round(located.x + jx);
   const ty = Math.round(located.y + jy);
 
-  // 起点落在视口内，从远处"摸"过来
-  const vw = located.vw || 360;
-  const vh = located.vh || 530;
-  const pad = 10;
-  const sx = Math.round(Math.max(pad, Math.min(vw - pad, located.x - 90 - Math.random() * 120)));
-  const sy = Math.round(Math.max(pad, Math.min(vh - pad, located.y + 50 + Math.random() * 100)));
-
-  const points = 10 + Math.floor(Math.random() * 6);
-  // 手指接触面积：真人 8~20 左右，会变
+  // **触摸不需要"接近轨迹"** —— 手指是直接落在目标上的。
+  //
+  // 上一版让触摸从 90~120px 外滑到目标，浏览器把它识别成拖拽而不是点击，
+  // 按钮的 click 事件根本不触发（实测：动作全丢）。鼠标才需要"移过去"，
+  // 手指没有这个过程。
+  //
+  // 真实的触摸点击是：落在目标上（有偏差）→ 极小的位移 → 抬起。
+  const points = 2 + Math.floor(Math.random() * 3);   // 1~4 个移动点，不是十几个
   const baseRx = 9 + Math.random() * 7;
   const baseRy = 11 + Math.random() * 8;
   const fingerId = 1 + Math.floor(Math.random() * 3);
 
   try {
     await withClient(targetId, async (snd) => {
-      // 接近：按下前没有触摸点
-      let prevX = sx;
-      let prevY = sy;
+      // 落点：目标框内随机，但不要太靠边缘（边缘可能点到别的元素）
+      const mx = Math.max(2, (located.w || 40) / 2 - 4);
+      const my = Math.max(2, (located.h || 40) / 2 - 4);
+      const jx = (Math.random() - 0.5) * mx;
+      const jy = (Math.random() - 0.5) * my;
+      const px = Math.round(tx + jx);
+      const py = Math.round(ty + jy);
 
-      // 按下
+      // 按下 —— 压力从低开始升
       await snd('Input.dispatchTouchEvent', {
         type: 'touchStart',
         touchPoints: [{
-          x: sx, y: sy, id: fingerId,
+          x: px + (Math.random() - 0.5) * 2,
+          y: py + (Math.random() - 0.5) * 2,
+          id: fingerId,
           radiusX: baseRx + Math.random() * 2,
           radiusY: baseRy + Math.random() * 2,
-          force: 0.25 + Math.random() * 0.15,   // 刚接触时压力小
+          force: 0.22 + Math.random() * 0.12,
         }],
       });
-      await sleep(human ? human.keyDwellDelay() * 0.35 : 35);
 
-      // 移动：最小加加速度轨迹 + 压力先升后稳 + 面积微变
+      // 按住期间的微动：真人手指不会完全静止，但移动幅度很小（几个像素）
       for (let i = 1; i <= points; i += 1) {
-        const t = i / points;
-        const j = 10 * t ** 3 - 15 * t ** 4 + 6 * t ** 5;
-        const bow = Math.sin(Math.PI * t) * (Math.hypot(tx - sx, ty - sy) * 0.06) * (Math.random() < 0.5 ? -1 : 1);
-        const nx = -(ty - sy);
-        const ny = (tx - sx);
-        const len = Math.hypot(nx, ny) || 1;
-        const px = sx + (tx - sx) * j + (nx / len) * bow + (Math.random() - 0.5) * 2;
-        const py = sy + (ty - sy) * j + (ny / len) * bow + (Math.random() - 0.5) * 2;
-        prevX = px;
-        prevY = py;
+        await sleep(human ? human.keyDwellDelay() * 0.3 : 28);
         await snd('Input.dispatchTouchEvent', {
           type: 'touchMove',
           touchPoints: [{
-            x: Math.max(1, Math.min(vw - 1, Math.round(px))),
-            y: Math.max(1, Math.min(vh - 1, Math.round(py))),
+            x: Math.round(px + (Math.random() - 0.5) * 3),
+            y: Math.round(py + (Math.random() - 0.5) * 3),
             id: fingerId,
             radiusX: baseRx + Math.random() * 3,
             radiusY: baseRy + Math.random() * 3,
-            force: Math.min(0.95, 0.35 + Math.sin(Math.PI * t) * 0.35 + Math.random() * 0.06),
+            force: Math.min(0.95, 0.45 + (i / points) * 0.3 + Math.random() * 0.08),
           }],
         }).catch(() => {});
-        await sleep(human ? human.mouseDelay() * 0.7 : 40);
       }
 
-      // 抬起
+      // 抬手
+      await sleep(human ? human.keyDwellDelay() * 0.5 : 40);
       await snd('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
     });
   } catch (e) {
@@ -706,6 +701,7 @@ export async function tapTouch(targetId, o = {}) {
     return { ok: false, reason: `触摸过程中断了：${e.message}`, located: true };
   }
 
+  return { ...located, method: 'cdp-touch-humanized', points };
   return { ...located, method: 'cdp-touch-humanized', points };
 }
 

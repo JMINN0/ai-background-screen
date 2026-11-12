@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频平台互动检测</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,sans-serif;background:#0d0f13;color:#e8eaf0}
+  .wrap{padding:14px;max-width:540px;margin:0 auto}
+  h1{font-size:18px;margin:4px 0 3px}
+  .sub{font-size:11px;color:#8b93a7;margin-bottom:12px;line-height:1.5}
+  .player{background:#000;border-radius:10px;height:170px;display:flex;align-items:center;
+          justify-content:center;color:#556;font-size:13px;margin-bottom:10px;position:relative;overflow:hidden}
+  .bar{position:absolute;left:0;bottom:0;height:3px;background:#e8433f;width:0%}
+  .time{position:absolute;right:8px;bottom:8px;font-size:11px;color:#aaa;font-family:monospace}
+  .card{background:#171b22;border:1px solid #242c3a;border-radius:10px;padding:12px;margin-bottom:10px}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  button{flex:1;min-width:70px;padding:11px 8px;font-size:13px;border-radius:8px;
+         border:1px solid #333b4d;background:#212836;color:#e8eaf0;cursor:pointer}
+  button.on{background:#e8433f;border-color:#e8433f}
+  button:active{transform:scale(.97)}
+  #out{font-family:ui-monospace,monospace;font-size:10.5px;line-height:1.55;
+       white-space:pre-wrap;word-break:break-all;color:#9fb4d4;max-height:300px;overflow:auto}
+  .v{padding:9px 11px;border-radius:8px;font-size:13px;margin-bottom:10px}
+  .v-bot{background:#4a1d22;border:1px solid #7d2b33;color:#ff9aa5}
+  .v-sus{background:#4a3d1d;border:1px solid #7d6a2b;color:#ffd98a}
+  .v-ok{background:#1d4a2b;border:1px solid #2b7d46;color:#8ce0a8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>视频平台互动检测</h1>
+  <div class="sub">模拟视频网站的风控：它不看你怎么点，看你的观看和互动数据像不像真人。</div>
+
+  <div class="player">
+    <div>▶ 视频播放中</div>
+    <div class="bar" id="bar"></div>
+    <div class="time" id="time">0.0 / 180.0s</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="like">👍 点赞</button>
+      <button id="coin">🪙 投币</button>
+      <button id="fav">⭐ 收藏</button>
+      <button id="follow">👤 关注</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="next">▶ 下一个</button>
+      <button id="pause">⏸ 暂停</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><button id="run" style="background:#1f6feb;border-color:#1f6feb">跑检测</button></div>
+  </div>
+
+  <div id="verdict"></div>
+  <div class="card"><div id="out">还没跑。</div></div>
+</div>
+
+<script src="/video.js"></script>
+<script>
+document.getElementById('run').addEventListener('click',()=>{
+  const r=window.VideoDetect.run();
+  const v=document.getElementById('verdict');
+  v.className='v '+(r.verdict.level==='bot'?'v-bot':r.verdict.level==='sus'?'v-sus':'v-ok');
+  v.textContent=`判定：${r.verdict.label} —— ${r.verdict.action}（风险分 ${r.risk}/100，越高越可疑）`;
+  const L=[];
+  L.push('—— 命中的可疑项 ——');
+  const h=r.flags.filter(f=>f.hit);
+  if(!h.length)L.push('（无）');
+  h.forEach(f=>L.push(`⚠️ [${f.id}] ${f.detail}`));
+  L.push('');L.push('—— 统计 ——');
+  L.push(JSON.stringify(r.stats,null,1));
+  document.getElementById('out').textContent=L.join('\n');
+  window.__videoLast=r;
+});
+</script>
+</body>
+</html>

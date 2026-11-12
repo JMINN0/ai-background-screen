@@ -89,6 +89,13 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/probe.js') {
     return serveStatic(res, 'probe.js');
   }
+  // 视频平台互动检测
+  if (req.method === 'GET' && (url.pathname === '/video' || url.pathname === '/video.html')) {
+    return serveStatic(res, 'video.html');
+  }
+  if (req.method === 'GET' && url.pathname === '/video.js') {
+    return serveStatic(res, 'video.js');
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/report') {
     let raw = '';
