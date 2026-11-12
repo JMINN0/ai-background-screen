@@ -38,6 +38,7 @@ export function startSpec() {
       dpi: { type: 'integer', description: '密度，默认 320。' },
       orientation: { type: 'string', description: '方向："portrait"（竖屏，确保高>宽）、"landscape"（横屏，确保宽>高）。省略时按给定的 width/height 创建。landscape 时如果 width<height 会自动交换。' },
       systemDecorations: { type: 'boolean', description: '默认 false。false 时虚拟屏上不含二级桌面、导航栏和权限弹窗，AI 截图更干净（scrcpy ≥3.1）。改这个值会重建屏。' },
+      hwc: { type: 'string', description: '是否让硬件合成器（HWC）参与虚拟屏合成。"auto"（默认）：仅当本机 vendor.display.vds_allow_hwc=1 时自动开启；"on"：强制尝试；"off"：不碰。开启后 3D 游戏（SurfaceView 渲染）能正常出画面，否则全黑。这是全局 SurfaceFlinger 属性，stop 时会恢复原值。' },
     },
     output: out('displayId、SurfaceFlinger id、是否具备托管 App 的能力标志。'),
   };

@@ -26,6 +26,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,8 +60,35 @@ export async function shell(cmd, timeout = 30000) {
 
 /** 插件自带的 jar 路径（打包在 assets 里）。 */
 function localJar() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, '..', 'assets', 'scrcpy-server.jar');
+  // import.meta.url 在常规 ESM 下是有的，但宿主用 bundle 方式加载插件时会是 undefined，
+  // 实测表现：vdisplay_start 直接报
+  //   The "path" argument must be of type string or an instance of URL. Received undefined
+  // 这是发布版必须兜住的坑——不能假设宿主一定按 ESM 文件加载。
+  // 三级兜底，取第一个真实存在的：
+  //   ① 常规 ESM：从模块自身位置往上找 assets/
+  //   ② 环境变量 DSH_SCREEN_JAR（给特殊部署留的口子）
+  //   ③ 从 DSH_HOME 推 profile 里的安装位置
+  const cands = [];
+  try {
+    const u = import.meta?.url;
+    if (typeof u === 'string' && u) {
+      cands.push(join(dirname(fileURLToPath(u)), '..', 'assets', 'scrcpy-server.jar'));
+    }
+  } catch { /* import.meta.url 不可用，走后面的兜底 */ }
+  if (process.env.DSH_SCREEN_JAR) cands.push(process.env.DSH_SCREEN_JAR);
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh');
+  // 不写死 profile 名：别人可能装在 web / desktop / 自建 profile 下，逐个扫一遍。
+  const profilesDir = join(home, 'profiles');
+  try {
+    for (const p of readdirSync(profilesDir)) {
+      cands.push(join(profilesDir, p, 'node_modules', 'dsh-go-plugin-screen', 'assets', 'scrcpy-server.jar'));
+    }
+  } catch { /* 没有 profiles 目录就跳过 */ }
+
+  for (const c of cands) {
+    try { if (existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return cands[0];   // 一个都不存在时返回首选，交给调用方报清晰的错
 }
 
 /** 确保设备上有 jar，且在 555 目录里（防自杀）。 */
@@ -147,10 +175,14 @@ const state = {
   lastShotImgWidth: 0,
   systemDecorations: false,
   launchedPkgs: [],
+  // HWC 虚拟屏：部分 Qualcomm 设备的 HWC 支持合成虚拟屏，能让 3D 游戏不再黑屏。
+  // hwcPrev 记的是开启前的原值，hwcChanged 表示这次是不是我们改的——只恢复自己改过的。
+  hwcPrev: null,
+  hwcChanged: false,
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false, orientation } = {}) {
+export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false, orientation, hwc = 'auto' } = {}) {
   // 处理 orientation 参数：landscape 时自动交换宽高
   let finalWidth = width;
   let finalHeight = height;
@@ -202,6 +234,29 @@ export async function start({ width = 720, height = 1280, dpi = 320, systemDecor
 
   // scid 会被 scrcpy 用 Integer.parseInt(radix 16) 解析，必须是**有符号 32 位**内的正整数。
   // 用 0xffffffff 随机会得到 cd7bccd6 这种超范围值，server 直接 NumberFormatException 退出（踩过）。
+  // ---- HWC 虚拟屏（让 3D 游戏不再黑屏）----
+  // 背景：虚拟屏默认走 GPU 软件合成，SurfaceView 拿不到硬件叠加层 → 3D 游戏全黑。
+  // 实测 REDMAGIC NX809J（Adreno 8 Gen 3）：vendor.display.vds_allow_hwc=1 但
+  // debug.sf.enable_hwc_vds=0，把它置 1 后王者荣耀在虚拟屏正常渲染。
+  //
+  // 这是**全局** SurfaceFlinger 属性，会影响整台设备，所以：
+  //   1. 只在硬件声明支持（vds_allow_hwc=1）时才开，不盲开；
+  //   2. 记下原值，stop() 时只恢复我们自己改过的那种；
+  //   3. 任何一步失败都静默降级，不能因为开不了 HWC 就建不了屏。
+  // 它是 debug.* 属性，重启设备自动复原，不会留下永久改动。
+  if (hwc !== 'off') {
+    const allow = (await shell('getprop vendor.display.vds_allow_hwc')).trim();
+    if (allow === '1' || hwc === 'on') {
+      const prev = (await shell('getprop debug.sf.enable_hwc_vds')).trim() || '0';
+      state.hwcPrev = prev;
+      if (prev !== '1') {
+        await shell('setprop debug.sf.enable_hwc_vds 1');
+        const now = (await shell('getprop debug.sf.enable_hwc_vds')).trim();
+        state.hwcChanged = now === '1';
+      }
+    }
+  }
+
   const scid = (1 + Math.floor(Math.random() * 0x7ffffffe)).toString(16).padStart(8, '0');
   const port = 28000 + Math.floor(Math.random() * 900);
   state.scid = scid;
@@ -317,6 +372,8 @@ export async function start({ width = 720, height = 1280, dpi = 320, systemDecor
     canHost,
     width: state.width, height: state.height,
     flags: (flags.match(/FLAG_[A-Z_]+/g) || []).join(' '),
+    // HWC 是否生效：true 表示这次的屏有硬件合成，3D 游戏能正常渲染
+    hwc: state.hwcChanged || state.hwcPrev === '1',
   };
 }
 
@@ -350,6 +407,13 @@ export async function stop({ forceStopApps = false } = {}) {
   // 不能用 --remove-all：那会删掉别的插件（比如 web_* 的 CDP）的 forward。只删自己那条。
   for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
   if (state.child) { try { state.child.kill('SIGKILL'); } catch { /* ignore */ } }
+  // 恢复 HWC 属性。只恢复这次由我们改成的那个值——
+  // 如果开机时它本来就是 1，说明用户或别的工具故意开着，我们不去动它。
+  if (state.hwcChanged) {
+    await shell(`setprop debug.sf.enable_hwc_vds ${state.hwcPrev || '0'}`);
+    state.hwcChanged = false;
+  }
+  state.hwcPrev = null;
   state.sockets = [];
   state.child = null;
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;

@@ -28,7 +28,7 @@ Android 上「造虚拟屏」有两条路，差别是生死攸关的：
 | 工具 | 作用 |
 |---|---|
 | `screen_modes` | 列出四种操作方式（shell / browser / vdisplay / watch）和各自代价 |
-| `vdisplay_start` | 建私有虚拟屏，返回 displayId 与能力标志 |
+| `vdisplay_start` | 建私有虚拟屏，返回 displayId 与能力标志。支持 `orientation: 'landscape'/'portrait'` 自动调整宽高 |
 | `vdisplay_launch` | 把 App 投到虚拟屏（先 force-stop，避免把主屏的旧任务拉前台） |
 | `vdisplay_input` | 往虚拟屏定向注入 tap / swipe / text / key / **paste** |
 | `vdisplay_shot` | 截虚拟屏，返回本地路径，可直接当图片读 |
@@ -42,6 +42,23 @@ Android 上「造虚拟屏」有两条路，差别是生死攸关的：
 2. 网页交互 → `dsh-go-plugin-web` 的 CDP，不点屏幕
 3. 必须"看界面再点"的 App → `vdisplay_*`
 4. 用户想看你干了什么 → `vdisplay_shot` 截图发上来
+
+## 横屏/竖屏支持
+
+`vdisplay_start` 支持 `orientation` 参数：
+
+```javascript
+// 横屏（确保宽 > 高）
+await vdisplay_start({ orientation: 'landscape' });  // → 1280x720
+
+// 竖屏（确保高 > 宽）
+await vdisplay_start({ orientation: 'portrait' });   // → 720x1280
+
+// 自定义尺寸
+await vdisplay_start({ width: 1920, height: 1080 }); // 直接指定
+```
+
+**实测**：Minecraft PE 在横屏虚拟屏（1280x720）上正常渲染；虚拟屏带有 `FLAG_ROTATES_WITH_CONTENT` 标志，App 强制某个方向时虚拟屏会自动旋转匹配。
 
 ## 五个实测坑（都写进代码里了）
 
@@ -77,58 +94,50 @@ FLAG_OWN_CONTENT_ONLY + FLAG_OWN_FOCUS  → 能托管，内容独立
 
 ## 已知限制
 
-### ⚠️ 重度 3D 游戏画不出来（黑屏）
+### 3D 游戏：开了 HWC 就能跑，不开会黑屏
 
-**实测结论：虚拟屏跑不了重度 3D 游戏。**
+**能跑，前提是让硬件合成器（HWC）参与虚拟屏合成。**
 
-对 Minecraft（标准版，`com.mojang.minecraftpe`，无任何改造）实测：
+实测 REDMAGIC NX809J（Adreno 8 Gen 3 / Android 16）：
+
+```
+厂商声明     vendor.display.vds_allow_hwc = 1     ← 硬件支持
+系统默认     debug.sf.enable_hwc_vds     = 0     ← 但出厂是关的
+置 1 之后    王者荣耀在虚拟屏正常渲染（启动页非黑屏，3D 场景初始化成功）
+```
+
+所以插件现在会自动处理（`vdisplay_start` 的 `hwc` 参数，默认 `"auto"`）：
+检测到 `vds_allow_hwc=1` 就打开 `debug.sf.enable_hwc_vds`，`vdisplay_stop` 时恢复原值。
+
+**没有 HWC 支持的设备仍然会黑屏。** 未开启时的实测记录（Minecraft，`com.mojang.minecraftpe`）：
 
 ```
 vdisplay_start → vdisplay_launch：都报成功，landedOnVd=true
 进程存活，logcat 显示 LICENSED、app-foreground 正常
-但 vdisplay_shot 截出来是**全黑**，48 秒内画面只变化 1 次
+但 vdisplay_shot 截出来是全黑，48 秒内画面只变化 1 次
 多次测试：8–15 秒间进程退出，不稳定
 ```
 
-而同一个游戏在真屏上：41 FPS、正常渲染 3D 画面。
+同一个游戏在真屏上：41 FPS、正常渲染 3D 画面。
 
-**原因**：虚拟屏是软件合成，没有硬件合成层。3D 游戏的 SurfaceView 拿不到可用的硬件 buffer，
-画面写不进去，所以截图全黑；进程随后因为等不到 surface 或 ANR 而退出。
+> 早期版本把这条写成"虚拟屏跑不了 3D 游戏"，那是**只测了默认配置**得出的结论，已修正。
 
-改造过的 ApexM 更直接暴露了这点：它 hook 了引擎初始化，读到「窗口指针 = 0」
-（真屏是 `0x7237a3ab40`），于是 `GEngine` 恒为 0，引擎从来没起来过。
+**HWC 的作用**：虚拟屏默认走 GPU 软件合成，SurfaceView 拿不到硬件叠加层，画面写不进去。
+HWC 参与后，硬件直接合成到虚拟屏的 buffer，3D 内容就能出图。
 
-**轻量 App 不受影响**（微信、小红书、设置、浏览器、文档类都实测正常）。
-判断标准：**需要持续硬件 GPU 渲染到 Surface 的 App 不行**，UI 类 App 没问题。
-
-<details>
-<summary>技术细节与可能方案（展开）</summary>
-
-**根本原因（已溯源到 Android 框架层）**
-
-`VirtualDisplaySurface` 强制走 GLES 软件合成，不经过 HWC（Hardware Composer）。SurfaceView 依赖 HWC 硬件叠加层才能拿到 GPU 渲染的帧缓冲，软件合成路径下拿到的是空缓冲 → 黑屏。
-
-所有 `VIRTUAL_DISPLAY_FLAG_*` 组合都是策略标记，不改变合成方式（已逐一验证）。
-
-**验证当前设备是否支持硬件合成**
+**怎么判断自己的机器行不行**：
 
 ```bash
-adb shell dumpsys SurfaceFlinger | grep -A 20 "Virtual displays"
-# 看到 "hwc" / "hardware composer" 字样 → 支持
-# 什么都没有 → 不支持，无解
+adb shell getprop vendor.display.vds_allow_hwc
+# 1 = 硬件支持，插件会自动开启
+# 0 或空 = 不支持，3D 游戏仍然黑屏
 ```
 
-**三条可能路径**
+**轻量 App 从来不受影响**（微信、小红书、设置、浏览器、文档类都实测正常）。
 
-| 方案 | 可行性 | 成本 |
-|---|---|---|
-| 芯片组 HWC 支持虚拟屏（Qualcomm 旗舰部分型号） | 设备依赖 | 低（查 dumpsys 即可） |
-| Root 后重定向 SurfaceFlinger layer | 技术可行 | 极高（需逆向 SF binder 接口） |
-| 改用 GLSurfaceView 的游戏（Unity 导出等） | 理论可能 | 中（需找对应 App 实测） |
-
-**scrcpy 的处理方式**：虚拟屏只用于轻量 App，重度游戏官方推荐走主屏镜像（`displayId=0`）。
-
-</details>
+**风险提示**：`debug.sf.enable_hwc_vds` 是**全局** SurfaceFlinger 属性，会影响整台设备的合成策略。
+插件只在 `vds_allow_hwc=1` 时才动它，并在 `vdisplay_stop` 时恢复原值；
+它是 `debug.*` 属性，重启设备也会自动复原，不会留下永久改动。
 
 ### 其他
 

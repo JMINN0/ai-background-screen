@@ -24,11 +24,14 @@ export async function start(args) {
     height: Number(args?.height) || 1280,
     dpi: Number(args?.dpi) || 320,
     systemDecorations: args?.systemDecorations === true,   // 默认 false：屏上不带二级桌面/导航栏
+    orientation: args?.orientation,                        // portrait / landscape
+    hwc: args?.hwc || 'auto',                              // 3D 游戏需要 HWC 参与合成
   });
   if (!r.ok) return { text: `建屏失败：${r.hint}` };
   return {
     text: `虚拟屏已就绪：displayId=${r.displayId}，SurfaceFlinger id=${r.sfId || '(未取到)'}\n`
       + `能托管 App：${r.canHost ? '是 ✅' : '否（缺 OWN_CONTENT_ONLY 或 OWN_FOCUS）'}\n`
+      + `硬件合成（HWC）：${r.hwc ? '已开启 ✅ 3D 游戏可正常渲染' : '未开启（3D 游戏会黑屏，轻量 App 不受影响）'}\n`
       + `标志位：${r.flags || '(无)'}\n`
       + '这块屏用户看不见，不占主屏焦点。',
   };
