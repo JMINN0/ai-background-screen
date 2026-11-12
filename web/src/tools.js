@@ -28,8 +28,14 @@ async function launchBrowser({ allowForeground = false } = {}) {
     return { ok: false, refused: true, hint: '未传 allowForeground:true，按规则不主动拉起浏览器。' };
   }
   const target = await adbTarget();
-  await pexec(ADB, ['-s', target, 'shell', 'monkey', '-p', currentBrowser().pkg,
-    '-c', 'android.intent.category.LAUNCHER', '1'], { timeout: 20000 }).catch(() => {});
+  // **不要用 monkey 启动浏览器**（2026-11-12 实测）：`monkey -p <pkg> -c LAUNCHER 1`
+  // 会注入随机事件，实测 4/4 次都把系统的 `accelerometer_rotation` 从 0 翻成 1，
+  // 等于擅自替用户打开了自动旋转。同样的启动换成 `am start` 4/4 次都不变。
+  // 用户明确禁止我们动自动旋转，所以这里必须走 am start。
+  await pexec(ADB, ['-s', target, 'shell', 'am', 'start',
+    '-a', 'android.intent.action.MAIN',
+    '-c', 'android.intent.category.LAUNCHER',
+    '-p', currentBrowser().pkg], { timeout: 20000 }).catch(() => {});
   for (let i = 0; i < 12; i += 1) {
     await sleep(700);
     const r = await cdp.ensure();

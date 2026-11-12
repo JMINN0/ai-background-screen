@@ -191,8 +191,8 @@ export async function ensure() {
       + '       vdisplay_start {}\n'
       + `       vdisplay_launch { pkg: "${currentBrowser().pkg}" }\n`
       + '     注意 vdisplay_launch 会先 force-stop 目标 App，等于重启它。\n'
-      + `  ② 用户没在忙、手机也不紧张 → 直接开，但开之前告诉用户一声：\n`
-      + `       adb shell monkey -p ${currentBrowser().pkg} -c android.intent.category.LAUNCHER 1\n`
+      + `  ② 用户没在忙、手机也不紧张 → 直接开，但开之前告诉用户一声：\n     （用 am start，**不要用 monkey** —— 实测它会把自动旋转打开）\n`
+      + `       adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${currentBrowser().pkg}\n`
       + '\nAndroid 没有"在后台启动一个 App"的接口；只有启动到虚拟屏才能既跑起来又不抢屏。',
   };
 }

@@ -326,6 +326,31 @@ web_attach { targetId: "...", wake: true }
 - 测试脚本一律不得传这个参数
 - **连接失败时会先检查别的浏览器是否在跑**：如果在跑（比如 Edge 没开但 Chrome 开着），直接拒绝给出启动建议，只允许让用户自己切回来或改指向正在运行的那个。多开一个浏览器就足以让用户的标签全丢。
 
+### 铁律一点五：**绝对不要用 `monkey` 启动浏览器**
+
+2026-11-12 实测发现：`monkey -p <pkg> -c android.intent.category.LAUNCHER 1` 会注入随机事件，
+**把系统的 `accelerometer_rotation` 从 0 翻成 1** —— 等于擅自替用户打开了自动旋转。
+
+对照实验：
+
+| 命令 | 4 次重复结果 |
+|---|---|
+| `monkey -p com.tencent.mm -c LAUNCHER 1` | **4/4 次都变成 1** |
+| `am start -n com.tencent.mm/.ui.LauncherUI` | 4/4 次保持 0 |
+| `monkey` 启动一个不存在的包（直接中止） | 保持不变 |
+
+跟目标 App 无关（B 站用 `am start` 不变、微信用 `monkey` 就变），是 `monkey` 本身的问题。
+
+**所以启动浏览器一律用：**
+
+```bash
+adb shell am start -a android.intent.action.MAIN \
+  -c android.intent.category.LAUNCHER -p <包名>
+```
+
+这条是有代价的：用户明确禁止我们动自动旋转，而 `monkey` 会在他不知情的情况下改掉。
+排查时一度以为是插件主逻辑在改，实际是自己的测试命令在改。
+
 ### 铁律二：只关自己的标签
 
 标签在打开时会在 URL 上加 `#dsh-<marker>`。关闭时按 marker + 记录的 targetId **双保险**匹配，不在名单里的标签一律不碰。
@@ -416,7 +441,7 @@ Android 上 `Target.createTarget` 在浏览器后台时会失败。这时候**�
 
 ② 用户没在忙、手机也不太紧张
      → 直接开，但开之前告诉用户一声
-        adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1
+        adb shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p <pkg>
 ```
 
 **这条判断交给 AI 自己做，不需要每次都问用户。** 只有一种情况必须先问：那个浏览器**已经在跑而且标签很多**时，任何会重启它的操作都要先征得同意。

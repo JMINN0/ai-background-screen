@@ -224,7 +224,9 @@ vdisplay_input paste { text: "测试输入" }          → 文字进去了，联
    必须在**单个 target** 上实测命令，不能只看 `/json/version` 返回 200。
 5. **`monkey -c LAUNCHER` 会触发会话恢复**，恢复过程是异步的，
    在它没结束时测"新建标签"可能失败，会误判成"不支持建标签"。
-6. **每轮之间必须真的清干净**：`am force-stop` 所有被测浏览器 → 等 2 秒 →
+6. **`monkey` 会改系统设置**。实测 `monkey -p <pkg> -c LAUNCHER 1` 4/4 次把
+   `accelerometer_rotation` 从 0 翻成 1，换成 `am start` 4/4 次不变。启动 App 一律用 `am start`。
+7. **每轮之间必须真的清干净**：`am force-stop` 所有被测浏览器 → 等 2 秒 →
    确认 socket 数为 0 → `adb forward --remove-all` → 再启动下一个。
    否则上一轮的 forward 指向死 socket，表现为"连接成功但无数据"。
 
