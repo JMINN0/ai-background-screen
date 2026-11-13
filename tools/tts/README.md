@@ -77,13 +77,28 @@ export MIMO_TTS_STYLE="慵懒 漫不经心 声音低沉有磁性"
 
 或者直接改 `mimo_tts_proxy.py` 里的 `DEFAULT_STYLE`。
 
-## 七、注意
+## 七、端点会自动识别
+
+代理按 key 前缀自动选端点，不用你操心：
+
+| key 格式 | 端点 |
+|---|---|
+| `sk-xxxxx`（按量付费） | `https://api.xiaomimimo.com/v1` |
+| `tp-xxxxx`（Token Plan 中国） | `https://token-plan-cn.xiaomimimo.com/v1` |
+| `ttp-xxxxx`（Token Plan 团队） | 同上 |
+
+**这两条线互不通用，弄错直接 401。** 官方 Token Plan 快速接入页和 MiMo-Code issue #2280
+的实测对照表都确认了这一点。
+
+要手动覆盖：`export MIMO_API_BASE=https://token-plan-sgp.xiaomimimo.com/v1`
+
+## 八、注意
 
 1. **限时免费**，官方没公布结束时间，随时可能收费
 2. **不要开着代理不管**：它在 127.0.0.1 上，外网访问不到，但会占一个进程
 3. 重启手机会没掉，要重新跑第二步
 
-## 八、排错
+## 九、排错
 
 看日志：
 ```bash

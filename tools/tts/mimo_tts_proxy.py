@@ -51,9 +51,27 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8766
 
 API_KEY = os.environ.get("MIMO_API_KEY", "").strip()
-# MiMo 的 OpenAI 兼容网关；不同区域可能不同，可用环境变量覆盖
-API_BASE = os.environ.get("MIMO_API_BASE", "https://api.xiaomimimo.com/v1").rstrip("/")
 MODEL = os.environ.get("MIMO_TTS_MODEL", "mimo-v2.5-tts")
+
+
+def default_api_base(key: str) -> str:
+    """
+    按 key 前缀选端点。这两条线互不通用，弄错直接 401。
+
+        sk-xxxxx  按量付费        → https://api.xiaomimimo.com/v1
+        tp-xxxxx  Token Plan(CN)  → https://token-plan-cn.xiaomimimo.com/v1
+        ttp-xxxxx Token Plan(团队) → 同上
+        Token Plan 新加坡集群      → https://token-plan-sgp.xiaomimimo.com/v1
+
+    来源：官方 Token Plan 快速接入页 + MiMo-Code issue #2280 的实测对照表
+    （sk- 打 token-plan 端点、tp- 打按量端点，都是 401）。
+    """
+    if key.startswith("ttp-") or key.startswith("tp-"):
+        return "https://token-plan-cn.xiaomimimo.com/v1"
+    return "https://api.xiaomimimo.com/v1"
+
+
+API_BASE = os.environ.get("MIMO_API_BASE", "").rstrip("/") or default_api_base(API_KEY)
 
 # 预设音色。国内文档列的是中文名，海外是英文名，两套都放进来。
 PRESETS = {
