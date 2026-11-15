@@ -195,3 +195,35 @@ export function streamStopSpec() {
     output: out('结果。'),
   };
 }
+
+export function textSpec() {
+  return {
+    name: 'vdisplay_text',
+    description: [
+      '把虚拟屏上的文字识别成文本，带坐标返回。**这是读数字和文字最可靠的方式，而且不花图片 token。**',
+      '',
+      '什么时候该用：要读屏幕上的数字、金额、时间、列表文字、按钮文字、输入框内容时。',
+      '实测：把截图缩成九格后，原图 26px 的字只剩 5px，模型读不出还会编造 —— 所以数字一律走这个工具。',
+      '',
+      '返回每行文字 + 像素坐标 + 归一化坐标（nx/ny，可直接给 vdisplay_input 点按）+ 置信度。',
+      '图像没变化时会直接复用上次结果，不重新识别。',
+      '',
+      '成本：约 1.6 秒（首次要 3-5 秒加载模型），**0 图片 token**。',
+    ].join('\n'),
+    parameters: {
+      minConf: {
+        type: 'number',
+        description: '置信度下限，默认 0.45。调高（如 0.8）只留很确定的，调低会带噪声进来。',
+      },
+      maxLines: {
+        type: 'integer',
+        description: '最多返回几行，默认 80。屏幕文字多时截断（按从上到下、从左到右）。',
+      },
+      fresh: {
+        type: 'boolean',
+        description: '强制重新识别，默认 false（画面没变就复用缓存）。',
+      },
+    },
+    output: out('识别到的文字行（含坐标和置信度）。'),
+  };
+}

@@ -9,7 +9,7 @@
  */
 import {
   inputSpec, launchSpec, mainShotSpec, modesSpec, shotSpec, startSpec, statusSpec, stopSpec,
-  streamStartSpec, streamStopSpec,
+  streamStartSpec, streamStopSpec, textSpec,
 } from './tool-spec.js';
 import * as T from './tools.js';
 

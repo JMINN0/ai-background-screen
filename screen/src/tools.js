@@ -180,3 +180,44 @@ export async function closeAll() {
   await vd.stop();
   return { text: '虚拟屏与推流都已关闭。' };
 }
+
+export async function text(args) {
+  const st = await vd.status();
+  if (!st.running) return { text: '虚拟屏没在运行。先 vdisplay_start 建屏、vdisplay_launch 投 App。' };
+
+  const ocr = await import('./ocr.js');
+  const fresh = args?.fresh === true;
+
+  // 拿一张原生分辨率的截图（OCR 要在原生尺度上跑，缩小会丢小字）
+  const shot = await vd.shot(String(args?.dir || '/tmp'), {
+    width: Math.min(1080, Math.max(360, st.width || 720)),
+    format: 'png',
+  });
+  if (!shot.ok) return { text: `截图失败：${shot.hint}` };
+
+  const r = await ocr.recognize(shot.path, {
+    minConf: args?.minConf === undefined ? 0.45 : Number(args.minConf),
+    maxLines: Number(args?.maxLines) || 80,
+    hash: fresh ? null : shot.hash,
+  });
+
+  if (!r.ok) return { text: r.hint };
+
+  const W = shot.width || 720;
+  const H = shot.height || 1280;
+  const lines = [
+    `识别到 ${r.count} 行文字${r.total > r.count ? `（共 ${r.total}，已截断）` : ''}`
+      + `，耗时 ${r.cached ? '0（画面没变，复用上次）' : `${(r.elapsedMs / 1000).toFixed(1)} 秒`}`,
+    `屏 ${W}x${H}，下面每行的 nx/ny 是归一化坐标，可直接传给 vdisplay_input。`,
+    '',
+  ];
+  for (const l of r.lines) {
+    const nx = ((l.x + l.w / 2) / W).toFixed(3);
+    const ny = ((l.y + l.h / 2) / H).toFixed(3);
+    lines.push(`  [${l.conf.toFixed(2)}] (${String(l.x).padStart(4)},${String(l.y).padStart(4)}) ${l.w}x${l.h}  nx=${nx} ny=${ny}  ${l.text}`);
+  }
+  lines.push('');
+  lines.push('要读的位置画面对不上？用 vdisplay_shot(frames=1) 看实际画面。');
+  lines.push('要看清某个按钮长什么样？用 vdisplay_shot 配合坐标自己判断。');
+  return { text: lines.join('\n') };
+}
