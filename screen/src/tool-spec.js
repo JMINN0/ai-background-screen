@@ -342,3 +342,59 @@ export function checkAppSpec() {
     output: out('占用等级和详细情况。'),
   };
 }
+
+export function claimAppSpec() {
+  return {
+    name: 'screen_claim_app',
+    description: [
+      '申请占用一个 App。拿到了才能安全地在它上面操作，别人再申请会失败。',
+      '',
+      '**默认不抢占**（onConflict 默认 fail）。这是故意的：默认抢占会让多 AI 互相抢，',
+      '默认失败才逼出「先查再决定」。',
+      '',
+      '三种冲突处理：',
+      "  fail    直接失败，告诉你谁占着（默认）",
+      "  wait    返回还要等多久",
+      "  preempt 强制接管 —— 原持有者下次调用会收到撤销通知",
+      '',
+      '**重要**：宽限期只有 5 秒，而一轮 AI 往返 6-9 秒，所以「让原持有者体面收尾」',
+      '在物理上做不到。preempt 能保证的只有「它不会继续误操作」。',
+      '',
+      '登录、支付、发送这类操作请传 preemptible:false，别人就抢不走了。',
+    ].join('\n'),
+    parameters: {
+      pkg: { type: 'string', required: true, description: '包名。用 vdisplay_apps 查。' },
+      onConflict: { type: 'string', description: "'fail'（默认）/ 'wait' / 'preempt'" },
+      preemptible: { type: 'boolean', description: '默认 true。设 false 表示谁都抢不走（登录取证、支付中）。' },
+      nonPreemptibleReason: { type: 'string', description: 'preemptible:false 时说明原因，比如"正在登录"。' },
+      priority: { type: 'string', description: "'user' / 'agent'（默认）/ 'subagent'。高优先级能抢低的。" },
+      ttlSec: { type: 'integer', description: '租约时长秒数，默认 600（10 分钟）。' },
+      mode: { type: 'string', description: "'exclusive'（默认）/ 'readonly'" },
+    },
+    output: out('租约信息，或者冲突详情。'),
+  };
+}
+
+export function releaseAppSpec() {
+  return {
+    name: 'screen_release_app',
+    description: [
+      '释放 App 占用。干完了主动放，别人就能用了。',
+      '',
+      '不传 leaseId 时释放自己持有的全部租约。',
+    ].join('\n'),
+    parameters: {
+      leaseId: { type: 'string', description: '要释放的租约 id。省略则释放当前会话全部的。' },
+    },
+    output: out('释放结果。'),
+  };
+}
+
+export function leasesSpec() {
+  return {
+    name: 'screen_leases',
+    description: '看当前所有 App 占用凭证（谁占着什么、还剩多久、能不能抢）。',
+    parameters: {},
+    output: out('租约列表。'),
+  };
+}

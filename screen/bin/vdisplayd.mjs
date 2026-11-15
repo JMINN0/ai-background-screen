@@ -148,6 +148,33 @@ const ACTIONS = {
     const pool = await import('../src/pool.js');
     return pool.destroy(String(args?.screenId || ''), args || {});
   },
+  /* ===== 租约 ===== */
+  async claimApp(args) {
+    const lease = await import('../src/lease.js');
+    const pool = await import('../src/pool.js');
+    const info = pool.info();
+    if (!info.active) return { ok: false, code: 'E_NO_SCREEN', hint: '还没有活动屏，先 poolCreate' };
+    return lease.claim({
+      pkg: String(args?.pkg || ''),
+      screenId: args?.screenId ? String(args.screenId) : info.active,
+      owner: String(args?.owner || 'unknown'),
+      mode: args?.mode, priority: args?.priority,
+      preemptible: args?.preemptible,
+      nonPreemptibleReason: args?.nonPreemptibleReason,
+      onConflict: args?.onConflict || 'fail',
+      ttlMs: args?.ttlSec ? Number(args.ttlSec) * 1000 : undefined,
+    });
+  },
+  async releaseApp(args) {
+    const lease = await import('../src/lease.js');
+    if (args?.leaseId) return lease.release(String(args.leaseId));
+    return lease.releaseAll(String(args?.owner || 'unknown'));
+  },
+  async leasesList() {
+    const lease = await import('../src/lease.js');
+    return lease.list();
+  },
+
   async checkApp(args) {
     // 占用检测：主屏谁在用、自家屏上有没有、有没有外来屏
     const occ = await import('../src/occupancy.js');
@@ -227,7 +254,9 @@ async function handle(req, res) {
    */
   const MUTATING = new Set(['start', 'stop', 'launch', 'input', 'shot', 'mainShot', 'text',
   // 池操作会切换全局活动上下文，必须串行，否则两个请求会互相切走
-  'poolCreate', 'poolUse', 'poolDestroy']);
+  'poolCreate', 'poolUse', 'poolDestroy',
+  // 租约也改全局状态（可能撤销别人的），必须串行
+  'claimApp', 'releaseApp']);
   const run = async () => {
     try {
       const out = await fn(payload.args || {});

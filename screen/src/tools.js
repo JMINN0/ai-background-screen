@@ -359,3 +359,55 @@ export async function checkApp(args) {
   const r = await occ.checkApp(pkg, { ourScreens });
   return { text: occ.describe(r) };
 }
+
+/* ===== 租约 ===== */
+
+export async function claimApp(args) {
+  const lease = await import('./lease.js');
+  const pkg = String(args?.pkg || '').trim();
+  if (!/^[a-z][\w.]*$/i.test(pkg)) return { text: 'pkg 看起来不是合法包名。用 vdisplay_apps 查。' };
+  const pool = await import('./pool.js');
+  const info = pool.info();
+  if (!info.active) return { text: '还没有活动屏。先 screen_new 建一块。' };
+
+  const r = await lease.claim({
+    pkg,
+    screenId: info.active,
+    owner: String(args?.owner || 'this-session'),
+    mode: args?.mode,
+    priority: args?.priority,
+    preemptible: args?.preemptible,
+    nonPreemptibleReason: args?.nonPreemptibleReason,
+    onConflict: args?.onConflict || 'fail',
+    ttlMs: args?.ttlSec ? Number(args.ttlSec) * 1000 : undefined,
+  });
+
+  if (r.ok) {
+    const l = r.lease;
+    const lines = [`已占用「${l.pkg}」→ ${l.screenId}（${l.leaseId}，还剩 ${l.remainingSec} 秒）`];
+    if (!l.preemptible) lines.push(`  标记为不可抢${l.nonPreemptibleReason ? `：${l.nonPreemptibleReason}` : ''}`);
+    if (r.preempted) lines.push(`  接管自 ${r.preempted.owner}`);
+    if (r.note) lines.push(`  ${r.note}`);
+    return { text: lines.join('\n') };
+  }
+  return {
+    text: `${r.hint}\n${r.holder ? `原持有者：${r.holder.owner}（${r.holder.screenId}，还剩 ${r.holder.remainingSec} 秒）` : ''}`
+      + (r.next?.action ? `\n建议：${r.next.action}` : ''),
+  };
+}
+
+export async function releaseApp(args) {
+  const lease = await import('./lease.js');
+  const id = args?.leaseId ? String(args.leaseId) : '';
+  if (id) {
+    const r = lease.release(id);
+    return { text: r.ok ? `已释放 ${id}` : (r.hint || '释放失败') };
+  }
+  const r = lease.releaseAll(String(args?.owner || 'this-session'));
+  return { text: r.released.length ? `已释放 ${r.released.length} 个租约：${r.released.join(', ')}` : '当前会话没有持有租约。' };
+}
+
+export async function leases() {
+  const lease = await import('./lease.js');
+  return { text: lease.describeList() };
+}

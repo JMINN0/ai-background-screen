@@ -179,6 +179,10 @@ const ACTION_MAP = {
   screen_use: 'poolUse',
   screen_close: 'poolDestroy',
   screen_check_app: 'checkApp',
+  // 租约
+  screen_claim_app: 'claimApp',
+  screen_release_app: 'releaseApp',
+  screen_leases: 'leasesList',
 };
 
 /**
