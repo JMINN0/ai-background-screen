@@ -80,6 +80,14 @@ function toInputSchema(params) {
   return schema;
 }
 
+/**
+ * MCP 下**不该暴露**的工具。
+ *
+ * vdisplay_stream / vdisplay_stream_stop：它们的消费者是 DSH Go 的「AI 画面」胶囊
+ * （原生插件去回环端口拉 MJPEG），别的宿主没有这个组件，暴露了只会让模型白调一次。
+ */
+const HIDDEN = new Set(['vdisplay_stream', 'vdisplay_stream_stop']);
+
 /** 收集所有工具定义 */
 function listTools() {
   const out = [];
@@ -88,6 +96,7 @@ function listTools() {
     let spec;
     try { spec = SPECS[key](); } catch { continue; }
     if (!spec?.name) continue;
+    if (HIDDEN.has(spec.name)) continue;
     out.push({
       name: spec.name,
       description: String(spec.description || '').slice(0, 4000),
@@ -164,6 +173,11 @@ const ACTION_MAP = {
   vdisplay_input: 'input',
   screen_shot_main: 'mainShot',
   vdisplay_apps: 'apps',
+  // 多屏池
+  screen_pool: 'poolInfo',
+  screen_new: 'poolCreate',
+  screen_use: 'poolUse',
+  screen_close: 'poolDestroy',
 };
 
 /**

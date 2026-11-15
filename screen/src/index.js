@@ -10,6 +10,7 @@
 import {
   inputSpec, launchSpec, mainShotSpec, modesSpec, shotSpec, startSpec, statusSpec, stopSpec,
   streamStartSpec, streamStopSpec, textSpec, appsSpec,
+  poolSpec, newScreenSpec, useScreenSpec, closeScreenSpec,
 } from './tool-spec.js';
 import * as T from './tools.js';
 
@@ -70,6 +71,10 @@ export async function apply(ctx) {
             [shotSpec, (a) => T.shot(a)],
             [textSpec, (a) => T.text(a)],
             [appsSpec, () => T.apps()],
+            [poolSpec, () => T.poolInfo()],
+            [newScreenSpec, (a) => T.newScreen(a)],
+            [useScreenSpec, (a) => T.useScreen(a)],
+            [closeScreenSpec, (a) => T.closeScreen(a)],
             [mainShotSpec, (a) => T.mainShot(a)],
             [statusSpec, () => T.status()],
             [stopSpec, (a) => T.stop(a)],   // 以前写成 () => T.stop()，把 args 丢了，forceStopApps 永远无效

@@ -300,3 +300,50 @@ export async function apps() {
       + pkgs.map((p) => `  ${p}`).join('\n'),
   };
 }
+
+/* ===== 多屏池 ===== */
+
+export async function poolInfo() {
+  const pool = await import('./pool.js');
+  const info = pool.info();
+  if (!info.count) {
+    return { text: '池里还没有屏。用 screen_new 建一块。' };
+  }
+  const lines = [`共 ${info.count} 块屏，活动屏：${info.active || '(无)'}`, ''];
+  for (const s of info.screens) {
+    const mark = s.screenId === info.active ? ' ← 活动' : '';
+    lines.push(`  ${s.screenId}  displayId=${s.displayId}  dpi=${s.dpi}${mark}`);
+  }
+  lines.push('');
+  lines.push('所有 vdisplay_* 操作都作用在活动屏上。切换用 screen_use。');
+  return { text: lines.join('\n') };
+}
+
+export async function newScreen(args) {
+  const pool = await import('./pool.js');
+  const r = await pool.create({
+    orientation: args?.orientation,
+    hwc: args?.hwc,
+  });
+  if (!r.ok) return { text: `建屏失败：${r.hint}` };
+  return {
+    text: `新屏已建好：${r.screenId}（displayId=${r.displayId}，dpi=${r.dpi}）\n`
+      + `它现在是活动屏，接下来 vdisplay_launch 会投到它上面。\n`
+      + `想切回别的屏用 screen_use。`,
+  };
+}
+
+export async function useScreen(args) {
+  const pool = await import('./pool.js');
+  const r = pool.use(String(args?.screenId || ''));
+  if (!r.ok) return { text: r.hint };
+  return { text: `已切到 ${args.screenId}（displayId=${r.displayId}）。之后的操作都作用在这块屏上。` };
+}
+
+export async function closeScreen(args) {
+  const pool = await import('./pool.js');
+  const id = String(args?.screenId || '');
+  const r = await pool.destroy(id, { forceStopApps: args?.forceStopApps === true });
+  if (!r.ok) return { text: r.hint };
+  return { text: `已销毁 ${id}。池里还剩 ${r.remaining} 块。` };
+}

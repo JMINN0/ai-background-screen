@@ -256,3 +256,70 @@ export function appsSpec() {
     output: out('已安装第三方 App 的包名列表。'),
   };
 }
+
+export function poolSpec() {
+  return {
+    name: 'screen_pool',
+    description: [
+      '看当前有几块后台屏、哪块是活动屏。',
+      '',
+      '后台屏是这么回事：每个会话可以有自己的屏，屏上跑自己的 App，互不干扰。',
+      '实测两块屏可以同时跑不同 App（一块设置、一块文件管理器），切换不打扰对方。',
+      '',
+      '注意：**所有 vdisplay_* 操作作用在「活动屏」上**，切换用 screen_use。',
+    ].join('\n'),
+    parameters: {},
+    output: out('屏列表、活动屏、每块的 displayId 和 dpi。'),
+  };
+}
+
+export function newScreenSpec() {
+  return {
+    name: 'screen_new',
+    description: [
+      '新建一块后台屏，返回它的 screenId。',
+      '',
+      '什么时候用：需要一块干净的屏、或需要同时让两个 App 各自独立跑。',
+      '注意屏幕数量受手机资源限制 —— 每块屏约 75-185MB 内存，实测两块很轻松，',
+      '4-6 块要看你手机上跑的 App 有多重。',
+    ].join('\n'),
+    parameters: {
+      orientation: { type: 'string', description: '"portrait" 或 "landscape"。省略按物理屏比例。' },
+      hwc: { type: 'string', description: '"auto"（默认）/"on"/"off"。3D 游戏要开。' },
+    },
+    output: out('新建屏的 screenId、displayId、dpi。'),
+  };
+}
+
+export function useScreenSpec() {
+  return {
+    name: 'screen_use',
+    description: [
+      '切换活动屏。之后所有 vdisplay_* 操作都作用在这块屏上。',
+      '',
+      '典型用法：screen_new 建一块 → screen_use 切过去 → vdisplay_launch 投 App。',
+      '切回来不会打扰另一块屏上的 App —— 实测各自状态都保留。',
+    ].join('\n'),
+    parameters: {
+      screenId: { type: 'string', required: true, description: 'screenId，比如 "sd-1"。来自 screen_new 或 screen_pool。' },
+    },
+    output: out('切换结果。'),
+  };
+}
+
+export function closeScreenSpec() {
+  return {
+    name: 'screen_close',
+    description: [
+      '销毁一块后台屏，释放它的内存和上面的 App。',
+      '',
+      '注意：**屏一销毁，上面的 App 就没了**，下次要用得重新投。',
+      '如果只是想切走，用 screen_use，不用关屏。',
+    ].join('\n'),
+    parameters: {
+      screenId: { type: 'string', required: true, description: '要销毁的 screenId。' },
+      forceStopApps: { type: 'boolean', description: '默认 false。true 时同时 force-stop 屏上的 App。' },
+    },
+    output: out('销毁结果。'),
+  };
+}
