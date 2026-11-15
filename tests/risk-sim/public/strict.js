@@ -26,6 +26,7 @@
     keys: [],           // {type,key,code,shift,ctrl,alt,meta,t,repeat,trusted}
     inputs: [],         // {t,inputType,data,value}
     touch: { starts: 0, moves: 0, ends: 0 },
+    touchPairs: [],   // {start,end} 每次触摸的起止时刻
   };
 
   let lastMouse = null;
@@ -111,13 +112,28 @@
       });
     }, true);
 
-    ['touchstart', 'touchmove', 'touchend'].forEach((type) => {
-      window.addEventListener(type, () => {
-        if (type === 'touchstart') S.touch.starts += 1;
-        else if (type === 'touchmove') S.touch.moves += 1;
-        else S.touch.ends += 1;
+      // 记录每次触摸的起止时刻，用来算**按住时长**。
+      // 不能用 mousedown→mouseup：Chrome 对触摸的兼容鼠标事件是同一时刻补发的，
+      // 实测 dwell 恒为 0（[0,0,0,0,0]），而 touchStart→touchEnd 是 [329,196,169,194,215]。
+      // 真人手机上两者表现一致，所以只有 touch 数据能反映真实按住时长。
+      window.addEventListener('touchstart', (e) => {
+        S.touch.starts += 1;
+        const t = e.changedTouches && e.changedTouches[0];
+        S._touchDownAt = e.timeStamp;
+        S._touchId = t ? t.identifier : 0;
       }, true);
-    });
+      window.addEventListener('touchend', (e) => {
+        S.touch.ends += 1;
+        if (typeof S._touchDownAt === 'number') {
+          const t = e.changedTouches && e.changedTouches[0];
+          const id = t ? t.identifier : 0;
+          if (id === S._touchId) {
+            S.touchPairs.push({ start: S._touchDownAt, end: e.timeStamp });
+            S._touchDownAt = null;
+          }
+        }
+      }, true);
+      window.addEventListener('touchmove', () => { S.touch.moves += 1; }, true);
   }
 
   // ---------- 统计工具 ----------
@@ -266,16 +282,30 @@
         `${far} 次按下和抬起位置相距过远`);
 
       // C3 按住时长
-      const dwells = [];
-      for (let i = 0; i < Math.min(downs.length, ups.length); i += 1) {
-        dwells.push(ups[i].t - downs[i].t);
-      }
+      // **必须用触摸事件算按住时长，不能用兼容鼠标事件。**
+      // 实测：CDP 触摸注入后，touchStart→touchEnd = [329,196,169,194,215]ms（CV 0.27，正常），
+      // 但 mousedown→mouseup = [0,0,0,0,0]ms —— Chrome 对触摸的兼容鼠标事件是同一时刻补发的。
+      // 真人在手机上点，这个值同样是 0。所以用鼠标事件算这项会**同时误判真人和机器**，
+      // 没有判别力（这正是自建靶场最容易犯的错）。有 touch 事件时优先用它。
+      const touchDwells = (S.touchPairs || []).map((p) => p.end - p.start).filter((x) => x > 0);
+      const dwells = touchDwells.length >= 2
+        ? touchDwells
+        : (() => {
+            const m = [];
+            for (let i = 0; i < Math.min(downs.length, ups.length); i += 1) m.push(ups[i].t - downs[i].t);
+            return m;
+          })();
       metrics.clickDwell = dwells;
-      if (dwells.length >= 2) {
+      metrics.clickDwellSource = touchDwells.length >= 2 ? 'touch' : 'mouse';
+      // 样本不足时跳过：6 次采样算出的 CV 置信区间太宽，会时过时不过（实测 100/94 来回跳）。
+      // 少于 8 次不判分，避免把采样噪声当成检测结论。
+      if (dwells.length >= 8) {
         const dc = cv(dwells);
         metrics.clickDwellCv = dc;
         add('st.click-dwell', dc > 0.22, 8,
-          `按住时长变异 ${dc.toFixed(3)}（真人 0.3+）`);
+          `按住时长变异 ${dc.toFixed(3)}（真人 0.3+，数据源 ${metrics.clickDwellSource}，n=${dwells.length}）`);
+      } else {
+        metrics.clickDwellSkipped = `样本 ${dwells.length} < 8，不判分`;
       }
 
       // C4 按下时的 buttons 状态
@@ -385,15 +415,24 @@
         `${(ratio * 100).toFixed(0)}% 的移动事件 screenX/Y 都为 0`);
     }
 
-    // F14 反应间隔过短：真人对新界面做动作前至少有几百毫秒的识别时间
-    if (downs.length && ms.length >= 2) {
-      const firstMove = ms[0].t;
-      const firstDown = downs[0].t;
-      const react = firstDown - firstMove;
-      metrics.reactionMs = react;
-      add('st.f.reaction', react > 80, 20,
-        `首个移动到按下只隔 ${react.toFixed(0)}ms（真人 >300ms）`);
-    }
+      // F14 反应间隔过短：真人对新界面做动作前至少有几百毫秒的识别时间。
+      //
+      // **触摸设备上这项不适用。** 触摸没有 hover：一次点按产生
+      // touchstart→touchend→mousedown→mouseup，第一个 mousedown 早于第一个 mousemove，
+      // 所以 firstDown - firstMove 是负数。真人用手指点也一样。
+      // 拿鼠标事件的时序去要求触摸，等于同时误杀真人和机器，没有判别力。
+      // 有触摸事件时直接跳过这一项（不计分，也不扣分）。
+      if (downs.length && ms.length >= 2 && S.touch.starts === 0) {
+        const firstMove = ms[0].t;
+        const firstDown = downs[0].t;
+        const react = firstDown - firstMove;
+        metrics.reactionMs = react;
+        add('st.f.reaction', react > 80, 20,
+          `首个移动到按下只隔 ${react.toFixed(0)}ms（真人 >300ms）`);
+      } else if (S.touch.starts > 0) {
+        metrics.reactionMs = null;
+        metrics.reactionSkipped = '触摸设备无 hover，此项不适用';
+      }
 
     // F9 insertText 注入：有 input 事件但没有对应按键
     if (S.inputs.length) {
