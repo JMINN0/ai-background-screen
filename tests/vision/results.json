@@ -1,0 +1,176 @@
+[
+  {
+    "case": "hud",
+    "params": {
+      "font": "8",
+      "seed": "11"
+    },
+    "dir": "/tmp/vision/hud-11",
+    "truth": {
+      "case": "hud",
+      "seed": 11,
+      "answer": {
+        "hp": 56,
+        "ammo": 21,
+        "score": 1600
+      },
+      "question": "HP、弹药、分数各是多少"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/hud-11/native.png",
+    "single": "/tmp/vision/hud-11/single.png",
+    "grid": "/tmp/vision/hud-11/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "hud",
+    "params": {
+      "font": "6",
+      "seed": "12"
+    },
+    "dir": "/tmp/vision/hud-12",
+    "truth": {
+      "case": "hud",
+      "seed": 12,
+      "answer": {
+        "hp": 62,
+        "ammo": 8,
+        "score": 1896
+      },
+      "question": "HP、弹药、分数各是多少"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/hud-12/native.png",
+    "single": "/tmp/vision/hud-12/single.png",
+    "grid": "/tmp/vision/hud-12/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "contrast",
+    "params": {
+      "contrast": "0.06",
+      "seed": "13"
+    },
+    "dir": "/tmp/vision/contrast-13",
+    "truth": {
+      "case": "contrast",
+      "seed": 13,
+      "answer": "雪原",
+      "question": "雪地上写的是什么"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/contrast-13/native.png",
+    "single": "/tmp/vision/contrast-13/single.png",
+    "grid": "/tmp/vision/contrast-13/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "contrast",
+    "params": {
+      "contrast": "0.03",
+      "seed": "14"
+    },
+    "dir": "/tmp/vision/contrast-14",
+    "truth": {
+      "case": "contrast",
+      "seed": 14,
+      "answer": "雪原",
+      "question": "雪地上写的是什么"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/contrast-14/native.png",
+    "single": "/tmp/vision/contrast-14/single.png",
+    "grid": "/tmp/vision/contrast-14/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "stack",
+    "params": {
+      "n": "16",
+      "seed": "15"
+    },
+    "dir": "/tmp/vision/stack-15",
+    "truth": {
+      "case": "stack",
+      "seed": 15,
+      "answer": 16,
+      "question": "屏幕上叠了几层面板"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/stack-15/native.png",
+    "single": "/tmp/vision/stack-15/single.png",
+    "grid": "/tmp/vision/stack-15/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "stack",
+    "params": {
+      "n": "24",
+      "seed": "16"
+    },
+    "dir": "/tmp/vision/stack-16",
+    "truth": {
+      "case": "stack",
+      "seed": 16,
+      "answer": 24,
+      "question": "屏幕上叠了几层面板"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/stack-16/native.png",
+    "single": "/tmp/vision/stack-16/single.png",
+    "grid": "/tmp/vision/stack-16/grid.png",
+    "frameCount": 9
+  },
+  {
+    "case": "motion",
+    "params": {
+      "count": "6",
+      "seed": "17",
+      "speed": "1400",
+      "notrail": "1"
+    },
+    "dir": "/tmp/vision/motion-17",
+    "truth": {
+      "case": "motion",
+      "seed": 17,
+      "answer": {
+        "dir": "left",
+        "count": 6
+      },
+      "question": "有几个点在动，方向是左还是右"
+    },
+    "dims": {
+      "w": 360,
+      "h": 686,
+      "dpr": 2
+    },
+    "native": "/tmp/vision/motion-17/native.png",
+    "single": "/tmp/vision/motion-17/single.png",
+    "grid": "/tmp/vision/motion-17/grid.png",
+    "frameCount": 9
+  }
+]

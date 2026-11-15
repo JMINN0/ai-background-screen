@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>视觉难度测试台</title>
+<style>
+  html,body{margin:0;padding:0;background:#111;overflow:hidden;font-family:system-ui,sans-serif}
+  canvas{display:block}
+  #hint{position:fixed;left:4px;bottom:4px;color:#666;font-size:11px;font-family:monospace}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint"></div>
+<script>
+/*
+ * 视觉难度测试台 —— 每关一个场景，全部有确定性 ground truth。
+ *
+ * 为什么要自己做，而不是直接用 Minecraft：
+ *   1. MC 每关要手动摆，不可复现，也不能自动判分
+ *   2. 这里每个场景的正确答案都能从参数算出来，判分不需要人看
+ *   3. 速度、对比度、字号、数量全部可调，能做单变量对照
+ *
+ * 用法：?case=stack&n=5&seed=1
+ *   stack    叠 N 层半透明面板，要数出几层
+ *   contrast 白字压在雪地上，对比度可调，要读出文字
+ *   motion   横向飞过 N 个点，要判断方向和个数
+ *   hud      小字号数字，要读出数值
+ *   noise    文字叠在噪点背景上，测抗干扰
+ *
+ * 判分方式：页面把 ground truth 放在 window.TRUTH，判分脚本通过 CDP 读它。
+ * **被测的 AI 拿不到 window.TRUTH**（它只能看截图），所以不是开卷。
+ */
+
+const q = new URLSearchParams(location.search);
+const CASE = q.get('case') || 'stack';
+const N = Number(q.get('n') || 5);
+const SEED = Number(q.get('seed') || 1);
+const SPEED = Number(q.get('speed') || 300);      // px/s
+const CONTRAST = Number(q.get('contrast') || 0.15); // 文字与背景亮度差
+const FONTSIZE = Number(q.get('font') || 18);
+const COUNT = Number(q.get('count') || 4);        // motion 的点数
+const NO_TRAIL = q.get('notrail') === '1';          // 真实运动没有拖尾
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0;
+
+function resize() {
+  W = cv.width = window.innerWidth || 720;
+  H = cv.height = window.innerHeight || 1280;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// 确定性伪随机（同一 seed 每次一样，便于复现）
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+const R = rng(SEED);
+
+const TRUTH = { case: CASE, seed: SEED };
+window.TRUTH = TRUTH;
+
+/*
+ * **关键修正：所有随机值必须在启动时算一次，不能放进 draw() 里。**
+ * 之前的 bug：draw() 每帧调一次 R()，于是数值每帧都在变 —— 抓图那一帧和读
+ * TRUTH 那一帧不是同一帧，导致"真值"对不上画面（表现为模型读对了但判分说错）。
+ * 这类 bug 会直接推翻整套结论，所以单独拉出来算。
+ */
+const VALUES = {
+  stackN: N,
+  contrastWord: ['雪原', '坐标 128', '北纬 64', '冰刺之地'][Math.floor(R() * 4)],
+  motionDir: SEED % 2 === 0 ? 1 : -1,
+  motionCount: COUNT,
+  hud: {
+    hp: 40 + Math.floor(R() * 60),
+    ammo: 7 + Math.floor(R() * 40),
+    score: 1000 + Math.floor(R() * 8000),
+  },
+  noiseCode: String.fromCharCode(65 + Math.floor(R() * 26))
+    + String.fromCharCode(65 + Math.floor(R() * 26))
+    + '-' + (100 + Math.floor(R() * 900)),
+};
+// 雪花/噪点纹理的固定随机序列（每帧复用同一组，避免闪烁）
+const SNOW = Array.from({ length: 900 }, () => ({ x: R(), y: R(), r: 1 + R() * 3, a: 0.2 + R() * 0.5 }));
+const NOISE = Array.from({ length: 4000 }, () => ({ x: R(), y: R(), v: Math.floor(R() * 90) }));
+const STACKDOTS = Array.from({ length: 200 }, () => ({ x: R(), y: R(), a: R() * 0.05 }));
+
+const T0 = performance.now();
+
+function draw() {
+  const t = (performance.now() - T0) / 1000;
+  ctx.clearRect(0, 0, W, H);
+
+  if (CASE === 'stack') {
+    // 叠 N 层面板，每层错开一点，半透明。要数出「有几层」
+    ctx.fillStyle = '#1b1b22';
+    ctx.fillRect(0, 0, W, H);
+    const pw = Math.min(360, W * 0.6);
+    const ph = Math.min(220, H * 0.15);
+    const step = 26;
+    for (let i = 0; i < N; i += 1) {
+      const x = (W - pw) / 2 + (i - (N - 1) / 2) * 8;
+      const y = H * 0.28 + i * step;
+      ctx.fillStyle = `rgba(${60 + i * 18},${90 + i * 12},${140 + i * 8},0.72)`;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x, y, pw, ph, 14) : ctx.rect(x, y, pw, ph);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(200,220,255,${0.25 + i * 0.08})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = `${Math.round(ph * 0.18)}px system-ui`;
+      ctx.fillText('面板', x + 18, y + ph * 0.42);
+    }
+    // 干扰：背景放一些噪点，防止靠空白区域反推
+    for (const d of STACKDOTS) {
+      ctx.fillStyle = `rgba(255,255,255,${d.a})`;
+      ctx.fillRect(d.x * W, d.y * H, 2, 2);
+    }
+    TRUTH.answer = N;
+    TRUTH.question = '屏幕上叠了几层面板';
+  } else if (CASE === 'contrast') {
+    // 雪地背景 + 白字，对比度可调。要读出文字
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#e8eef2');
+    g.addColorStop(1, '#d8e2e8');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // 随机雪纹理
+    for (const s2 of SNOW) {
+      ctx.fillStyle = `rgba(255,255,255,${s2.a})`;
+      ctx.beginPath();
+      ctx.arc(s2.x * W, s2.y * H, s2.r, 0, 7);
+      ctx.fill();
+    }
+    const txt = VALUES.contrastWord;
+    TRUTH.answer = txt;
+    TRUTH.question = '雪地上写的是什么';
+    // 对比度：0 = 完全看不见，1 = 黑字
+    const bright = Math.round(232 - CONTRAST * 200);
+    ctx.fillStyle = `rgb(${bright},${bright},${bright})`;
+    ctx.font = `bold ${FONTSIZE}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.fillText(txt, W / 2, H / 2);
+    ctx.textAlign = 'left';
+  } else if (CASE === 'motion') {
+    // 横向飞过的点。要判断方向 + 个数
+    ctx.fillStyle = '#0e0f16';
+    ctx.fillRect(0, 0, W, H);
+    const dir = VALUES.motionDir;     // 偶数往右，奇数往左
+    TRUTH.answer = { dir: dir > 0 ? 'right' : 'left', count: COUNT };
+    TRUTH.question = '有几个点在动，方向是左还是右';
+    for (let i = 0; i < COUNT; i += 1) {
+      const phase = (t * SPEED + i * 137) % (W + 120);
+      const x = dir > 0 ? phase - 60 : W - phase + 60;
+      const y = H * 0.25 + i * 60;
+      ctx.fillStyle = '#ffcc33';
+      ctx.beginPath();
+      ctx.arc(x, y, 14, 0, 7);
+      ctx.fill();
+      // 拖尾：默认画（便于人眼判方向），notrail=1 时不画 —— 那才是真实运动的样子
+      if (!NO_TRAIL) {
+        for (let k = 1; k <= 6; k += 1) {
+          ctx.fillStyle = `rgba(255,204,51,${0.5 - k * 0.07})`;
+          ctx.beginPath();
+          ctx.arc(x - dir * k * 9, y, 12 - k, 0, 7);
+          ctx.fill();
+        }
+      }
+    }
+  } else if (CASE === 'hud') {
+    // 小字号数字，测 OCR 与视觉的分界
+    ctx.fillStyle = '#14161e';
+    ctx.fillRect(0, 0, W, H);
+    const { hp, ammo, score } = VALUES.hud;
+    TRUTH.answer = { hp, ammo, score };
+    TRUTH.question = 'HP、弹药、分数各是多少';
+    ctx.fillStyle = '#ffd34d';
+    ctx.font = `${FONTSIZE}px monospace`;
+    ctx.fillText(`HP ${hp}`, 20, 40);
+    ctx.fillText(`AMMO ${ammo}`, 20, 40 + FONTSIZE * 1.6);
+    ctx.fillText(`SCORE ${score}`, 20, 40 + FONTSIZE * 3.2);
+    // 一个血条，让视觉也能部分判断
+    const bw = 220;
+    ctx.fillStyle = '#2a0f12';
+    ctx.fillRect(300, 24, bw, 18);
+    ctx.fillStyle = hp > 60 ? '#4dd06a' : '#e05555';
+    ctx.fillRect(300, 24, bw * (hp / 100), 18);
+  } else if (CASE === 'noise') {
+    // 文字压在噪点背景上
+    ctx.fillStyle = '#101018';
+    ctx.fillRect(0, 0, W, H);
+    for (const n2 of NOISE) {
+      ctx.fillStyle = `rgb(${n2.v},${n2.v},${n2.v + 8})`;
+      ctx.fillRect(n2.x * W, n2.y * H, 3, 3);
+    }
+    const code = VALUES.noiseCode;
+    TRUTH.answer = code;
+    TRUTH.question = '噪点背景上的字符是什么';
+    ctx.fillStyle = '#f0f0f0';
+    ctx.font = `bold ${FONTSIZE + 8}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(code, W / 2, H / 2);
+    ctx.textAlign = 'left';
+  }
+
+  document.getElementById('hint').textContent = `${CASE} seed=${SEED} n=${N}`;
+  requestAnimationFrame(draw);
+}
+draw();
+
+window.SCENE = { case: CASE, seed: SEED, truth: () => window.TRUTH };
+</script>
+</body>
+</html>
