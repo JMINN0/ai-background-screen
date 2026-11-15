@@ -323,3 +323,22 @@ export function closeScreenSpec() {
     output: out('销毁结果。'),
   };
 }
+
+export function checkAppSpec() {
+  return {
+    name: 'screen_check_app',
+    description: [
+      '查某个 App 现在被谁占着 —— 主屏用户在用它？还是别的屏上的 AI 在用？还是没人用？',
+      '',
+      '投屏前先查这个，避免把人正在用的 App 抢走（实测：`am start --display` 对',
+      'singleTask 的 App 会把主屏任务直接搬走，用户那一下就没了）。',
+      '',
+      '返回等级：FREE 没人用 / USER_BG 用户主屏后台有 / USER_ACTIVE 用户正在看着',
+      '（**绝对不能碰**）/ AI_HELD 在我们自己屏上 / FOREIGN 外来屏（不碰）。',
+    ].join('\n'),
+    parameters: {
+      pkg: { type: 'string', required: true, description: '包名，比如 "com.android.settings"。用 vdisplay_apps 查。' },
+    },
+    output: out('占用等级和详细情况。'),
+  };
+}

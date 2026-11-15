@@ -178,6 +178,7 @@ const ACTION_MAP = {
   screen_new: 'poolCreate',
   screen_use: 'poolUse',
   screen_close: 'poolDestroy',
+  screen_check_app: 'checkApp',
 };
 
 /**

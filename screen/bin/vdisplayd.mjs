@@ -148,6 +148,15 @@ const ACTIONS = {
     const pool = await import('../src/pool.js');
     return pool.destroy(String(args?.screenId || ''), args || {});
   },
+  async checkApp(args) {
+    // 占用检测：主屏谁在用、自家屏上有没有、有没有外来屏
+    const occ = await import('../src/occupancy.js');
+    const pool = await import('../src/pool.js');
+    const info = pool.info();
+    const ourScreens = new Map(info.screens.map((s) => [Number(s.displayId), s.screenId]));
+    return occ.checkApp(String(args?.pkg || ''), { ourScreens });
+  },
+
   async poolInfo() {
     const pool = await import('../src/pool.js');
     return pool.info();

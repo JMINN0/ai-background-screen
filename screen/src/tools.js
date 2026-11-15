@@ -347,3 +347,15 @@ export async function closeScreen(args) {
   if (!r.ok) return { text: r.hint };
   return { text: `已销毁 ${id}。池里还剩 ${r.remaining} 块。` };
 }
+
+export async function checkApp(args) {
+  const pkg = String(args?.pkg || '').trim();
+  if (!/^[a-z][\w.]*$/i.test(pkg)) return { text: 'pkg 看起来不是合法包名。用 vdisplay_apps 查。' };
+  const occ = await import('./occupancy.js');
+  const pool = await import('./pool.js');
+  // 把池里的屏 id 传给检测器，它才能区分「我们的屏」和「外来屏」
+  const info = pool.info();
+  const ourScreens = new Map(info.screens.map((s) => [Number(s.displayId), s.screenId]));
+  const r = await occ.checkApp(pkg, { ourScreens });
+  return { text: occ.describe(r) };
+}
