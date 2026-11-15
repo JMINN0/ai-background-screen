@@ -88,5 +88,15 @@ export async function apply(ctx) {
   } catch (e) {
     console.error('[dsh-go-plugin-screen] inject failed:', e?.message || e);
   }
-  return () => { for (const d of disposers) { try { d?.(); } catch {} } };
+  return async () => {
+    for (const d of disposers) { try { d?.(); } catch { /* 单个工具 dispose 失败不影响其他 */ } }
+    // **卸载时把常驻子进程关掉。** 不关的话 OCR 的 python3 会变成孤儿，
+    // 带着 15MB 模型一直占内存，重载一次多一个（对抗审查第三轮 S3）。
+    try { const ocr = await import('./ocr.js'); ocr.shutdown(); } catch { /* 没加载过就算了 */ }
+    try {
+      const vd = await import('./vd.js');
+      const st = await vd.status().catch(() => null);
+      if (st?.running) await vd.stop({ forceStopApps: false }).catch(() => {});
+    } catch { /* 清理失败不阻塞卸载 */ }
+  };
 }

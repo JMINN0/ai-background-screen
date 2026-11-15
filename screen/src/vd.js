@@ -254,6 +254,9 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
         width: state.width, height: state.height,
         canHost: /FLAG_OWN_CONTENT_ONLY/.test(fl) && /FLAG_OWN_FOCUS/.test(fl),
         flags: (fl.match(/FLAG_[A-Z_]+/g) || []).join(' '),
+        // 复用分支以前不返回 hwc，调用方只能当'未开启'，于是一个 HWC 开着的屏
+        // 会被报成'3D 游戏会黑屏'；实际开没开要看真实属性，不是猜。
+        hwc: (await shell('getprop debug.sf.enable_hwc_vds').catch(() => '')).trim() === '1',
         // 配置和请求不一致时明确告诉调用方，不要假装按请求建了
         configMismatch: diff.length ? diff.join('；') : null,
       };
@@ -597,6 +600,10 @@ async function alive() {
 
 /** 状态不一致时，把内存状态清干净，免得后面每个工具都报假消息。 */
 function forget(reason) {
+  // **清 hwcPrev 之前必须先恢复 HWC。** 上一版只清了记录，没恢复实际属性：
+  // 重建时 getprop 还是 '1'，于是 hwcPrev 又被记成 '1'，stop 再写回 1，
+  // 全局 debug.sf.enable_hwc_vds 就残到重启，原始值 '0' 永远丢了。
+  try { restoreHwcSync(); } catch { /* 恢复失败也不能挡住重建 */ }
   const dead = { displayId: state.displayId, sfId: state.sfId, port: state.port };
   try { state.child?.kill('SIGKILL'); } catch { /* ignore */ }
   for (const sk of state.sockets || []) { try { sk?.destroy(); } catch { /* ignore */ } }
@@ -782,33 +789,64 @@ export async function input(kind, a = {}) {
   // 图内 (100,50) 应该是屏幕 (265.7,342.9)，旧算法给出 (171.4,85.7)，差了一个 region 偏移。
   const regionUsed = state.lastShotRegion;
   const imgW = state.lastShotImgWidth || state.width;
-  // **scale = 图内 1 像素对应屏幕多少像素。**
-  // 有 region 时基准是 region 的宽，不是屏宽 —— 第一版写成 state.width / regionUsed.w，
-  // region 恰好等于全宽时算出 1（而实际是 720/420=1.714），点下来偏了 59px，
-  // 本来要点「显示」结果进了上一行的「桌面设置」。
-  const srcW = regionUsed ? regionUsed.w : imgW;
-  const scale = imgW > 0 ? srcW / imgW : 1;
 
-  const toX = () => {
-    if (a.nx !== undefined && a.nx !== null) {
-      const base = regionUsed ? regionUsed.x + Number(a.nx) * regionUsed.w : Number(a.nx) * state.width;
-      return Math.round(base);
-    }
-    return Math.round((regionUsed ? regionUsed.x : 0) + (Number(a.x) || 0) * scale);
+  /*
+   * 坐标换算，**四个坐标全部走同一套逻辑**。
+   *
+   * 上一版在这里连着翻过两次车，都记在下面，免得第三次重犯：
+   *
+   * ① 有 region 时漏了偏移 → 看过局部图后点按全错。
+   * ② 修 ① 的时候把无 region 的基准写成「图宽」而不是「屏宽」：
+   *      scale = (region ? region.w : imgW) / imgW
+   *    无 region 时恒等于 1，而正确值是 720/540=1.333，
+   *    于是默认截图（540 宽）之后按图内像素点按，**系统偏 33%**。
+   *    这条比 ① 更险，因为它坏的是最常用的路径，而端到端测试当时只覆盖了 region 算例。
+   * ③ swipe 只修了起点 x，起点还读错了字段（读 a.x 而用户给的是 a.x1），
+   *    于是 swipe 起点恒为 0，实测会变成从屏幕最左边斜着划，可能触发返回手势把 App 划走。
+   *
+   * 所以现在：**屏幕像素 = region 偏移 + 图内像素 × (region尺寸 / 图尺寸)**，
+   * region 不存在时退化成「屏尺寸 / 图尺寸」。nx/ny 是归一化，按同一基准换算。
+   */
+  const baseW = regionUsed ? regionUsed.w : state.width;
+  const baseH = regionUsed ? regionUsed.h : Math.max(1, state.height - Math.round(Number(a.cropBottom) || 0));
+  const offX = regionUsed ? regionUsed.x : 0;
+  const offY = regionUsed ? regionUsed.y : 0;
+  const scaleX = imgW > 0 ? baseW / imgW : 1;
+  // 图高按宽等比推（出图是等比缩放的）；拿不到图高就沿用 x 的比例
+  const imgH = (state.lastShotImgHeight && state.lastShotImgHeight > 0)
+    ? state.lastShotImgHeight
+    : imgW * (state.height / Math.max(1, state.width));
+  const scaleY = imgH > 0 ? baseH / imgH : scaleX;
+
+  /** 取某个坐标字段的映射结果；nx 优先，其次像素 */
+  const mapX = (nxKey, xKey) => {
+    if (a[nxKey] !== undefined && a[nxKey] !== null) return Math.round(offX + Number(a[nxKey]) * baseW);
+    if (a[xKey] === undefined || a[xKey] === null) return null;
+    return Math.round(offX + Number(a[xKey]) * scaleX);
   };
-  const toY = () => {
-    // ny 的基准：有 region 就按 region 高度；否则按整屏（cropPx 已不再自动产生，保留兼容）
-    const h = regionUsed ? regionUsed.h : Math.max(1, state.height - Math.round(Number(a.cropBottom) || 0));
-    if (a.ny !== undefined && a.ny !== null) {
-      const base = regionUsed ? regionUsed.y + Number(a.ny) * regionUsed.h : Number(a.ny) * h;
-      return Math.round(base);
-    }
-    return Math.round((regionUsed ? regionUsed.y : 0) + (Number(a.y) || 0) * scale);
+  const mapY = (nyKey, yKey) => {
+    if (a[nyKey] !== undefined && a[nyKey] !== null) return Math.round(offY + Number(a[nyKey]) * baseH);
+    if (a[yKey] === undefined || a[yKey] === null) return null;
+    return Math.round(offY + Number(a[yKey]) * scaleY);
   };
 
+  const toX = () => mapX('nx', 'x') ?? 0;
+  const toY = () => mapY('ny', 'y') ?? 0;
 
-  if (kind === 'tap') cmd = `input -d ${d} tap ${toX()} ${toY()}`;
-  else if (kind === 'swipe') cmd = `input -d ${d} swipe ${toX()} ${Math.round((Number(a.y1)||0)*scale)} ${Math.round((Number(a.x2)||0)*scale)} ${Math.round((Number(a.y2)||0)*scale)} ${Number(a.ms) || 300}`;
+
+  if (kind === 'tap') {
+    cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+  } else if (kind === 'swipe') {
+    // **四个坐标都要映射，起点也不能漏。** 上一版起点读的是 a.x（用户给的是 x1），
+    // 于是恒为 0；另外 y1/x2/y2 只乘比例没加 region 偏移。
+    const sx = mapX('nx1', 'x1'); const sy = mapY('ny1', 'y1');
+    const ex = mapX('nx2', 'x2'); const ey = mapY('ny2', 'y2');
+    if (sx === null || sy === null || ex === null || ey === null) {
+      return { ok: false, hint: 'swipe 需要完整坐标：x1/y1/x2/y2（或 nx1/ny1/nx2/ny2）。' +
+        ' 拒绝用 0 当默认值 —— 那会从屏幕最左边划出去，在开了手势导航的屏上可能把 App 划走。' };
+    }
+    cmd = `input -d ${d} swipe ${sx} ${sy} ${ex} ${ey} ${Number(a.ms) || 300}`;
+  }
   else if (kind === 'text') {
     const txt = String(a.text ?? '');
     // 实测：非 ASCII（中文）走 input text 会让设备侧抛 NPE，而且异常文本会被当输出回填。
@@ -1045,7 +1083,8 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
             const { access } = await import('node:fs/promises');
             await access(png2);
             finalPath = png2;
-            finalImgWidth = state.width;
+            // PNG 分支只裁不缩，出图宽就是 region 宽（不是屏宽）。写错会让 input 的 scale 错 2 倍。
+            finalImgWidth = (region && Number(region.w) > 0) ? Math.round(region.w) : state.width;
           } catch { /* 用原图 */ }
         }
       }
@@ -1096,16 +1135,41 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
 }
 
 /** 主屏截图（只读，不打扰）。 */
-export async function mainShot(dir = '/tmp') {
+export async function mainShot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) {
   await mkdir(dir, { recursive: true });
-  const remote = `/sdcard/dsh-main-${Date.now()}.png`;
+  const stamp = Date.now();
+  const remote = `/sdcard/dsh-main-${stamp}.png`;
   await shell(`screencap -p ${remote}`);
-  const local = join(dir, `main-${Date.now()}.png`);
-  // 这里以前写成了 remotePng（未定义），导致这个工具 100% 抛 ReferenceError，
-  // 而且报错前已经在设备上留了一个 1.7MB 的 PNG。
+  const local = join(dir, `main-${stamp}.png`);
   const pull = await adb(['pull', remote, local], 60000);
   await shell(`rm -f ${remote}`);
-  return pull.ok ? { ok: true, path: local } : { ok: false, hint: pull.err };
+  if (!pull.ok) return { ok: false, hint: pull.err };
+
+  // **参数必须真的生效。** tool-spec 承诺"width 默认 540，省约 44% token""format jpeg 默认"，
+  // 但实现一直只回原生 PNG（1.1MP+，token 是承诺的 3-5 倍），长任务里很吃上下文。
+  // 这里按跟 vd.shot 一样的规则走一次 ffmpeg。
+  let finalPath = local;
+  let finalW = 0;
+  try {
+    const { execFileSync } = await import('node:child_process');
+    const probe = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height', '-of', 'csv=p=0', local], { timeout: 8000 }).toString().trim();
+    const parts = probe.split(',').map(Number);
+    const srcW = parts[0] || 0;
+    finalW = srcW;
+    const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
+    const ext = format === 'png' ? 'png' : 'jpg';
+    const out = local.replace(/\.png$/, `-s.${ext}`);
+    const vf = format === 'png' ? `scale=${targetW}:-1` : `scale=${targetW}:-1`;
+    const args = ['-y', '-loglevel', 'error', '-i', local, '-vf', vf];
+    if (format !== 'png') args.push('-q:v', '4');
+    args.push(out);
+    execFileSync('ffmpeg', args, { timeout: 20000 });
+    finalPath = out;
+    finalW = targetW;
+  } catch { /* ffmpeg 不可用就回原生 PNG，把真实宽度报出去 */ }
+
+  return { ok: true, path: finalPath, imageWidth: finalW };
 }
 
 /**

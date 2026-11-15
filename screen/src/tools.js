@@ -29,13 +29,21 @@ export async function start(args) {
     hwc: args?.hwc || 'auto',                              // 3D 游戏需要 HWC 参与合成
   });
   if (!r.ok) return { text: `建屏失败：${r.hint}` };
-  return {
-    text: `虚拟屏已就绪：displayId=${r.displayId}，SurfaceFlinger id=${r.sfId || '(未取到)'}\n`
-      + `能托管 App：${r.canHost ? '是 ✅' : '否（缺 OWN_CONTENT_ONLY 或 OWN_FOCUS）'}\n`
-      + `硬件合成（HWC）：${r.hwc ? '已开启 ✅ 3D 游戏可正常渲染' : '未开启（3D 游戏会黑屏，轻量 App 不受影响）'}\n`
-      + `标志位：${r.flags || '(无)'}\n`
-      + '这块屏用户看不见，不占主屏焦点。',
-  };
+  // HWC 状态以真实属性为准（复用分支以前不返回 hwc，开着 HWC 的屏会被报成「会黑屏」）。
+  // 配置和请求不一致必须说出来：复用一块活着的屏时不会按新配置重建，
+  // 以前悄悄返回「已就绪」，调用方以为拿到了横屏/带装饰的屏，实际还是旧的。
+  const parts = [
+    `虚拟屏已就绪：displayId=${r.displayId}，SurfaceFlinger id=${r.sfId || '(未取到)'}`,
+    `能托管 App：${r.canHost ? '是 ✅' : '否（缺 OWN_CONTENT_ONLY 或 OWN_FOCUS）'}`,
+    `硬件合成（HWC）：${r.hwc ? '已开启 ✅ 3D 游戏可正常渲染' : '未开启（3D 游戏会黑屏，轻量 App 正常）'}`,
+    `标志位：${r.flags || '(无)'}`,
+  ];
+  if (r.configMismatch) {
+    parts.push(`⚠️ 复用了已有的屏，配置和这次请求不一致：${r.configMismatch}。`
+      + '要按新配置建屏，请先 vdisplay_stop 再 vdisplay_start。');
+  }
+  parts.push('这块屏用户看不见，不占主屏焦点。');
+  return { text: parts.join('\n') };
 }
 
 export async function launch(args) {
@@ -147,23 +155,40 @@ export async function shot(args) {
   });
   if (!r.ok) return { text: `抓时间线失败：${r.hint}` };
 
-  const spanSec = ((r.cells - 1) * r.intervalMs / 1000).toFixed(1);
+  // **报真实采样情况，不要拿公式糊弄。**
+  // 上一版写 `(cells-1)*intervalMs`，固定说"2.4 秒、间隔 300ms"——
+  // 但采样已经改成自适应了，静止画面实际只采了 1.2 秒、只拿到 1 个不同帧，
+  // 模型看到 9 个一样的格子 + "2.4 秒"会以为这段时间画面一直在变。
   const shape = r.canvasW > r.canvasH ? '横屏' : '竖屏';
+  const distinct = r.distinct ?? r.captured;
+  const sampled = (r.sampledElapsedMs || 0) / 1000;
   const lines = [
     `时间线拼图：${r.path}`,
-    `${r.cols}×${r.rows} = ${r.cells} 格（实际抓到 ${r.captured} 帧），每格 ${r.cellW}×${r.cellH}，画布 ${r.canvasW}×${r.canvasH}（${shape}）`,
-    `覆盖约 ${spanSec} 秒（间隔 ${r.intervalMs}ms），抓帧+拼图共 ${(r.elapsedMs / 1000).toFixed(1)} 秒`,
+    `${r.cols}×${r.rows} = ${r.cells} 格，每格 ${r.cellW}×${r.cellH}，画布 ${r.canvasW}×${r.canvasH}（${shape}）`,
+  ];
+  if (distinct <= 1) {
+    lines.push('**画面基本没动**：只采到 1 个不同帧，其余是重复帧填满网格。'
+      + `实际采样约 ${sampled.toFixed(1)} 秒 —— 不代表这段时间有变化。`);
+  } else if (distinct < r.cells) {
+    lines.push(`**采到 ${distinct} 个不同帧**（其余 ${r.cells - distinct} 格是重复填充），`
+      + `实际采样约 ${sampled.toFixed(1)} 秒。画面变化不多。`);
+  } else {
+    lines.push(`**${distinct} 个帧各不相同**，按画面变化自适应采样，实际采样约 ${sampled.toFixed(1)} 秒。`);
+  }
+  lines.push(
     '用 read_image 打开它，从左到右、从上到下就是时间顺序。',
     '',
-    '这个尺寸只能看「结构、位置、有没有动」，读不出屏幕上的小字和数字。要读数字请用 frames=1 单帧。',
-  ];
-  if (r.captured < r.cells) lines.push(`⚠️ 有 ${r.cells - r.captured} 帧没抓到，画面可能不完整。`);
+    '这个尺寸只能看「结构、位置、有没有动」，读不出屏幕上的小字和数字。要读数字请用 frames=1 单帧，或用 vdisplay_text。',
+  );
   return { text: lines.join('\n') };
 }
 
 export async function mainShot(args) {
   const focus = await vd.mainFocus();
-  const r = await vd.mainShot(String(args?.dir || '/tmp'));
+  const r = await vd.mainShot(String(args?.dir || '/tmp'), {
+    width: Number(args?.width) || 540,
+    format: args?.format === 'png' ? 'png' : 'jpeg',
+  });
   if (!r.ok) return { text: `主屏截图失败：${r.hint}` };
   return { text: `主屏截图：${r.path}\n主屏当前焦点：${focus || '(未测到)'}` };
 }
@@ -212,6 +237,10 @@ export async function streamStop() {
 
 export async function closeAll() {
   await stream.shutdown();
+  // **OCR 的 Python 常驻进程必须在这里关掉。**
+  // 不关的话：用过一次 vdisplay_text 之后，插件卸载/引擎重启/daemon 闲置自杀
+  // 都会留下一个带着 15MB 模型的 python3 孤儿进程，重载一次多一个。
+  try { const ocr = await import('./ocr.js'); ocr.shutdown(); } catch { /* 没装 OCR 就算了 */ }
   await vd.stop();
   return { text: '虚拟屏与推流都已关闭。' };
 }

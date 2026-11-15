@@ -172,6 +172,8 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
   const target = await adbTarget();
   const t0 = Date.now();
   let captured = 0;
+  let distinctFrames = 0;
+  let sampledElapsedMs = 0;
   const files = [];
 
   /*
@@ -196,7 +198,11 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
     maxGapMs: intervalMs,
     budgetMs: Math.min(6000, 500 + actual * (intervalMs + 260)),
   });
+  // **captured 是补满后的长度（恒等于格数），distinct 才是真正不同的帧数。**
+  // 静止画面会补 8 个重复帧，如果只报 captured，调用方会以为'画面一直在变'。
   captured = sampled.frames.length;
+  distinctFrames = sampled.distinct;
+  sampledElapsedMs = sampled.elapsedMs || 0;
   files.push(...sampled.frames);
 
 
@@ -297,6 +303,8 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
     elapsedMs: Date.now() - t0,
     intervalMs,
     croppedPx: cropPx,
+    distinct: distinctFrames,
+    sampledElapsedMs,
     cropNote,
   };
 }
