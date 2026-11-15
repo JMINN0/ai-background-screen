@@ -93,6 +93,27 @@ const ACTIONS = {
   async mainShot(args) {
     return vd.mainShot(args?.dir || '/tmp');
   },
+  /**
+   * 读屏文字。这里加一份是为了 CLI 和 HTTP 也能用 OCR，
+   * 顺便让"OCR 到底通不通"可以用真实入口验证 —— 只测模块不算。
+   */
+  async text(args) {
+    const st = await vd.status();
+    if (!st.running) return { ok: false, hint: '虚拟屏没在运行，先 start。' };
+    const shot = await vd.shot(args?.dir || '/tmp', {
+      width: Math.min(1080, Math.max(360, st.width || 720)),
+      format: 'png',
+    });
+    if (!shot.ok) return { ok: false, hint: shot.hint };
+    const ocr = await import('../src/ocr.js');
+    const r = await ocr.recognize(shot.path, {
+      minConf: args?.minConf === undefined ? 0.45 : Number(args.minConf),
+      maxLines: Number(args?.maxLines) || 80,
+      hash: args?.fresh === true ? null : shot.hash,
+    });
+    if (!r.ok) return { ok: false, hint: r.hint };
+    return { ok: true, ...r, imageWidth: shot.imageWidth || st.width, imageHeight: shot.imageHeight || st.height, path: shot.path };
+  },
   async focusedApp() {
     return { app: await vd.focusedApp() };
   },
