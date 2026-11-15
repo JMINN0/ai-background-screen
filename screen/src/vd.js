@@ -531,6 +531,34 @@ async function refreshSfId() {
   return state.sfId;
 }
 
+/**
+ * 刷新"当前实际渲染尺寸"。
+ *
+ * **为什么必须做**：`dumpsys display` 报的是虚拟屏的**初始声明**尺寸（比如 720x1592），
+ * 但 App 强制横屏后实际画面会变成 1592x720。`nx/ny` 如果按 state.width/height 换算，
+ * 点「设置」会落到屏幕外面 —— 实测表现是"点了没反应"，很容易误判成按钮不可点。
+ *
+ * `dumpsys window displays` 里的 `cur=1592x720` 才是当前真实尺寸。
+ * 实测代价约 50ms，比多截一张图（133-240ms）便宜。
+ */
+async function refreshRealSize() {
+  if (!state.displayId) return false;
+  try {
+    const out = await shell(`dumpsys window displays 2>/dev/null | grep -A2 "mDisplayId=${state.displayId} " | head -3`);
+    const m = String(out || '').match(/cur=(\d+)x(\d+)/);
+    if (!m) return false;
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (w > 0 && h > 0 && (w !== state.width || h !== state.height)) {
+      state.width = w;
+      state.height = h;
+      state.lastShotHash = null;      // 尺寸变了，旧的去重基准作废
+      return true;
+    }
+  } catch { /* 查不到就用旧值 */ }
+  return false;
+}
+
 async function alive() {
   if (!state.displayId) return false;
   const [ids, sf] = await Promise.all([displayIds(), sfIds()]);
@@ -718,6 +746,8 @@ export async function input(kind, a = {}) {
   //
   // 为什么要换算 x/y：截图默认是 540 宽，而显示是 720x1280。
   // 实测照图片像素直接传会系统性偏 33%（点放大镜画面零变化）。
+  // 先刷新真实尺寸：转屏后 state.width/height 是初始声明值，直接用来算 nx/ny 会点到屏外。
+  await refreshRealSize();
   const imgW = state.lastShotImgWidth || state.width;
   const scale = imgW > 0 ? state.width / imgW : 1;
   const toX = () => (a.nx !== undefined && a.nx !== null)
