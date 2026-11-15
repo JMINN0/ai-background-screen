@@ -57,7 +57,12 @@ export async function launch(args) {
     `落在虚拟屏上：${r.landedOnVd ? '是 ✅' : '否 ❌'}`,
     `主屏前后：${r.mainFocusBefore || '(未测到)'} → ${r.mainFocusAfter || '(未测到)'}`,
   ];
-  if (r.restoredMain) lines.push('⚠ 主屏本来被抢了，已经切回原来的 App。');
+  // 不再自动还原（见 vd.js 里的说明），所以这里**必须明确告诉调用方**：
+  // 主屏被抢了，而且我们没管。以前这行只在 restoredMain 为真时打，而它永远是 false。
+  if (r.mainChanged) {
+    lines.push('⚠️ 主屏前台变了（这是投屏造成的）。**本插件不会自动还原主屏**，'
+      + '要还原请自己 am start 原来那个。');
+  }
   if (!r.ok) lines.push(`原始输出：${r.out}`);
   return { text: lines.join('\n') };
 }

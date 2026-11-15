@@ -137,7 +137,8 @@ FLAG_OWN_CONTENT_ONLY + FLAG_OWN_FOCUS  → 能托管，内容独立
 
 1. 投屏前 `am force-stop` 目标 App（否则它如果在主屏后台跑着，`am start --display` 只会把旧任务拉到前台，直接顶掉用户正在看的东西）
 2. 投完校验主屏焦点没变
-3. 变了立刻切回原来的 App
+3. **只报告，不自动还原** —— 会告诉主屏焦点变没变，但不会主动去改你的主屏。
+   自动还原试过，在「用户自己切了 App」时会误判，反而去动用户的主屏，所以去掉了。
 
 第 2 步的判据只能读 **display 0 的 `mCurrentFocus`**：`dumpsys activity activities | grep topResumedActivity` 是全局的，虚拟屏上的 Activity 也会算进来，会误判。
 
