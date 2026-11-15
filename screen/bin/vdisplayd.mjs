@@ -131,6 +131,28 @@ const ACTIONS = {
     return { ok: true, ...r, imageWidth: shot.imageWidth || st.width, imageHeight: shot.imageHeight || st.height, path: shot.path };
   },
 
+  /* ===== 多屏池（pool.js） ===== */
+  async poolCreate(args) {
+    const pool = await import('../src/pool.js');
+    return pool.create(args || {});
+  },
+  async poolList() {
+    const pool = await import('../src/pool.js');
+    return pool.list();
+  },
+  async poolUse(args) {
+    const pool = await import('../src/pool.js');
+    return pool.use(String(args?.screenId || ''));
+  },
+  async poolDestroy(args) {
+    const pool = await import('../src/pool.js');
+    return pool.destroy(String(args?.screenId || ''), args || {});
+  },
+  async poolInfo() {
+    const pool = await import('../src/pool.js');
+    return pool.info();
+  },
+
   async apps() {
     // 投屏前查包名。之前没有任何工具能给包名，模型只能猜。
     const r = await vd.adb(['shell', 'pm list packages -3 2>/dev/null']);
@@ -194,7 +216,9 @@ async function handle(req, res) {
    *
    * 只读命令（status/focusedApp/mainFocus）不加锁，保持并发。
    */
-  const MUTATING = new Set(['start', 'stop', 'launch', 'input', 'shot', 'mainShot', 'text']);
+  const MUTATING = new Set(['start', 'stop', 'launch', 'input', 'shot', 'mainShot', 'text',
+  // 池操作会切换全局活动上下文，必须串行，否则两个请求会互相切走
+  'poolCreate', 'poolUse', 'poolDestroy']);
   const run = async () => {
     try {
       const out = await fn(payload.args || {});

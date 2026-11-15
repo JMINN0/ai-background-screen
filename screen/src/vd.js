@@ -172,7 +172,19 @@ async function sfIds() {
   return ids;   // 空集合 = 确实没有 scrcpy 虚拟屏，不是查询失败
 }
 
-const state = {
+/**
+ * 一块屏的完整上下文。
+ *
+ * **为什么改成工厂函数**：多屏需要 N 份独立的 state（各自的 displayId、sockets、
+ * 截图缓存）。原来 `const state = {...}` 是模块级单例，148 处引用全都指着它。
+ *
+ * 改成「一个可切换的当前上下文」是改动最小的做法：
+ *   · 所有 148 处 `state.xxx` 逻辑一行不用动
+ *   · pool 切换时执行 `setActive(ctx)`，之后的调用自然作用在那块屏上
+ *   · 没有并发问题，因为 daemon 已经把有副作用的命令串行化了
+ */
+function makeState() {
+  return {
   child: null,
   sockets: [],
   scid: null,
@@ -186,12 +198,31 @@ const state = {
   lastShotPath: null,
   lastShotImgWidth: 0,
   systemDecorations: false,
+  dpi: 320,                                    // 建屏时用的 dpi，池用来做身份金丝雀
   launchedPkgs: [],
   // HWC 虚拟屏：部分 Qualcomm 设备的 HWC 支持合成虚拟屏，能让 3D 游戏不再黑屏。
   // hwcPrev 记的是开启前的原值，hwcChanged 表示这次是不是我们改的——只恢复自己改过的。
   hwcPrev: null,
   hwcChanged: false,
-};
+  };
+}
+
+/** 当前活动的屏幕上下文。pool 通过 setActive() 切换它。 */
+let state = makeState();
+
+/** 取出当前上下文（pool 用，用来保存/恢复） */
+export function getActive() { return state; }
+
+/**
+ * 切换当前活动屏。
+ * @param {object} ctx 之前的 getActive() 返回值，或新的 makeState()
+ */
+export function setActive(ctx) {
+  state = ctx || makeState();
+}
+
+/** 新造一个空上下文（pool 建新屏时用） */
+export function newContext() { return makeState(); }
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
 export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto' } = {}) {
@@ -403,6 +434,7 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     if (added.length) {
       state.displayId = added[0];
       state.width = finalWidth; state.height = finalHeight;
+      state.dpi = dpi;                          // 记录给池认身份用
       state.systemDecorations = systemDecorations;
       break;
     }
@@ -647,6 +679,7 @@ export async function status() {
     displayId: state.displayId,
     sfId: state.sfId,
     uptimeSec: state.startedAt ? Math.round((Date.now() - state.startedAt) / 1000) : 0,
+    dpi: state.dpi,                              // 池的金丝雀身份（U8 实测 320/321 可区分）
     width: state.width, height: state.height,   // 转屏后这两个值会变，坐标空间跟着变
     allDisplays: ids ? [...ids].sort((a, b) => a - b) : null,   // null 表示查询失败，不是没有屏
     scrcpyScreens: sf ? [...sf] : null,
