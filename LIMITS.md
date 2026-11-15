@@ -93,8 +93,60 @@ ADBPROBE: myUid = 10890
 | `adb_enabled=2` | `AdbService` 判断 `>0` 才启 adbd，所以服务照跑；用 `==1` 判断的 App 会认为关了 | 用 `!=0` 判断的仍识破；观察者能看到写入；重启失效 | 【有依据·源码+社区】未实测 |
 | 等 Android 17 QPR1+ 的 redaction | 系统级、最干净 | 只有那个版本以上有效，且不覆盖 WiFi/init.svc | 【有依据】 |
 
-**注意：上面两条都要改 `adb_enabled`（系统安全设置），做之前必须单独确认。**
-**尤其「先关 USB 调试」的顺序如果搞错，会把唯一一条通道断掉。**
+#### 两条替代路径的实测结果（2026-11-16）
+
+**① `adb_enabled = 2`：能做，但只骗过一部分，而且我给的建议是别用。**
+
+从 `services.jar` 反编译 `AdbService$AdbSettingsObserver`，判定逻辑是：
+
+```smali
+invoke-static {p1, p2, v0}, Landroid/provider/Settings$Global;->getInt(...)I
+if-lez p1, :cond_34        # if (value <= 0) → 关闭
+```
+
+**是 `> 0` 不是 `== 1`**，所以设成 2 时布尔值仍是 true，`setAdbEnabled` 提前返回，
+**adbd 完全不动**。实测：设成 2 之后连接、adbd、所有命令都正常。
+
+再写探针 App 验证普通 App 读到什么：
+
+```
+raw getInt = 2
+```
+
+从这 2 就能推：
+
+| App 的判定写法 | 读到 2 | 被骗过 |
+|---|---|---|
+| `== 1` | false | ✅ |
+| `!= 0` | true | ❌ |
+| `> 0` | true | ❌ |
+
+**但最终我还是改回了 1。** 理由：**正常设备上这个值只可能是 0 或 1，2 是一个不存在于任何
+真实设备的状态。** 商业 SDK 的字段文档（数美 `adbEnabled`）写的就是 0/1；
+如果采集端把原始 int 上报，服务端看到 2，那不是「没开调试」，是「有人改过这个设置」——
+**信号比 ADB 开着更强**。用一个小收益换一个更重的可疑标记，不划算。
+
+**② 无线调试：纯命令行开不起来。**
+
+- `settings put global adb_wifi_enabled 1` —— 写进去了，但 `service.adb.tls.port` 始终为空，
+  TLS 服务没启动（`dumpsys adb` 里也没有无线调试端口）
+- `cmd adb enable-wifi` —— 不存在，`cmd adb` 只有 `is-wifi-supported` / `is-wifi-qr-supported`
+- `setprop persist.adb.tls_server.enable 1` —— **被 SELinux 拒绝**
+  （`Failed to set property ... See dmesg for error reason`）
+
+无线调试的开关由 Settings UI 走 `AdbManager` 的服务调用触发，shell 没有那条路径。
+**要开必须由人在「开发者选项 → 无线调试」里点一下。**
+
+#### 结论
+
+| 做法 | 全自动 | 骗过 `==1` | 骗过 `!=0` | 是否引入新可疑点 |
+|---|---|---|---|---|
+| 保持 `=1`（现状） | — | ❌ | ❌ | 无（只是普通开发者状态） |
+| 设成 `=2` | ✅ 一条命令 | ✅ | ❌ | **⚠️ 值是 2，真实设备不存在** |
+| 只开无线调试 | ❌ 要人点 | ✅（USB 那个变 0） | ❌（`adb_wifi_enabled=1`） | 常驻通知 |
+| 等 Android 17 redaction | 系统自动 | ✅ | ✅（对 settings 这条路） | 无 |
+
+**建议：除非确认目标 App 只用 `==1` 判，否则保持 `=1`，把精力放在注入质量上。**
 
 - **状态**：本机（Android 16）无解。不是"以后能解开"，是**要在「能用」和「不暴露」之间选一个**。
 
