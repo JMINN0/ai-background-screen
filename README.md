@@ -199,15 +199,30 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md" | grep -E "screen|wat
 | 工具 | 作用 |
 |---|---|
 | `screen_modes` | 列出可用的操作方式与代价，帮你选 |
+| `vdisplay_apps` | 列第三方 App 的包名（投屏前查） |
 | `vdisplay_start` | 建一块私有虚拟屏 |
 | `vdisplay_launch` | 把 App 投到虚拟屏（先 force-stop，避免顶掉主屏旧任务） |
-| `vdisplay_input` | 往虚拟屏注入 tap / swipe / text / key |
-| `vdisplay_shot` | 截虚拟屏，返回本地图片路径 |
+| `vdisplay_text` | **OCR 读屏，返回文字 + nx/ny 坐标，0 图片 token** |
+| `vdisplay_input` | 往虚拟屏注入 tap / swipe / text / key（走 scrcpy 控制通道，带真实压力） |
+| `vdisplay_shot` | 截虚拟屏，返回本地图片路径（支持 frames 九格连拍、region 局部放大） |
 | `screen_shot_main` | 截主屏（只读），核对有没有影响用户 |
 | `vdisplay_status` | 查屏状态、上面跑着什么、主屏焦点 |
 | `vdisplay_stop` | 销毁虚拟屏 |
 | `vdisplay_stream` | 把画面以 2fps JPEG 推给胶囊（约 0.30 核） |
 | `vdisplay_stream_stop` | 停止推流 |
+
+多屏池（实测两块屏可同时跑不同 App，互不干扰）：
+
+| 工具 | 作用 |
+|---|---|
+| `screen_pool` | 看池里有几块屏、哪块是活动屏 |
+| `screen_new` | 建一块新屏，返回 screenId |
+| `screen_use` | 切换活动屏（之后所有 `vdisplay_*` 作用在它上面） |
+| `screen_close` | 销毁一块屏 |
+| `screen_check_app` | 查某个 App 被谁占着（五级：FREE / USER_BG / USER_ACTIVE / AI_HELD / FOREIGN） |
+| `screen_claim_app` | 申请占用，冲突时 fail / wait / preempt（**默认 fail，不自动抢**） |
+| `screen_release_app` | 释放占用 |
+| `screen_leases` | 看所有占用凭证 |
 
 ### `web/` 提供八个工具（浏览器控制）
 

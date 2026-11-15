@@ -106,6 +106,20 @@ async function grabOne(target, sfId, dest) {
  * @param {number} fullW 整屏截图的宽度（设备像素），用来把 CSS 高度换算成设备像素
  * @returns {Promise<{height:number, url:string, browser:string}|null>}
  */
+/*
+ * ⚠️ **这里有一个跨包的可选依赖：screen → web。**
+ *
+ * 用相对路径 `../../web/src/cdp.js` 去借 web 包的 CDP 能力，来判断浏览器页面
+ * 的真实内容高度（自动裁掉空白，省 token）。
+ *
+ * **这意味着：只有两个包在磁盘上保持兄弟目录关系时，这个功能才work。**
+ * 它们被正常打包/发布、或者单独安装到别处时，这个 import 会 reject。
+ *
+ * 设计上这是**可选的降级**：import 失败 → 返回 null → 调用方（本文件 240 行）
+ * 就当"没法自动判断内容高度"，退回按整屏处理。**不会崩，只是少省一点 token。**
+ *
+ * 所以：打包发布时不用担心它会挂，但要知道这个省 token 的功能在那种装法下没有。
+ */
 export async function contentHeight(fullW = 0) {
   try {
     const cdp = await import('../../web/src/cdp.js');

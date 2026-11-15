@@ -322,8 +322,12 @@ raw getInt = 2
 
 ### D-05 多 AI 多屏（broker + 租约）
 
-- **现状**：`vd.js` 是模块级单例，一次只能一块屏。
-  daemon 已加 single-flight 互斥（防两个 MCP 进程同时建屏），但**池化/租约/抢占未实现**。
+- **现状**：**已实现 MVP** —— `screen/src/pool.js`（屏池 + dpi 金丝雀 + 上下文切换）、
+  `src/occupancy.js`（占用检测五级）、`src/lease.js`（租约 + 抢占）、
+  对应 8 个工具（`screen_pool/new/use/close/check_app/claim_app/release_app/leases`）。
+  daemon 也加了 single-flight 互斥（防两个 MCP 进程同时建屏）。
+  **未实现的是**：跨进程租约共享（每进程各自记账）、屏池与 `BROKER-DESIGN.md` 里的
+  完整 broker（优先级老化、wait-for 图、WAL）—— 那些仍只是设计。
 - **能做吗**：能，**设计已完整落库：见 [BROKER-DESIGN.md](BROKER-DESIGN.md)**。
   前置实验见 `tests/risk-sim/MULTI-SCREEN-FINDINGS.md`（U1-U6 已跑）。
 - **难点**：**屏归属** —— 所有 scrcpy 屏都叫 `scrcpy`，分不清谁是谁。
