@@ -1,6 +1,7 @@
 /** 工具的执行体。全部返回 { text }，失败给原因和下一步，不抛异常。 */
 import * as vd from './vd.js';
 import * as stream from './stream.js';
+import * as timeline from './timeline.js';
 
 export async function modes() {
   return {
@@ -79,15 +80,49 @@ export async function input(args) {
 }
 
 export async function shot(args) {
-  const r = await vd.shot(String(args?.dir || '/tmp'), {
-    width: Number(args?.width) || 540,
-    format: args?.format === 'png' ? 'png' : 'jpeg',
+  const frames = Number(args?.frames) || 1;
+
+  // frames=1 → 单张截图（读字用）
+  if (frames <= 1) {
+    const r = await vd.shot(String(args?.dir || '/tmp'), {
+      width: Number(args?.width) || 540,
+      format: args?.format === 'png' ? 'png' : 'jpeg',
+    });
+    if (!r.ok) return { text: `截图失败：${r.hint}` };
+    const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
+    if (r.unchanged) lines.push('画面和上次完全一样，可以直接复用这张，不用再看一次。');
+    else lines.push('用 read_image 打开它就能看到界面。');
+    lines.push('点坐标时可以用 nx/ny（0..1 归一化）代替 x/y，不用自己算像素。');
+    lines.push('');
+    lines.push('想看"在动吗、往哪动"就传 frames=9 再调一次。');
+    return { text: lines.join('\n') };
+  }
+
+  // frames>1 → 连拍拼网格（看运动用）
+  const st = await vd.status();
+  if (!st.running) return { text: '虚拟屏没在运行。先 vdisplay_start 建屏、vdisplay_launch 投 App。' };
+  if (!st.sfId) return { text: '没拿到 SurfaceFlinger id，先 vdisplay_status 确认屏状态。' };
+
+  const r = await timeline.capture({
+    sfId: st.sfId,
+    frames,
+    intervalMs: args?.intervalMs === undefined ? 300 : Math.max(0, Number(args.intervalMs) || 0),
+    cellWidth: Number(args?.width) || 262,
+    dir: String(args?.dir || '/tmp'),
   });
-  if (!r.ok) return { text: `截图失败：${r.hint}` };
-  const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
-  if (r.unchanged) lines.push('画面和上次完全一样，可以直接复用这张，不用再看一次。');
-  else lines.push('用 read_image 打开它就能看到界面。');
-  lines.push('点坐标时可以用 nx/ny（0..1 归一化）代替 x/y，不用自己算像素。');
+  if (!r.ok) return { text: `抓时间线失败：${r.hint}` };
+
+  const spanSec = ((r.cells - 1) * r.intervalMs / 1000).toFixed(1);
+  const shape = r.canvasW > r.canvasH ? '横屏' : '竖屏';
+  const lines = [
+    `时间线拼图：${r.path}`,
+    `${r.cols}×${r.rows} = ${r.cells} 格（实际抓到 ${r.captured} 帧），每格 ${r.cellW}×${r.cellH}，画布 ${r.canvasW}×${r.canvasH}（${shape}）`,
+    `覆盖约 ${spanSec} 秒（间隔 ${r.intervalMs}ms），抓帧+拼图共 ${(r.elapsedMs / 1000).toFixed(1)} 秒`,
+    '用 read_image 打开它，从左到右、从上到下就是时间顺序。',
+    '',
+    '这个尺寸只能看「结构、位置、有没有动」，读不出屏幕上的小字和数字。要读数字请用 frames=1 单帧。',
+  ];
+  if (r.captured < r.cells) lines.push(`⚠️ 有 ${r.cells - r.captured} 帧没抓到，画面可能不完整。`);
   return { text: lines.join('\n') };
 }
 

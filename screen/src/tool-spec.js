@@ -102,16 +102,34 @@ export function shotSpec() {
   return {
     name: 'vdisplay_shot',
     description: [
-      '截虚拟屏的画面，存成 PNG 并返回路径，你可以直接读这张图看界面。',
+      '看虚拟屏。frames=1 给一张静态截图；frames>1 连拍几张拼成网格，用来看「在动吗、往哪动、变成什么样」。',
       '',
-      '这是"看 AI 在操作什么"的主要方式：不占用户屏幕，随时可以截图。',
+      'frames=1（默认）：一张截图，能读屏幕上的字和数字。720x1280 竖屏缩到 540 宽约 299 token。',
+      '',
+      'frames>1：抓 N 帧拼成网格，从左到右、从上到下是时间顺序。',
+      '九格缩到每格 262 宽后，原图 26px 的字只剩 9px —— 只能看结构、位置、有没有动，读不出小字。',
+      '形状会按屏幕真实比例自动算：竖屏画布是竖的，横屏（游戏）画布是横的。',
+      '',
+      '成本（720x1280 竖屏、9 帧 3x3）：每格 160 → 252 token；180 → 299；200 → 390；262 → 646；300 → 858。',
+      '对比单帧 558 token。只想判断动没动用 160-180；想顺便看清大字用 262。',
     ].join('\n'),
     parameters: {
-      dir: { type: 'string', description: '本地保存目录，默认 /tmp。' },
-      width: { type: 'integer', description: '输出宽度，默认 540（实测文字仍清晰，token 省约 44%）。范围 240–1080。' },
-      format: { type: 'string', description: '"jpeg"（默认，省 token）或 "png"（需要无损时）。' },
+      frames: {
+        type: 'integer',
+        description: '抓几帧。1（默认）= 单张截图；2/4/6/9/12/16 = 拼成网格。会被规整成能拼成矩形的数。',
+      },
+      width: {
+        type: 'integer',
+        description: '每帧宽度。frames=1 时默认 540（读字用）；frames>1 时默认 262（看运动用）。范围 240-720。',
+      },
+      intervalMs: {
+        type: 'integer',
+        description: 'frames>1 时的帧间隔毫秒，默认 300。抓快动作调小（最小 0），抓慢变化调大。',
+      },
+      format: { type: 'string', description: 'frames=1 时有效："jpeg"（默认，省 token）或 "png"。' },
+      dir: { type: 'string', description: '输出目录，默认 /tmp。' },
     },
-    output: out('截图本地路径与 displayId。'),
+    output: out('图片路径、格数、每格大小、是否和上次一样。'),
   };
 }
 
