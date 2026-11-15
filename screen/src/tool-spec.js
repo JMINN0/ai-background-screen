@@ -127,6 +127,12 @@ export function shotSpec() {
         description: 'frames>1 时的帧间隔毫秒，默认 300。抓快动作调小（最小 0），抓慢变化调大。',
       },
       format: { type: 'string', description: 'frames=1 时有效："jpeg"（默认，省 token）或 "png"。' },
+      region: {
+        type: 'object',
+        description: '只看屏幕的一块：{x,y,w,h}，坐标用显示逻辑像素（跟 x/y 点按同一套坐标）。把这块按 width 交付，等于放大。'
+          + '实测：取 360×796 的局部交付到 420 宽，只要 180 token（全屏要 684），而线性分辨率是全屏的 2 倍。'
+          + '看不清某个按钮/数字时用这个，比调大 width 划算。',
+      },
       crop: {
         type: 'string',
         description: '"content" 时裁掉浏览器地址栏和导航栏再出图。实测 720x1592 里内容只有 1372（壳 220px = 13%），裁掉后单帧 684→594 token、九格 798→684 token。只在虚拟屏上跑浏览器时有用；普通 App 没有壳，传了也没影响。',

@@ -82,6 +82,8 @@ const ACTIONS = {
     return vd.shot(args?.dir || '/tmp', {
       width: Math.min(Math.max(Number(args?.width) || 540, 240), 1080),
       format: args?.format === 'png' ? 'png' : 'jpeg',
+      cropPx: Number(args?.cropPx) || 0,
+      region: args?.region && typeof args.region === 'object' ? args.region : null,
     });
   },
   async mainShot(args) {

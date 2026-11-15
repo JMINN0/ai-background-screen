@@ -100,6 +100,7 @@ export async function shot(args) {
       width: Number(args?.width) || 540,
       format: args?.format === 'png' ? 'png' : 'jpeg',
       cropPx,
+      region: args?.region && typeof args.region === 'object' ? args.region : null,
     });
     if (!r.ok) return { text: `截图失败：${r.hint}` };
     const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
