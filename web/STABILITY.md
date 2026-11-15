@@ -44,7 +44,10 @@ CDP 通道本身稳定可用；但"浏览器在后台"这个场景有明确限�
 3. **同一时刻只有一个 Chromium 能绑定 devtools socket**。Chrome 和 Edge 都开着时会冲突，需要先关掉不用的那个。
 4. **后台标签会被 Chromium 冻结**，冻结后对 CDP 完全无响应。`web_attach` 会探测出来，带 `wake:true` 可唤醒（激活 + 等渲染进程恢复，不重载不丢状态）。
 5. **启动浏览器会抢前台**。要避免就用虚拟屏启动（`vdisplay_start` + `vdisplay_launch`），实测主屏焦点不变。
-4. **填表用 `Input.insertText`**，不是直接改 DOM 的 value——因为 React/Vue 的 value tracker 会把直接赋值当成"没变化"，onChange 不触发。这是实测踩过的坑。
+4. **填表要产生真实的按键序列**，不是直接改 DOM 的 value——因为 React/Vue 的 value tracker 会把直接赋值当没变化、onChange 不触发。
+   **现在的做法是逐字符 `dispatchKeyEvent`（含 Shift 配对让大写字母有真实 Shift 按下），不是 `Input.insertText`。**
+   早先版本用 insertText，但它**不产生 keydown/keyup**，风控靶场里 `input-without-keys`（权重 18）会判定为脚本填表。
+   > 旧说法（已过时）：**填表用 `Input.insertText`**，不是直接改 DOM 的 value——因为 React/Vue 的 value tracker 会把直接赋值当成"没变化"，onChange 不触发。这是实测踩过的坑。
 
 ## 依赖
 

@@ -9,8 +9,11 @@
  * 2. **不新建窗口**。用户 2026-11-05 定死的浏览器边界：只在「AI操作」分组内增删，
  *    不许新建窗口/分组、不许触发会话恢复。所以 createTarget 一律 newWindow:false；
  *    Android Edge 在 false 下可能拒绝建标签 —— 那就返回明确错误交给调用方，**不退回 true**。
- * 3. **填值必须 Input.insertText**（或原生 setter + dispatch input）。直接赋 .value，
- *    React 的 value tracker 认为没变化，onChange 不触发 —— 就是"填了但页面说空"的根因。
+ * 3. **填值要产生真实按键序列**，不能直接赋 .value —— React 的 value tracker 认为没变化，
+ *    onChange 不触发，就是"填了但页面说空"的根因。
+ *    **现在的实现是逐字符 dispatchKeyEvent（含 Shift 配对）**，不用 Input.insertText：
+ *    insertText 只往 DOM 塞文字、不产生 keydown/keyup，风控靶场里会被
+ *    `input-without-keys`（权重 18）判定为脚本填表。详见 fill 函数里的实现说明。
  */
 
 import { execFile } from 'node:child_process';
