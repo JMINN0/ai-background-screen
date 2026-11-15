@@ -318,6 +318,13 @@
         const b = Number(d.buttons);
         return Number.isFinite(b) && b !== 1;
       }).length;
+      // 样本不足不判分，跟其他地方统一样本策略
+      // （原来 strict.js 对样本不足是跳过、detect.js 是判失败，两套相反，导致 strict 系统性偏高）
+      if (downs.length >= 3) {
+        add('st.press-buttons', badButtons === 0, 4, `按下时 buttons 异常 ${badButtons} 个`);
+      } else {
+        metrics.pressButtonsSkipped = `样本 ${downs.length} < 3`;
+      }
       const downsK = keys.filter((k) => k.type === 'keydown' && !k.repeat);
       const upsK = keys.filter((k) => k.type === 'keyup');
 

@@ -207,7 +207,18 @@ export function toShellCommand(events, opts = {}) {
 
 /** 一段随机"思考"时间（毫秒），真人操作前会有停顿。 */
 export function thinkDelay(median = 1600) {
-  return Math.round(clamp(lognorm(median, 0.5), 300, 9000));
+  /*
+   * **下限必须跟着 median 走，不能写死 300。**
+   *
+   * 原来写的是 clamp(lognorm(median, 0.5), 300, 9000)：
+   * 调用方传 thinkDelay(200) 时 median=200 < 下限 300，于是**所有采样都被压成恰好 300ms**，
+   * 实测约 73% 的「按下前停顿」变成同一个数字 —— 这本身就是一个新的机器尖峰，
+   * 比不加抖动还糟：真人的停顿是连续分布的，没有任何单点会占七成。
+   *
+   * 改成下限 = median × 0.3（跟对数正态的形态匹配），上限仍然封顶 9 秒防卡死。
+   */
+  const lo = Math.max(20, Math.round(median * 0.3));
+  return Math.round(clamp(lognorm(median, 0.5), lo, 9000));
 }
 
 /**
