@@ -32,30 +32,71 @@ D 类是「现在没做但技术上能做」——**别把 D 当成 A**。
 
 - **现象**：普通 App 读 `Settings.Global.ADB_ENABLED` 拿到 `1`；`DEVELOPMENT_SETTINGS_ENABLED` 也是 `1`。
 - **根因**：整套工具依赖 adb —— `screencap` 要 adb、`adb forward` 要 adb、scrcpy-server 要 adb 起的 shell 权限。
-- **证据**：**【实测·自己写的探针 App】** 2026-11-16 做的验证 ——
-  用 apktool 把一个 373KB 的 APK 反编译、改包名、塞进一段 smali 探针、重新签名安装，
-  以**普通 App 身份**（`myUid = 10890`，不是 shell 的 2000）读设置并打 logcat：
+  而且我们用的是 `adb tcpip 5555`，**这条路的前提就是 USB 调试已开**，回环只是传输方式，不改变设置。
 
-  ```
-  ADBPROBE: adb_enabled = 1
-  ADBPROBE: development_settings_enabled = 1
-  ADBPROBE: Build.TAGS = release-keys
-  ADBPROBE: myUid = 10890
-  ```
+**证据（两层，都已核实）：**
 
-  **没有任何权限就读到了。** 这推翻了我之前"只在 shell 下验证过、普通 App 能不能读不知道"的
-  不确定状态 —— 现在确定了。
-  （旁证：`tests/risk-sim/selfcheck.mjs` 用 shell 读也是 1，但 shell 读得到不代表 App 读得到，
-  所以另做了这次探针。）
+**【实测·自己写的探针 App】** 2026-11-16 —— apktool 反编译一个 373KB 的 APK、
+改包名、塞一段 smali 探针、重签名安装，以**普通 App 身份**（`myUid = 10890`，不是 shell 的 2000）读设置：
 
-  顺带确认两件事：`Build.TAGS = release-keys`（不是 test-keys，这点正常）；
-  `overlay_display_devices` 是空串。
-- **影响**：**任何 App 读一个 Settings.Global 就能知道**，不需要任何权限。
-  有银行的用户 FAQ 明写「检测到 ADB / USB 调试开着就终止会话」（马来西亚 Muamalat）；
-  越南 2025 年 Circular 77/2025 直接监管要求银行 App 检测 ADB 并停止服务。
-- **绕过**：只能不用 adb。那意味着截图要换 MediaProjection、输入要换物理 HID、
-  建屏要换自写 display host。**这是架构级改动，不是优化。**
-- **状态**：当前无解。
+```
+ADBPROBE: adb_enabled = 1
+ADBPROBE: development_settings_enabled = 1
+ADBPROBE: Build.TAGS = release-keys
+ADBPROBE: myUid = 10890
+```
+
+**没有任何权限就读到了。**（`tests/risk-sim/selfcheck.mjs` 用 shell 读也是 1，但 shell 读得到不代表 App 读得到，所以另做了这次探针。）
+
+**【有依据·源码/文档】** 版本差异很大，必须写清楚：
+
+| Android 版本 | 普通 App 读 `ADB_ENABLED` | 说明 |
+|---|---|---|
+| ≤ 11 | 能读到真实值 | 当时没有注解检查 |
+| **12–16（本机）** | **能读到真实值，无需权限** | `@Readable`，SettingsProvider 只拦 `@hide` 且非 `@Readable` 的 key |
+| **17 QPR1+** | **永远返回 `0`（被 redact）** | `@Readable(redactedValue="0")`，commit `5d466bf`；不抛异常，静默返回 0 |
+
+**所以这条会随时间自己变好** —— 但我们这台是 Android 16，现在仍然读得到。
+
+**别的检测路径（比 ADB_ENABLED 更麻烦）：**
+
+| 路径 | 普通 App 能否 | 证据 |
+|---|---|---|
+| `getprop init.svc.adbd` | **能**（`init_service_status_prop` 对所有域开放） | 【有依据·SELinux property_contexts】 |
+| `Settings.Global.ADB_WIFI_ENABLED` | **能**，且 Android 17 也没 redact 它 | 【有依据·源码】 |
+| 端口探测 `127.0.0.1:5555` | 能（只要 INTERNET 权限） | 【有依据】 |
+| `Build.TAGS` | 能，但本机是 `release-keys`，正常 | 【实测】 |
+| `Debug.isDebuggerConnected()` | 能，但只在真有调试器附着时 true | 【有依据】 |
+
+**这意味着：就算把 `adb_enabled` 弄成 0，`init.svc.adbd` 和 `ADB_WIFI_ENABLED` 仍会露。**
+单靠改一个设置骗不过做组合检测的。
+
+**关 ADB 能不能保住能力？** 不能 —— 见 [BROKER-DESIGN.md](BROKER-DESIGN.md) 和下面这条：
+
+:::
+**关键结论：没有 ADB 就没有「用户看不见的屏」。**
+
+`MediaProjection.createVirtualDisplay()` 建出来的是**镜像接收端**（只能接主屏画面，
+不能往上面启动别的 App）；能跑 App 的可信虚拟屏需要 `ADD_TRUSTED_DISPLAY`
+（signature|privileged，我们是靠 shell 身份才拿到的）；系统里唯一完整的替代
+`android.companion.virtual` 需要 `COMPANION_DEVICE_APP_STREAMING` role，
+**只有 OEM 能授给系统 App**。
+
+所以「关 ADB 换架构」这条路在建屏这一步就断了，不是工程量问题。
+:::
+
+**那还有什么可做的（便宜且真实）：**
+
+| 做法 | 效果 | 代价 | 状态 |
+|---|---|---|---|
+| 改成「只开无线调试、关 USB 调试」 | `adb_enabled=0`，adbd 仍跑 | `adb_wifi_enabled=1` 仍可读；有常驻通知；端口随机 | 【有依据·源码】未实测 |
+| `adb_enabled=2` | `AdbService` 判断 `>0` 才启 adbd，所以服务照跑；用 `==1` 判断的 App 会认为关了 | 用 `!=0` 判断的仍识破；观察者能看到写入；重启失效 | 【有依据·源码+社区】未实测 |
+| 等 Android 17 QPR1+ 的 redaction | 系统级、最干净 | 只有那个版本以上有效，且不覆盖 WiFi/init.svc | 【有依据】 |
+
+**注意：上面两条都要改 `adb_enabled`（系统安全设置），做之前必须单独确认。**
+**尤其「先关 USB 调试」的顺序如果搞错，会把唯一一条通道断掉。**
+
+- **状态**：本机（Android 16）无解。不是"以后能解开"，是**要在「能用」和「不暴露」之间选一个**。
 
 ### A-02 虚拟屏的名字固定叫 `scrcpy`
 
@@ -286,6 +327,26 @@ D 类是「现在没做但技术上能做」——**别把 D 当成 A**。
 - **绕过**：只能用代理指标（TPR@FPR、外部基准、真实目标的触发率），三个都是代理，不是等号。
 
 ---
+
+## ADB 这个信号到底多重（按目标分）
+
+之前的说法「ADB 是一票否决」**只说对了一半**，按目标分是这样：
+
+| 目标类型 | ADB 的份量 | 依据 |
+|---|---|---|
+| **纯网页 + 行为风控** | **几乎无关** —— 网页读不到 `Settings.Global`，平台隔离 | 【有依据·平台隔离】 |
+| 普通 App + 商业风控 SDK | **低危加权，不是否决** | 腾讯云推荐等级把「开发者模式/调试模式（ADB）」列为**低危（3）**，高危是模拟器/注入/HOOK/重打包/系统劫持 |
+| 银行 / 金融 | **硬条件，会被拒** | 越南 Circular 77/2025 点名 debugger/模拟器/ADB/hook/repack/root 必须「自动退出或停止」；Vietcombank 错误码 91822 就是 ADB |
+| 微信 / 支付宝 | **不确定** | 公开证据只到 root/hook/模拟器/多开层面；**专门查 `adb_enabled` 没有公开证据** —— 【不知道】 |
+
+**这条很重要**：如果你的目标是普通 App 的行为风控，那么**把 ADB 关掉的收益远小于把注入做得像人**。
+反过来说，如果是银行类，那 ADB 是第一个拦路的，注入做得再好也过不去。
+
+**真正的一票否决项（比 ADB 更致命）：**
+
+模拟器/云手机、注入/HOOK/Xposed/Frida、重打包/改机、root/Magisk、
+设备信息篡改（IMEI/OAID/IMSI）、系统劫持 —— 这些在腾讯云等级里都是**高危**，
+微信/支付宝也会直接封。**而这几项我们一个都没碰**（无 root、不改机、不注入别人进程）。
 
 ## 不要碰的目标
 
