@@ -105,6 +105,10 @@ const USAGE = `vdisplay —— 操作一块用户看不见的虚拟屏
   vdisplay status
   vdisplay launch <包名> [Activity]
   vdisplay shot [--out 路径] [--width 540] [--format jpeg|png]
+                 [--frames 9] [--interval 300]        九格连拍看运动
+                 [--rx 0 --ry 1200 --rw 720 --rh 392] 只看一块并放大
+  vdisplay text [--minconf 0.45] [--maxlines 80] [--fresh]
+                读屏文字（OCR），带 nx/ny 坐标，0 图片 token
   vdisplay main-shot [--out 路径]
   vdisplay input tap   --x 100 --y 200     （或 --nx 0.5 --ny 0.5 归一化）
   vdisplay input swipe --x1 100 --y1 200 --x2 300 --y2 400 [--ms 400]
@@ -139,6 +143,17 @@ function human(action, r) {
       if (r.hint) lines.push(r.hint);
       return lines.join('\n');
 
+    case 'text': {
+      if (r.ok === false) return `识别失败：${r.hint || '未知原因'}`;
+      const pl = [`识别到 ${r.count} 行（${r.cached ? '缓存命中 0ms' : (r.elapsedMs + 'ms')}）`];
+      const W = r.imageWidth || 720; const H = r.imageHeight || 1600;
+      for (const ln of (r.lines || [])) {
+        const nx = ((ln.x + ln.w / 2) / W).toFixed(3);
+        const ny = ((ln.y + ln.h / 2) / H).toFixed(3);
+        pl.push(`  [${String(ln.conf).padEnd(4)}] ${ln.text}  nx=${nx} ny=${ny}`);
+      }
+      return pl.join('\n');
+    }
     case 'shot':
     case 'mainShot':
       if (r.ok === false || !r.path) return `截图失败：${r.hint || r.error || '未知原因'}`;
@@ -226,8 +241,21 @@ async function main() {
     args = { pkg: sub, activity: positional[2] };
   } else if (cmd === 'shot' || cmd === 'main-shot') {
     action = cmd === 'shot' ? 'shot' : 'mainShot';
-    args = { out: str('out'), dir: str('out') ? dirname(str('out')) : undefined,
-      width: num('width'), format: str('format') };
+    // region 用四个 flag 给：--rx --ry --rw --rh，四个都有才算有效局部
+    const rx = num('rx'); const ry = num('ry'); const rw = num('rw'); const rh = num('rh');
+    const region = (rx !== undefined && ry !== undefined && rw !== undefined && rh !== undefined)
+      ? { x: rx, y: ry, w: rw, h: rh } : undefined;
+    args = {
+      out: str('out'), dir: str('out') ? dirname(str('out')) : undefined,
+      width: num('width'), format: str('format'),
+      frames: num('frames'),        // >1 走九格连拍
+      intervalMs: num('interval'),  // 采样上限间隔
+      region,
+    };
+  } else if (cmd === 'text') {
+    // 读屏文字（OCR）。CLI 以前没这个命令，导致插件有、命令行没有。
+    action = 'text';
+    args = { minConf: num('minconf'), maxLines: num('maxlines'), fresh: flags.fresh === true };
   } else if (cmd === 'input') {
     if (!sub) { console.error('需要输入类型：tap / swipe / text / key / paste'); process.exit(1); }
     action = 'input';

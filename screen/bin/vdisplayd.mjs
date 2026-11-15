@@ -79,15 +79,29 @@ const ACTIONS = {
     return vd.launch(pkg, args?.activity ? String(args.activity).trim() : '');
   },
   async shot(args) {
-    // crop:'content' 整段删掉了。理由：浏览器壳在顶部还是底部拿不到可靠信号
-    // （Edge 顶部会有翻译条，只从底部裁会留下顶栏并切掉真实内容），
-    // 而且 daemon 是可直接 POST 的端点，留着这段等于留一条绕过前台校验的通道。
-    // 想看细节用 region，它更清楚也更便宜。
+    const region = args?.region && typeof args.region === 'object' ? args.region : null;
+    const frames = Number(args?.frames) || 0;
+
+    // frames > 1 走九格连拍（自适应采样）。以前 daemon 只有单帧，导致命令行用不了这个能力。
+    if (frames > 1) {
+      const st = await vd.status();
+      if (!st.running) return { ok: false, hint: '虚拟屏没在运行，先 start。' };
+      const tl = await import('../src/timeline.js');
+      return tl.capture({
+        sfId: st.sfId,
+        frames,
+        intervalMs: Number(args?.intervalMs) || 300,
+        cellWidth: Number(args?.width) || 262,
+        dir: args?.dir || '/tmp',
+        crop: 'none',
+      });
+    }
+
     return vd.shot(args?.dir || '/tmp', {
       width: Math.min(Math.max(Number(args?.width) || 540, 240), 1080),
       format: args?.format === 'png' ? 'png' : 'jpeg',
       cropPx: 0,
-      region: args?.region && typeof args.region === 'object' ? args.region : null,
+      region,
     });
   },
   async mainShot(args) {
