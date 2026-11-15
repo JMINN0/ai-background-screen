@@ -55,6 +55,7 @@ const EXEC_MAP = {
   vdisplay_stream: 'streamStart',
   vdisplay_stream_stop: 'streamStop',
   screen_shot_main: 'mainShot',
+  vdisplay_apps: 'apps',
   screen_modes: 'modes',
 };
 
@@ -162,7 +163,43 @@ const ACTION_MAP = {
   vdisplay_text: 'text',
   vdisplay_input: 'input',
   screen_shot_main: 'mainShot',
+  vdisplay_apps: 'apps',
 };
+
+/**
+ * 把截图变成 MCP 的 image content。
+ *
+ * **这是 MCP 和 DSH 插件最大的区别**：DSH 那边工具返回的是本地路径，模型自己
+ * read_image 打开；但 MCP 客户端可能跑在另一台电脑上，手机 /tmp 下的路径对它
+ * 毫无意义。所以必须把字节读出来、base64 塞进 content。
+ *
+ * 两个坑：
+ *   ① mime 要按 magic bytes 判，不能信路径后缀 —— vd.shot 可能返回 .png 而实际是 jpeg。
+ *   ② 图上限制：超过 1.5MB 直接拒绝并建议改 width/region，别让一个巨型 base64
+ *      撑爆 JSON-RPC 帧（客户端多半会截断或崩）。
+ */
+async function imageContent(path) {
+  if (!path) return null;
+  const { readFile, stat } = await import('node:fs/promises');
+  try {
+    const st = await stat(path);
+    if (st.size > 1.5 * 1024 * 1024) {
+      return {
+        type: 'text',
+        text: `图太大（${Math.round(st.size / 1024)}KB），MCP 传输会撑爆。请把 width 调小，或用 region 只截一块。路径：${path}`,
+      };
+    }
+    const b = await readFile(path);
+    // magic bytes 判 mime
+    let mime = 'image/jpeg';
+    if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) mime = 'image/png';
+    else if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8) mime = 'image/jpeg';
+    else if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp';
+    return { type: 'image', data: b.toString('base64'), mimeType: mime };
+  } catch {
+    return null;
+  }
+}
 
 async function callTool(name, args) {
   // modes 是纯静态说明，不依赖状态
@@ -188,7 +225,11 @@ async function callTool(name, args) {
   const res = r.result;
   let text;
   if (res && typeof res === 'object') {
-    if (res.text) text = res.text;
+    if (Array.isArray(res.packages)) {
+      // apps 的返回：{ok, count, packages[]}
+      text = `第三方 App 共 ${res.count} 个（用包名调 vdisplay_launch）：\n`
+        + res.packages.map((p) => `  ${p}`).join('\n');
+    } else if (res.text) text = res.text;
     else if (typeof res.ok === 'boolean' && res.ok === false) text = `失败：${res.hint || '未知原因'}`;
     else if (Array.isArray(res.lines)) {
       const W = res.imageWidth || 720; const H = res.imageHeight || 1600;
@@ -200,7 +241,20 @@ async function callTool(name, args) {
       }
       text = pl.join('\n');
     } else if (res.path) {
-      text = `图片：${res.path}` + (res.imageWidth ? `（${res.imageWidth}px）` : '');
+      // **截图要真的把图给出去**，光给路径对远端客户端没用。
+      const img = await imageContent(res.path);
+      if (img && img.type === 'image') {
+        const note = res.unchanged
+          ? '（这张和上次画面完全一样 —— MCP 这边仍然重发，因为客户端可能没有上一张）'
+          : '';
+        return {
+          content: [
+            img,
+            { type: 'text', text: `图 ${res.imageWidth || '?'}px，屏 ${res.width}x${res.height}${note}` },
+          ],
+        };
+      }
+      text = (img && img.text) || (`图片路径：${res.path}`);
     } else {
       text = JSON.stringify(res, null, 2).slice(0, 20000);
     }

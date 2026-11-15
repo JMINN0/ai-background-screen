@@ -285,3 +285,18 @@ export async function text(args) {
   lines.push('要看清某个按钮长什么样？用 vdisplay_shot 配合坐标自己判断。');
   return { text: lines.join('\n') };
 }
+
+export async function apps() {
+  const r = await vd.adb(['shell', 'pm list packages -3 2>/dev/null']);
+  if (!r.ok) return { text: `列应用失败：${r.err || 'adb 不可用'}` };
+  const pkgs = String(r.out || '')
+    .split('\n')
+    .map((l) => l.trim().replace(/^package:/, ''))
+    .filter(Boolean)
+    .sort();
+  if (!pkgs.length) return { text: '没读到第三方 App。确认 adb 连着、且设备不是空的。' };
+  return {
+    text: `第三方 App 共 ${pkgs.length} 个（用包名调 vdisplay_launch）：\n`
+      + pkgs.map((p) => `  ${p}`).join('\n'),
+  };
+}

@@ -55,6 +55,8 @@ async function clearState() {
 }
 
 /** 命令分发。每个 action 都是 vd.js 里的一个函数。 */
+let mutexTail = Promise.resolve();   // 全局互斥链，串行化有副作用的命令
+
 const ACTIONS = {
   async start(args) {
     const r = await vd.start({
@@ -128,6 +130,16 @@ const ACTIONS = {
     if (!r.ok) return { ok: false, hint: r.hint };
     return { ok: true, ...r, imageWidth: shot.imageWidth || st.width, imageHeight: shot.imageHeight || st.height, path: shot.path };
   },
+
+  async apps() {
+    // 投屏前查包名。之前没有任何工具能给包名，模型只能猜。
+    const r = await vd.adb(['shell', 'pm list packages -3 2>/dev/null']);
+    if (!r.ok) return { ok: false, hint: r.err || 'adb 不可用' };
+    const pkgs = String(r.out || '').split('\n')
+      .map((x) => x.trim().replace(/^package:/, '')).filter(Boolean).sort();
+    return { ok: true, count: pkgs.length, packages: pkgs };
+  },
+
   async focusedApp() {
     return { app: await vd.focusedApp() };
   },
@@ -172,11 +184,37 @@ async function handle(req, res) {
     return send(res, 400, { error: `不认识的 action「${payload.action}」`, available: Object.keys(ACTIONS) });
   }
 
+  /*
+   * **有副作用的命令必须串行。**
+   *
+   * 为什么：vd.js 的 state 是模块级单例，而 start() 从「判空」到「写 displayId」
+   * 中间有好几段 await（推 jar、spawn server、等 socket）。两个 MCP 客户端同时
+   * 发 start，两边都看到 displayId 为空，就会各建一块屏 —— 而设备上有多块 scrcpy
+   * 屏时 resolveScrcpySfId() 会分不清，之后所有截图都报歧义。
+   *
+   * 只读命令（status/focusedApp/mainFocus）不加锁，保持并发。
+   */
+  const MUTATING = new Set(['start', 'stop', 'launch', 'input', 'shot', 'mainShot', 'text']);
+  const run = async () => {
+    try {
+      const out = await fn(payload.args || {});
+      return send(res, 200, { ok: true, result: out });
+    } catch (e) {
+      return send(res, 500, { ok: false, error: e?.message || String(e) });
+    }
+  };
+
+  if (!MUTATING.has(payload.action)) return run();
+
+  // single-flight：一把全局锁，后来的排队
+  const prev = mutexTail;
+  let release;
+  mutexTail = new Promise((r) => { release = r; });
   try {
-    const out = await fn(payload.args || {});
-    return send(res, 200, { ok: true, result: out });
-  } catch (e) {
-    return send(res, 500, { ok: false, error: e?.message || String(e) });
+    await prev;
+    return await run();
+  } finally {
+    release();
   }
 }
 

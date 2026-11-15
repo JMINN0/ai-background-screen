@@ -241,3 +241,18 @@ export function textSpec() {
     output: out('识别到的文字行（含坐标和置信度）。'),
   };
 }
+
+export function appsSpec() {
+  return {
+    name: 'vdisplay_apps',
+    description: [
+      '列出手机上的第三方 App（名称 + 包名），投屏前拿来查包名。',
+      '',
+      '为什么要这个工具：vdisplay_launch 要包名，但之前没有任何工具能告诉你包名是什么，',
+      '模型只能靠猜。这个工具补上这一环 —— 列的是 `pm list packages -3`（第三方），',
+      '系统应用不列，因为投系统应用基本没意义。',
+    ].join('\n'),
+    parameters: {},
+    output: out('已安装第三方 App 的包名列表。'),
+  };
+}

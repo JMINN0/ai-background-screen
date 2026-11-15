@@ -9,7 +9,7 @@
  */
 import {
   inputSpec, launchSpec, mainShotSpec, modesSpec, shotSpec, startSpec, statusSpec, stopSpec,
-  streamStartSpec, streamStopSpec, textSpec,
+  streamStartSpec, streamStopSpec, textSpec, appsSpec,
 } from './tool-spec.js';
 import * as T from './tools.js';
 
@@ -69,6 +69,7 @@ export async function apply(ctx) {
             [inputSpec, (a) => T.input(a)],
             [shotSpec, (a) => T.shot(a)],
             [textSpec, (a) => T.text(a)],
+            [appsSpec, () => T.apps()],
             [mainShotSpec, (a) => T.mainShot(a)],
             [statusSpec, () => T.status()],
             [stopSpec, (a) => T.stop(a)],   // 以前写成 () => T.stop()，把 args 丢了，forceStopApps 永远无效
