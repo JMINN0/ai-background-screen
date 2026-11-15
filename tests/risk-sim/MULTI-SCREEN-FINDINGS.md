@@ -84,6 +84,31 @@ vd_system_decorations
 **结论：想改名只能自己写 display host（用 app_process 调 VirtualDisplay），
 不能用 scrcpy-server。这是「多屏归属」和「隐藏痕迹」两件事的共同前提。**
 
+## U8 多块虚拟屏能否同时存在
+
+**部分结论。**
+
+**先纠正一个我自己反复踩的坑**：`scid` 是 **32 位有符号整数**，必须 ≤ `0x7ffffffe`。
+
+```
+a1b2c3d4 = 2712847316 > 2^31-1  → 溢出，server 直接 "Aborted"
+1a2b3c4d = 439041101  < 2^31-1  → 正常
+```
+
+`Aborted` 只有两个字，没有任何上下文 —— 我先前把原因归给 JAR 自删（那是另一个真 bug），
+浪费了两轮。**以后起 server 失败先查 scid 范围。**
+
+**实测**：用合法 scid 起第二个 scrcpy-server，进程能起来、能识别设备
+（`Device: [nubia] REDMAGIC NX809J`），但**虚拟屏数量仍是 1** ——
+说明 `tunnel_forward=true` 下必须由客户端按顺序连上 video → control 两个 socket，
+server 才真正创建 display。我手工连的时候第一个 socket 一关就 EPIPE，屏没建成。
+
+**这一条没能完成验证**，需要写成正确的双 socket 客户端才能定论。
+现有的 `vd.js` 是能起一块屏的（它就是这么做的），所以问题只是我的手测方式不对。
+
+**对 broker 的影响**：多屏可行性仍未确认。dpi 金丝雀方案（U4）本身是可行的，
+但前提是「能同时存在多块屏」。
+
 ## U7 force-stop 主屏后台 App 会丢什么
 
 **未做**（涉及用户数据，需要用户同意才能测）。
