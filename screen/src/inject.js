@@ -1,0 +1,204 @@
+/**
+ * inject.js — 通过 scrcpy 控制通道发 INJECT_TOUCH_EVENT，替代 `adb shell input tap`。
+ *
+ * ## 为什么要换掉 `adb shell input`
+ *
+ * `input` 那条路的破绽是结构性的，改不动：
+ *   · 每次起一个子进程，30-80ms 开销
+ *   · 压力恒 1.0（`MotionEvent.obtain(..., pressure=1.0f, size=1.0f, ...)`）
+ *   · `getHistorySize()` 恒 0
+ *   · `swipe` 的 MOVE 是严格线性等距、间隔 1ms 级 —— 比没有更假
+ *   · deviceId 取"第一个支持 TOUCHSCREEN 的设备"，可能挑中某个虚拟触屏
+ *
+ * scrcpy 的 INJECT_TOUCH_EVENT 不一样：**pressure 是报文里的独立字段**，
+ * 服务端原样写进 `MotionEvent.PointerCoords.pressure`，系统不会重算。
+ * 路径（上游源码，已核对）：
+ *   ControlMessageReader.parseInjectTouchEvent → Controller.injectTouch
+ *   → pointer.setPressure → PointersState.update → MotionEvent.obtain
+ *   → Device.injectEvent（隐藏 API InputManager.injectInputEvent）
+ *
+ * ## 报文格式（scrcpy 5.0.1，32 字节定长，全大端）
+ *
+ *   type            u8   = 2
+ *   action          u8   0=DOWN 1=UP 2=MOVE 3=CANCEL
+ *   pointerId       i64  BE
+ *   x               i32
+ *   y               i32
+ *   screenWidth     u16
+ *   screenHeight    u16
+ *   pressure        u16  定点：0xFFFF = 1.0
+ *   actionButton    i32
+ *   buttons         i32
+ *
+ * v2.0 起就是这个格式，v3.3.4 / v4.1 / v5.0.1 逐字节一致（v1.25 少 actionButton）。
+ *
+ * ## 仍然修不掉的（诚实记录）
+ *
+ *   · deviceId 服务端写死 0 → `InputDevice.getDevice(0)` 可能返回 null
+ *   · 接触面积 size 协议里**根本没有这个字段** → PointerCoords.size 恒 0
+ *   · x/y 只能是整数
+ *   · getHistorySize() 靠 InputDispatcher 合并，客户端控制不了
+ *
+ * 要连 size 和 history 一起解决，只能自己写 app_process 注入器（照 input 的
+ * getInputDeviceId 拿真实触摸屏 id，用 MotionEvent.addBatch 造历史采样）。
+ */
+
+const TYPE_INJECT_TOUCH = 2;
+
+export const ACTION = { DOWN: 0, UP: 1, MOVE: 2, CANCEL: 3 };
+
+export const BUTTON_PRIMARY = 1;
+
+/** 压力转定点：0..1 → 0..65535 */
+export function toFixedPressure(p) {
+  const v = Math.max(0, Math.min(1, Number(p)));
+  return Math.round(v * 0xffff) & 0xffff;
+}
+
+/**
+ * 生成一条 INJECT_TOUCH_EVENT 报文。
+ *
+ * @param {object} o
+ * @param {number} o.action  ACTION.DOWN / UP / MOVE / CANCEL
+ * @param {number|bigint} [o.pointerId=0]  0 表示用鼠标指针（单指）
+ * @param {number} o.x
+ * @param {number} o.y
+ * @param {number} o.screenW  必须是虚拟屏的真实宽（**不匹配服务端会静默丢弃**）
+ * @param {number} o.screenH
+ * @param {number} [o.pressure=1]  0..1
+ * @param {number} [o.actionButton=0]
+ * @param {number} [o.buttons=0]
+ * @returns {Buffer} 32 字节
+ */
+export function buildTouch(o) {
+  const buf = Buffer.alloc(32);
+  let off = 0;
+
+  buf.writeUInt8(TYPE_INJECT_TOUCH, off); off += 1;
+  buf.writeUInt8(Number(o.action) & 0xff, off); off += 1;
+
+  // pointerId 是 i64。scrcpy 用 -1 表示鼠标指针；这里默认 -1，跟它的约定一致。
+  const pid = o.pointerId === undefined ? -1n : BigInt(o.pointerId);
+  buf.writeBigInt64BE(pid, off); off += 8;
+
+  buf.writeInt32BE(Math.round(Number(o.x) || 0), off); off += 4;
+  buf.writeInt32BE(Math.round(Number(o.y) || 0), off); off += 4;
+
+  buf.writeUInt16BE(Math.max(0, Math.min(65535, Math.round(Number(o.screenW) || 0))), off); off += 2;
+  buf.writeUInt16BE(Math.max(0, Math.min(65535, Math.round(Number(o.screenH) || 0))), off); off += 2;
+
+  buf.writeUInt16BE(toFixedPressure(o.pressure === undefined ? 1 : o.pressure), off); off += 2;
+
+  buf.writeInt32BE(Number(o.actionButton) | 0, off); off += 4;
+  buf.writeInt32BE(Number(o.buttons) | 0, off); off += 4;
+
+  return buf;
+}
+
+/**
+ * 生成一次完整点按的报文序列（DOWN → 若干 MOVE → UP）。
+ *
+ * **压力沿轨迹变化**是这条路的真正价值：`input tap` 只能给恒定的 1.0，
+ * 而真实手指按下去时压力是先升后降的。这里按正弦包络模拟。
+ *
+ * @param {object} o
+ * @param {number} o.x
+ * @param {number} o.y
+ * @param {number} o.screenW
+ * @param {number} o.screenH
+ * @param {number} [o.holdMs=95]   按下到抬起的总时长
+ * @param {number} [o.moves=0]     中间插几个 MOVE
+ * @returns {{bufs:Buffer[], totalMs:number}}
+ */
+export function buildTap(o) {
+  const { x, y, screenW, screenH } = o;
+  const holdMs = Number(o.holdMs) || 95;
+  const moves = Math.max(0, Number(o.moves) || 0);
+  const bufs = [];
+
+  // DOWN：压力不是从 1.0 开始，真实触摸是逐渐压实
+  bufs.push(buildTouch({
+    action: ACTION.DOWN, x, y, screenW, screenH,
+    pressure: 0.42 + Math.random() * 0.12,
+    actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+  }));
+
+  // 中间 MOVE：压力按正弦包络走（先升后降），坐标带亚像素抖动
+  for (let i = 1; i <= moves; i += 1) {
+    const t = i / (moves + 1);
+    const env = 0.42 + Math.sin(Math.PI * t) * 0.5;          // 0.42 → 0.92 → 0.42
+    bufs.push(buildTouch({
+      action: ACTION.MOVE,
+      x: x + (Math.random() - 0.5) * 1.2,
+      y: y + (Math.random() - 0.5) * 1.2,
+      screenW, screenH,
+      pressure: Math.max(0.2, Math.min(0.95, env + (Math.random() - 0.5) * 0.06)),
+      actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+    }));
+  }
+
+  // UP：压力已经衰减
+  bufs.push(buildTouch({
+    action: ACTION.UP, x, y, screenW, screenH,
+    pressure: 0.18 + Math.random() * 0.1,
+    actionButton: BUTTON_PRIMARY, buttons: 0,
+  }));
+
+  return { bufs, totalMs: holdMs };
+}
+
+/**
+ * 生成一次滑动的报文序列，带**变速**（真人滑动是先加速后减速，不是匀速）。
+ *
+ * `adb input swipe` 的 MOVE 是严格等距的，这一点在行为统计里很明显。
+ *
+ * @param {object} o
+ * @param {number} o.x1 @param {number} o.y1
+ * @param {number} o.x2 @param {number} o.y2
+ * @param {number} o.screenW @param {number} o.screenH
+ * @param {number} [o.ms=300]
+ * @param {number} [o.steps=14]
+ * @returns {{bufs:Buffer[], totalMs:number, delays:number[]}}
+ */
+export function buildSwipe(o) {
+  const { x1, y1, x2, y2, screenW, screenH } = o;
+  const totalMs = Math.max(60, Number(o.ms) || 300);
+  const steps = Math.max(3, Number(o.steps) || 14);
+  const bufs = [];
+
+  // 缓动：真人手指是"快起 - 匀 - 缓停"，用 easeInOutQuad
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
+
+  bufs.push(buildTouch({
+    action: ACTION.DOWN, x: x1, y: y1, screenW, screenH,
+    pressure: 0.45 + Math.random() * 0.1,
+    actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+  }));
+
+  const delays = [];
+  let prevT = 0;
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const e = ease(t);
+    // 坐标沿缓动曲线走，再叠一点垂直抖动（真人滑动不会完美直线）
+    const x = x1 + (x2 - x1) * e + (Math.random() - 0.5) * 1.5;
+    const y = y1 + (y2 - y1) * e + (Math.random() - 0.5) * 2.5;
+    const p = 0.5 + Math.sin(Math.PI * t) * 0.35;
+    bufs.push(buildTouch({
+      action: ACTION.MOVE, x, y, screenW, screenH,
+      pressure: Math.max(0.25, Math.min(0.95, p + (Math.random() - 0.5) * 0.05)),
+      actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+    }));
+    // 每步的时间间隔按缓动导数走：中间快、两头慢
+    delays.push(Math.max(4, Math.round((t - prevT) * totalMs * (0.6 + Math.random() * 0.8))));
+    prevT = t;
+  }
+
+  bufs.push(buildTouch({
+    action: ACTION.UP, x: x2, y: y2, screenW, screenH,
+    pressure: 0.2 + Math.random() * 0.1,
+    actionButton: BUTTON_PRIMARY, buttons: 0,
+  }));
+
+  return { bufs, totalMs, delays };
+}

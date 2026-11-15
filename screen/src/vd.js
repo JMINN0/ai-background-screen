@@ -733,6 +733,18 @@ export async function launch(pkg, activity) {
  * SET_CLIPBOARD 报文（scrcpy 5.x）：
  *   type=9 (1B) | sequence (8B i64) | paste (1B bool) | length (4B i32) | text (utf8)
  */
+/**
+ * 控制通道当前是否可用。返回 socket 或 null。
+ *
+ * tap/swipe 用它决定走 scrcpy 控制通道还是退回 adb input。
+ * 注意：**必须检查 destroyed**，socket 断了但对象还在的情况实测会出现。
+ */
+function sendControlRaw() {
+  const ctl = state.sockets?.[1];
+  if (!ctl || ctl.destroyed) return null;
+  return ctl;
+}
+
 function sendControl(buf) {
   const ctl = state.sockets?.[1];
   if (!ctl || ctl.destroyed) return false;
@@ -847,7 +859,34 @@ export async function input(kind, a = {}) {
 
 
   if (kind === 'tap') {
-    cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+    // **优先走 scrcpy 控制通道**：能给真实压力、能插 MOVE、延迟也低。
+    // 只有控制通道不可用（老 server / socket 断了）才退回 adb input。
+    const inj = await import('./inject.js');
+    const useCtl = sendControlRaw() !== null;
+    if (useCtl) {
+      const sw = state.width; const sh = state.height;
+      const { bufs } = inj.buildTap({
+        x: toX(), y: toY(), screenW: sw, screenH: sh,
+        holdMs: Number(a.holdMs) || (60 + Math.random() * 90),
+        moves: 2 + Math.floor(Math.random() * 3),
+      });
+      let sent = 0;
+      for (let k = 0; k < bufs.length; k += 1) {
+        if (!sendControl(bufs[k])) break;
+        sent += 1;
+        if (k < bufs.length - 1) await sleep(8 + Math.random() * 14);
+      }
+      if (sent === bufs.length) {
+        state.lastInjectVia = 'scrcpy-control';
+        cmd = null;   // 已经注入完，不再走 adb
+      } else {
+        cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+        state.lastInjectVia = 'adb-input-fallback';
+      }
+    } else {
+      cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+      state.lastInjectVia = 'adb-input';
+    }
   } else if (kind === 'swipe') {
     // **四个坐标都要映射，起点也不能漏。** 上一版起点读的是 a.x（用户给的是 x1），
     // 于是恒为 0；另外 y1/x2/y2 只乘比例没加 region 偏移。
@@ -856,6 +895,28 @@ export async function input(kind, a = {}) {
     if (sx === null || sy === null || ex === null || ey === null) {
       return { ok: false, hint: 'swipe 需要完整坐标：x1/y1/x2/y2（或 nx1/ny1/nx2/ny2）。' +
         ' 拒绝用 0 当默认值 —— 那会从屏幕最左边划出去，在开了手势导航的屏上可能把 App 划走。' };
+    }
+    // 同上：优先控制通道。**swipe 的收益更大** ——
+    // `adb input swipe` 的 MOVE 是严格等距线性的，行为统计一眼能看出来；
+    // 走控制通道可以按缓动曲线走、叠加垂直抖动、压力沿轨迹变化。
+    const inj2 = await import('./inject.js');
+    if (sendControlRaw() !== null) {
+      const swp = inj2.buildSwipe({
+        x1: sx, y1: sy, x2: ex, y2: ey,
+        screenW: state.width, screenH: state.height,
+        ms: Number(a.ms) || 300,
+        steps: Number(a.steps) || 14,
+      });
+      let sentAll = true;
+      for (let k = 0; k < swp.bufs.length; k += 1) {
+        if (!sendControl(swp.bufs[k])) { sentAll = false; break; }
+        const wait = k < swp.delays.length ? swp.delays[k] : 8;
+        await sleep(wait);
+      }
+      if (sentAll) {
+        state.lastInjectVia = 'scrcpy-control';
+        cmd = null;
+      }
     }
     cmd = `input -d ${d} swipe ${sx} ${sy} ${ex} ${ey} ${Number(a.ms) || 300}`;
   }
