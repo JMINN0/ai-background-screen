@@ -127,6 +127,10 @@ export function shotSpec() {
         description: 'frames>1 时的帧间隔毫秒，默认 300。抓快动作调小（最小 0），抓慢变化调大。',
       },
       format: { type: 'string', description: 'frames=1 时有效："jpeg"（默认，省 token）或 "png"。' },
+      crop: {
+        type: 'string',
+        description: '"content" 时裁掉浏览器地址栏和导航栏再出图。实测 720x1592 里内容只有 1372（壳 220px = 13%），裁掉后单帧 684→594 token、九格 798→684 token。只在虚拟屏上跑浏览器时有用；普通 App 没有壳，传了也没影响。',
+      },
       dir: { type: 'string', description: '输出目录，默认 /tmp。' },
     },
     output: out('图片路径、格数、每格大小、是否和上次一样。'),

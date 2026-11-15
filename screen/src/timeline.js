@@ -71,6 +71,37 @@ async function grabOne(target, sfId, dest) {
 }
 
 /**
+ * 问浏览器「页面内容真实占据多高」，用来裁掉浏览器外壳。
+ *
+ * 为什么需要：Edge/Chrome 在虚拟屏上都带地址栏和导航栏，实测 720x1592 的截图里
+ * 内容只有 1372 高（壳 220px = 13%）。这些像素照样按 token 计费，九格里也一样浪费。
+ *
+ * 为什么不用硬编码：壳的高度随浏览器版本、DPI、是否全屏变化。`Page.getLayoutMetrics`
+ * 返回的 `layoutViewport.clientHeight` 是权威值，浏览器自己算的。
+ *
+ * 拿不到（没开 CDP、不是浏览器、报错）就返回 null，调用方按原图处理 —— 不能因为
+ * 这个增强失败就把截图也搞坏。
+ */
+export async function contentHeight() {
+  try {
+    const cdp = await import('../../web/src/cdp.js');
+    const ens = await cdp.ensure();
+    if (!ens || ens.ok === false) return null;
+    const tabs = await cdp.listAllTabs();
+    // 只认本机靶场/本地页，别去读用户的标签
+    const t = tabs.find((x) => x.url && (/127\.0\.0\.1:3\d{3}/.test(x.url) || x.url.startsWith('file:')));
+    if (!t) return null;
+    const { send } = await cdp;
+    const m = await send(t.targetId, 'Page.getLayoutMetrics', {});
+    const h = m?.result?.layoutViewport?.clientHeight ?? m?.layoutViewport?.clientHeight;
+    if (!h || h < 200) return null;
+    return { height: Math.round(h), url: t.url };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 抓一组帧并拼成网格。
  *
  * @param {object} o
@@ -82,7 +113,7 @@ async function grabOne(target, sfId, dest) {
  * @returns {{ok:boolean, path?:string, cells?:number, cols?:number, rows?:number,
  *            cellW?:number, cellH?:number, captured?:number, elapsedMs?:number, hint?:string}}
  */
-export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 262, dir = '/tmp' } = {}) {
+export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 262, dir = '/tmp', crop = 'none' } = {}) {
   if (!sfId) return { ok: false, hint: '缺 SurfaceFlinger id，先 vdisplay_start 建屏。' };
 
   // 规整成矩形：优先 1/2/4/6/9/12/16
@@ -116,22 +147,37 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
     return { ok: false, hint: '一帧都没抓到。查 vdisplay_status 确认屏还在。' };
   }
 
-  // 用第一帧的真实尺寸算格子高（横竖屏会变）
+  // 用第一帧的真实尺寸算格子高（横竖屏会变）。
+  // **crop=content 时必须先算出裁剪量再算格子高** —— 否则内容被裁了、格子还是按原高度算，
+  // 结果只是把内容缩小塞进原来的格子，token 一分不省（第一版就犯了这个错）。
   let cellH = Math.round(cellWidth * 16 / 9);
+  let fullW = 0;
+  let fullH = 0;
   try {
     const b = await readFile(files[0]);
     if (b.length > 24 && b.readUInt32BE(12) === 0x49484452) {
-      const w = b.readUInt32BE(16);
-      const h = b.readUInt32BE(20);
-      if (w > 0 && h > 0) cellH = Math.max(60, Math.round(cellWidth * h / w));
+      fullW = b.readUInt32BE(16);
+      fullH = b.readUInt32BE(20);
     }
   } catch { /* 用默认比例 */ }
+
+  let cropPx = 0;
+  if (crop === 'content' && fullH > 200) {
+    const ch = await contentHeight();
+    if (ch && ch.height > 200 && ch.height < fullH - 20) cropPx = fullH - ch.height;
+  }
+
+  const effH = fullH > 0 ? fullH - cropPx : 0;
+  if (fullW > 0 && effH > 0) {
+    cellH = Math.max(60, Math.round(cellWidth * effH / fullW));
+  }
 
   const out = join(dir, `vd-timeline-${stamp}.png`);
 
   // ffmpeg 拼图：用 filenames 序列 + tile
   const pattern = join(work, 'f%02d.png');
-  const vf = `scale=${cellWidth}:${cellH}:force_original_aspect_ratio=decrease,`
+  const pre = cropPx > 0 ? `crop=iw:ih-${cropPx}:0:0,` : '';
+  const vf = `${pre}scale=${cellWidth}:${cellH}:force_original_aspect_ratio=decrease,`
     + `pad=${cellWidth}:${cellH}:(ow-iw)/2:(oh-ih)/2:color=0x121214,tile=${cols}x${rows}`;
   const r = await run('ffmpeg', [
     '-y', '-loglevel', 'error',
@@ -160,5 +206,6 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
     canvasH: cellH * rows,
     elapsedMs: Date.now() - t0,
     intervalMs,
+    croppedPx: cropPx,
   };
 }

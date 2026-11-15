@@ -831,7 +831,7 @@ export async function input(kind, a = {}) {
  * 调用方就不用再 read_image 了。为什么值得做：一张 720x1280 截图约 1.1k tokens
  * 且永久留在上下文里，长任务翻几屏就把上下文吃满了（实测 15 屏 → 上下文 203k→243k）。
  */
-export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) {
+export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx = 0 } = {}) {
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
 
@@ -885,14 +885,17 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
       }
     }
   } catch { /* 读不出来就沿用旧值 */ }
-  if (hash === state.lastShotHash && state.lastShotPath && state.lastShotPath !== local) {
-    // 和上一张完全一样：删掉刚截的，复用上次那张，省一次模型看图
-    try {
-      const { unlink } = await import('node:fs/promises');
-      await unlink(local);
-      return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，同一张图可直接复用，不用再看一次。' };
-    } catch { /* 删不掉就继续用新的 */ }
-  }
+    // **去重必须带上出图参数**：以前只比 hash，导致「画面没变时改了 width 或 crop，
+    // 拿回来还是上一张旧图」—— 实测把 540 改成 720、开了 crop 都没反应，极易误判成
+    // 裁剪功能坏了。现在 hash + 参数全一致才复用。
+    const cacheKey = `${hash}|${width}|${format}|${Math.round(cropPx)}`;
+    if (cacheKey === state.lastShotCacheKey && state.lastShotPath && state.lastShotPath !== local) {
+      try {
+        const { unlink } = await import('node:fs/promises');
+        await unlink(local);
+        return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，复用上次那张' };
+      } catch { /* 删不掉就继续用新的 */ }
+    }
 
   // 转成 540 宽 JPEG。**必须用本地 proot 的 ffmpeg**：设备上没有 ffmpeg
   // （实测 `adb shell ffmpeg` → inaccessible or not found）。
@@ -904,10 +907,13 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
   if (format === 'jpeg') {
     const jpg = local.replace(/\.png$/, '.jpg');
     const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
-    const conv = await new Promise((res) => {
-      execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local, '-vf', `scale=${targetW}:-1`, '-q:v', '4', jpg],
-        (e) => res(!e));
-    });
+      // cropPx > 0 时先裁掉底部（浏览器壳），再缩放。实测 720x1592 → 720x1372，
+      // 内容一像素不变，token 从 684 降到 594。裁不动就自动忽略。
+      const pre = cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0,` : '';
+      const conv = await new Promise((res) => {
+        execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local, '-vf', `${pre}scale=${targetW}:-1`, '-q:v', '4', jpg],
+          (e) => res(!e));
+      });
     if (conv) {
       try {
         const { access } = await import('node:fs/promises');
@@ -920,7 +926,26 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg' } = {}) 
       finalImgWidth = state.width;   // 退回 PNG，宽度就是显示宽度
     }
   }
-  state.lastShotHash = hash;
+    // PNG 路径也要支持裁剪，否则行为不一致：OCR 走的就是 png，
+    // 不带裁剪会多读地址栏里的网址和按钮文字（实测会混进结果里）。
+    if (format !== 'jpeg' && cropPx > 0) {
+      const png2 = local.replace(/\.png$/, '-crop.png');
+      const ok2 = await new Promise((res) => {
+        execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local,
+          '-vf', `crop=iw:ih-${Math.round(cropPx)}:0:0`, png2],
+          (e) => res(!e));
+      });
+      if (ok2) {
+        try {
+          const { access } = await import('node:fs/promises');
+          await access(png2);
+          finalPath = png2;
+          finalImgWidth = state.width;
+        } catch { /* 用原图 */ }
+      }
+    }
+    state.lastShotHash = hash;
+    state.lastShotCacheKey = `${hash}|${width}|${format}|${Math.round(cropPx)}`;
   state.lastShotPath = finalPath;
   state.lastShotImgWidth = finalImgWidth;
   return {

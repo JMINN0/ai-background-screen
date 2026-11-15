@@ -84,9 +84,22 @@ export async function shot(args) {
 
   // frames=1 → 单张截图（读字用）
   if (frames <= 1) {
+    // crop=content 时问浏览器要内容区高度，裁掉地址栏+导航栏。
+    // 实测 720x1592 里内容只有 1372（壳 220px = 13%，这些像素照样按 token 收）。
+    let cropPx = 0;
+    if (args?.crop === 'content') {
+      try {
+        const ch = await timeline.contentHeight();
+        if (ch && ch.height > 200) {
+          const st0 = await vd.status();
+          if (st0.running && st0.height > ch.height + 20) cropPx = st0.height - ch.height;
+        }
+      } catch { /* 拿不到就不裁 */ }
+    }
     const r = await vd.shot(String(args?.dir || '/tmp'), {
       width: Number(args?.width) || 540,
       format: args?.format === 'png' ? 'png' : 'jpeg',
+      cropPx,
     });
     if (!r.ok) return { text: `截图失败：${r.hint}` };
     const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
@@ -109,6 +122,7 @@ export async function shot(args) {
     intervalMs: args?.intervalMs === undefined ? 300 : Math.max(0, Number(args.intervalMs) || 0),
     cellWidth: Number(args?.width) || 262,
     dir: String(args?.dir || '/tmp'),
+    crop: args?.crop === 'content' ? 'content' : 'none',
   });
   if (!r.ok) return { text: `抓时间线失败：${r.hint}` };
 
