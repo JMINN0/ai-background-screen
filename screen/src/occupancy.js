@@ -114,6 +114,26 @@ export async function checkApp(pkg, o = {}) {
   }
   const byDisplay = parseDisplays(r.out);
 
+  /*
+   * **解析不出来必须报错，不能当成"没人用"。**
+   *
+   * 原来这里没有检查：dumpsys 输出格式变了、或者 adb 返回空，parseDisplays 返回
+   * 空 Map，后面的循环一次都不执行，于是所有标志保持 false → level=FREE → canTouch 放行。
+   * 也就是说**探测失败会被当成"这 App 没人占，随便用"**，这是最危险的失败方向。
+   *
+   * 加断言：一个 display 都没解析出来 = 探测失败，闭着嘴拒绝。
+   */
+  if (byDisplay.size === 0) {
+    return {
+      ok: false,
+      pkg,
+      code: 'E_PROBE_FAILED',
+      hint: '占用探测失败：dumpsys activity activities 一个 display 都没解析出来。'
+        + '可能是 adb 断了，或者这台机器的 dumpsys 格式和预期不同。'
+        + '为了安全这里**不放行** —— 拿不到占用状态时不能假设没人用。',
+    };
+  }
+
   const ourScreens = o.ourScreens || new Map();
   const onOurScreens = [];
   const foreignDisplays = [];

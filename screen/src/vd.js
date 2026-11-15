@@ -198,6 +198,10 @@ function makeState() {
   lastShotPath: null,
   lastShotImgWidth: 0,
   systemDecorations: false,
+  hwc: null,                                   // 建屏时请求的 hwc 值（'auto'/'on'/'off'）。
+                                               // **之前没有这个字段**，导致 :292 的
+                                               // `state.hwc !== hwc` 恒真 —— 复用一块
+                                               // 已经开着 HWC 的屏时也会报"请求 hwc=on，实际 undefined"。
   dpi: 320,                                    // 建屏时用的 dpi，池用来做身份金丝雀
   launchedPkgs: [],
   // HWC 虚拟屏：部分 Qualcomm 设备的 HWC 支持合成虚拟屏，能让 3D 游戏不再黑屏。
@@ -435,6 +439,7 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
       state.displayId = added[0];
       state.width = finalWidth; state.height = finalHeight;
       state.dpi = dpi;                          // 记录给池认身份用
+      state.hwc = hwc;                          // 记下请求值，复用分支的差异对比要用
       state.systemDecorations = systemDecorations;
       break;
     }
@@ -951,7 +956,15 @@ export async function input(kind, a = {}) {
         cmd = null;
       }
     }
-    cmd = `input -d ${d} swipe ${sx} ${sy} ${ex} ${ey} ${Number(a.ms) || 300}`;
+    // **只有控制通道没发成功才回退到 adb。**
+    // 原来这行是无条件执行的，于是控制通道发完之后又被 adb 覆盖了一遍 ——
+    // 每次滑动实际滑两下（翻页翻两页）。tap 分支没这个问题，对比上面 tap 的写法。
+    //
+    // 用显式布尔判断而不是 `cmd !== null`：`let cmd;` 的初值是 undefined，
+    // `undefined !== null` 为真，靠这个特性"碰巧对"是脆的，改成看得懂的写法。
+    if (cmd === undefined) {
+      cmd = `input -d ${d} swipe ${sx} ${sy} ${ex} ${ey} ${Number(a.ms) || 300}`;
+    }
   }
   else if (kind === 'text') {
     const txt = String(a.text ?? '');

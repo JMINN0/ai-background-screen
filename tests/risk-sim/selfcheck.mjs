@@ -18,23 +18,42 @@ import { readFile } from 'node:fs/promises';
 const ADB = process.env.ADB_BIN || 'adb';
 const TARGET = process.env.ADB_TARGET || '127.0.0.1:5555';
 
+/*
+ * **`''` 有两种意思，必须分开：命令跑了但没输出，和命令根本没跑起来。**
+ *
+ * 原来一律返回 ''，于是 adb 断开时 getSetting 把 '' 当成"这个设置没设"，
+ * 9 项检查全部判 ✓，最后打印"没有一票否决级暴露" —— **一个假的清白结论**。
+ * 现在命令失败返回 null，跟"空输出"区分开。
+ */
 function sh(cmd, timeout = 15000) {
   return new Promise((resolve) => {
     execFile(ADB, ['-s', TARGET, 'shell', cmd], { timeout, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve(err ? '' : String(stdout || '').trim()));
+      (err, stdout) => resolve(err ? null : String(stdout || '').trim()));
   });
 }
 
-/** 设置项读取：返回字符串、null（未设置）、或 'ERROR' */
+/** adb 到底通不通。不通就别往下测了，不然全是假绿。 */
+async function checkAdb() {
+  const out = await sh('echo __ok__', 8000);
+  if (out === null || !out.includes('__ok__')) {
+    console.error(`\n❌ adb 不通（${ADB} -s ${TARGET}）。`);
+    console.error('   自检**没有执行**，不是"设备干净"。');
+    console.error('   先确认 adb devices 里有这台机器、且能 adb -s <target> shell echo ok。');
+    process.exit(2);
+  }
+}
+
+/** 设置项读取：命令失败 → 'ERROR'；未设置 → null；否则原始字符串 */
 async function getSetting(ns, key) {
   const v = await sh(`settings get ${ns} ${key} 2>/dev/null`);
-  if (v === '') return null;   // adb 没输出：命令失败或就是未设置，都按未设置处理
-  if (v === 'null') return null;
+  if (v === null) return 'ERROR';   // 命令失败，跟"没设置"不是一回事
+  if (v === '' || v === 'null') return null;
   return v;
 }
 
 async function getProp(key) {
   const v = await sh(`getprop ${key} 2>/dev/null`);
+  if (v === null) return 'ERROR';
   return v || '(空)';
 }
 
@@ -142,6 +161,7 @@ const CHECKS = [
 ];
 
 async function main() {
+  await checkAdb();          // 不通就直接退出，绝不输出"全绿"
   const wantJson = process.argv.includes('--json');
   const results = [];
 
@@ -183,8 +203,14 @@ async function main() {
   }
 
   console.log('');
-  console.log('  二值统计：命中 ' + hits.length + ' / ' + results.length +
-    '（fatal ' + fatal.length + '）');
+  const errs = results.filter((r) => r.raw === 'ERROR');
+  if (errs.length) {
+    console.log(`  ⚠️ 有 ${errs.length} 项**没测到**（命令失败），这几项既不算命中也不算干净：`);
+    for (const e of errs) console.log(`     · ${e.label}（${e.id}）`);
+    console.log('');
+  }
+  console.log('  二值统计：命中 ' + hits.length + ' / ' + (results.length - errs.length) +
+    ' 项可判（fatal ' + fatal.length + '）' + (errs.length ? `，另有 ${errs.length} 项未测到` : ''));
   console.log('  注意：这只覆盖「设备状态」一类，不含行为层和浏览器指纹。');
 }
 

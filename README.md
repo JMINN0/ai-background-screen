@@ -339,6 +339,15 @@ web/（Cordis 插件）
 
 ## 十、许可
 
-MIT。见 [LICENSE](LICENSE)。
+**本仓库自己的代码是 MIT**（见 [LICENSE](LICENSE)）。商业使用、修改、再分发都允许，
+保留版权声明即可。作者不承担任何责任。
 
-商业使用、修改、再分发都允许，保留版权声明即可。作者不承担任何责任。
+**但 `screen/assets/scrcpy-server.jar` 不是我们的代码** —— 它是
+[scrcpy](https://github.com/Genymobile/scrcpy) 的 server 端，以 **Apache-2.0** 分发。
+所以这个仓库实际是 **MIT + Apache-2.0**，两部分各按自己的条款：
+
+- 我们的代码 → MIT
+- `scrcpy-server.jar` → Apache-2.0，全文见 [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0)
+
+如果你想再分发，**两个许可的副本都要带上**。完整说明、上游归属、以及"怎么自己从源码
+构建这个 jar 来确认没被改过"，见 **[THIRD-PARTY.md](THIRD-PARTY.md)**。
