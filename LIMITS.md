@@ -213,7 +213,9 @@ D 类是「现在没做但技术上能做」——**别把 D 当成 A**。
 ### D-05 多 AI 多屏（broker + 租约）
 
 - **现状**：`vd.js` 是模块级单例，一次只能一块屏。
-- **能做吗**：能，设计已完成（见 `MULTI-SCREEN-FINDINGS.md` 和子代理的 broker 设计）。
+  daemon 已加 single-flight 互斥（防两个 MCP 进程同时建屏），但**池化/租约/抢占未实现**。
+- **能做吗**：能，**设计已完整落库：见 [BROKER-DESIGN.md](BROKER-DESIGN.md)**。
+  前置实验见 `tests/risk-sim/MULTI-SCREEN-FINDINGS.md`（U1-U6 已跑）。
 - **难点**：**屏归属** —— 所有 scrcpy 屏都叫 `scrcpy`，分不清谁是谁。
   可行方案是 dpi 金丝雀（每块屏 320+i，从 `DisplayInfo.density` 反查）【实测 U4 可行】。
 - **代价**：MVP 2.5-4 天。
