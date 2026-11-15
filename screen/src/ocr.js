@@ -146,7 +146,10 @@ export async function recognize(imagePath, o = {}) {
   const maxLines = Math.max(1, Math.min(200, Number(o.maxLines) || 80));
   const hash = o.hash || null;
 
-  if (hash && state.lastHash === hash && state.lastResult) {
+  // 缓存键必须带上 minConf/maxLines：同一个 hash 用不同阈值请求，
+  // 返回的应该是不同结果，只按 hash 命中会把上次的低置信度过滤结果当成这次的。
+  const cacheKey = hash ? `${hash}|${minConf}|${maxLines}` : null;
+  if (cacheKey && state.lastKey === cacheKey && state.lastResult) {
     return { ...state.lastResult, cached: true, elapsedMs: 0 };
   }
 
@@ -190,7 +193,7 @@ export async function recognize(imagePath, o = {}) {
     elapsedMs: resp.elapsedMs || (Date.now() - t0),
     cached: false,
   };
-  if (hash) { state.lastHash = hash; state.lastResult = result; }
+  if (cacheKey) { state.lastKey = cacheKey; state.lastResult = result; }
   return result;
 }
 

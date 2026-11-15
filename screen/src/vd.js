@@ -944,7 +944,18 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
       try {
         const { unlink } = await import('node:fs/promises');
         await unlink(local);
-        return { ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true, hint: '画面和上次截图完全一样，复用上次那张' };
+        // **命中缓存也要返回完整字段。** 之前只回 path/displayId/unchanged，
+        // 缺 width/height/imageWidth/imageHeight/regionUsed —— 调用方（比如 vdisplay_text）
+        // 拿不到尺寸就退回 720x1280 的默认值，算出来的坐标全偏。
+        return {
+          ok: true, path: state.lastShotPath, displayId: state.displayId, unchanged: true,
+          width: state.lastShotW || state.width, height: state.lastShotH || state.height,
+          imageWidth: state.lastShotImgWidth || state.width,
+          imageHeight: state.lastShotImgHeight || state.height,
+          croppedBottom: 0,
+          regionUsed: state.lastShotRegion || null,
+          hint: '画面和上次截图完全一样，复用上次那张',
+        };
       } catch { /* 删不掉就继续用新的 */ }
     }
 
@@ -989,7 +1000,14 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
   const pre = region ? regionFilter : (cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0,` : '');
   if (format === 'jpeg') {
     const jpg = local.replace(/\.png$/, '.jpg');
-    const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
+    // 限制宽高比：region 可能是 100x1000 这种极端形状，按宽缩到 540 会变成 540x5400，
+    // 既贵到爆又没法看。按长边限制，同时保证短边不小于 240。
+    let targetW = Math.max(240, Math.min(1080, Number(width) || 540));
+    if (region && Number(region.w) > 0 && Number(region.h) > 0) {
+      const aspect = Number(region.h) / Number(region.w);
+      const MAX_H = 2400;
+      if (targetW * aspect > MAX_H) targetW = Math.max(240, Math.round(MAX_H / aspect));
+    }
       // cropPx > 0 时先裁掉底部（浏览器壳），再缩放。实测 720x1592 → 720x1372，
       // 内容一像素不变，token 从 684 降到 594。裁不动就自动忽略。
       const conv = await new Promise((res) => {
@@ -1038,8 +1056,18 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     state.lastShotRegion = region ? { x: Math.max(0, Math.round(region.x||0)), y: Math.max(0, Math.round(region.y||0)), w: Math.round(region.w), h: Math.round(region.h||0) } : null;
   state.lastShotPath = finalPath;
   state.lastShotImgWidth = finalImgWidth;
+  state.lastShotW = state.width;
+  state.lastShotH = state.height;
+  try {
+    // 记录实际出图高度，缓存命中时要原样返回
+    const { execFileSync } = await import('node:child_process');
+    const out2 = execFileSync('ffprobe', ['-v','error','-select_streams','v:0','-show_entries','stream=width,height','-of','csv=p=0', finalPath], { timeout: 8000 }).toString().trim();
+    const parts = out2.split(',').map(Number);
+    if (parts.length === 2 && parts[1] > 0) state.lastShotImgHeight = parts[1];
+  } catch { state.lastShotImgHeight = state.height; }
   return {
     ok: true, path: finalPath, displayId: state.displayId, unchanged: false,
+    hash,   // 必须返回：vdisplay_text 拿它做 OCR 缓存键，不然缓存永远不命中，每次白等 1.6 秒
     // **一定要带尺寸**：之前完全不返回，调用方只能猜坐标系。
     // 注意分清两个尺寸：imageWidth/imageHeight 是**你正在看的这张图**的像素，
     // width/height 是显示的逻辑像素。点 x/y 时按图片像素给就行（插件会自动换算）。

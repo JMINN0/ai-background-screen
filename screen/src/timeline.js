@@ -275,7 +275,11 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
   ], 60000);
 
   await rm(work, { recursive: true, force: true });
-  await shell(`rm -f /sdcard/vd-timeline-*.png`).catch(() => {});
+  // **只清手机侧的临时图，别把输出也删了**：如果调用方把 dir 指到 /sdcard，
+  // 输出文件就叫 vd-timeline-*.png，通配符会把刚生成的图一起删掉，调用方拿到不存在的路径。
+  if (!String(dir).startsWith('/sdcard')) {
+    await shell('rm -f /sdcard/vd-timeline-*.png').catch(() => {});
+  }
 
   if (!r.ok) return { ok: false, hint: `拼图失败：${r.err || r.code}` };
 

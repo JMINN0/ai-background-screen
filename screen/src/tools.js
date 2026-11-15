@@ -102,8 +102,13 @@ export async function shot(args) {
       ? '\nℹ️ crop 已废弃：浏览器壳的上下分布拿不到可靠信号，自动裁会切错内容。想看细节请用 region。'
       : '';
 
+    // region 时默认宽度不能超过 region 本身，否则是上采样（信息不增加，只花 token）。
+    // 比如 region 只有 200 宽却交付到 540，放大 2.7 倍，图更贵但更清楚不了一分。
+    const reqW = Number(args?.width) || 0;
+    const defaultW = region ? Math.min(540, Math.max(240, Math.round(Number(region.w) || 540))) : 540;
+    const outW = reqW || defaultW;
     const r = await vd.shot(String(args?.dir || '/tmp'), {
-      width: Number(args?.width) || 540,
+      width: outW,
       format: args?.format === 'png' ? 'png' : 'jpeg',
       cropPx,
       region,
@@ -168,8 +173,8 @@ export async function status() {
   const focus = await vd.mainFocus();
   return {
     text: st.running
-      ? `虚拟屏运行中：displayId=${st.displayId}，SF id=${st.sfId}，已运行 ${st.uptimeSec} 秒\n上面的 App：${st.focusedApp || '(未知)'}\n主屏焦点：${focus || '(未测到)'}\n所有屏：${st.allDisplays.join(', ')}`
-      : `虚拟屏没有在运行。\n主屏焦点：${focus || '(未测到)'}\n所有屏：${st.allDisplays.join(', ')}`,
+      ? `虚拟屏运行中：displayId=${st.displayId}，SF id=${st.sfId}，已运行 ${st.uptimeSec} 秒\n上面的 App：${st.focusedApp || '(未知)'}\n主屏焦点：${focus || '(未测到)'}\n所有屏：${Array.isArray(st.allDisplays) && st.allDisplays.length ? st.allDisplays.join(', ') : '(查询失败)'}`
+      : `虚拟屏没有在运行。\n主屏焦点：${focus || '(未测到)'}\n所有屏：${Array.isArray(st.allDisplays) && st.allDisplays.length ? st.allDisplays.join(', ') : '(查询失败)'}`,
   };
 }
 
