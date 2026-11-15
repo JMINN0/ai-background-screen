@@ -30,9 +30,26 @@ D 类是「现在没做但技术上能做」——**别把 D 当成 A**。
 
 ### A-01 `adb_enabled = 1` 这个特征，用这套工具就消不掉
 
-- **现象**：`settings get global adb_enabled` 返回 `1`；`development_settings_enabled` 也是 `1`。
+- **现象**：普通 App 读 `Settings.Global.ADB_ENABLED` 拿到 `1`；`DEVELOPMENT_SETTINGS_ENABLED` 也是 `1`。
 - **根因**：整套工具依赖 adb —— `screencap` 要 adb、`adb forward` 要 adb、scrcpy-server 要 adb 起的 shell 权限。
-- **证据**：【实测】`tests/risk-sim/selfcheck.mjs` 会打出来。本机实测两项都是 1。
+- **证据**：**【实测·自己写的探针 App】** 2026-11-16 做的验证 ——
+  用 apktool 把一个 373KB 的 APK 反编译、改包名、塞进一段 smali 探针、重新签名安装，
+  以**普通 App 身份**（`myUid = 10890`，不是 shell 的 2000）读设置并打 logcat：
+
+  ```
+  ADBPROBE: adb_enabled = 1
+  ADBPROBE: development_settings_enabled = 1
+  ADBPROBE: Build.TAGS = release-keys
+  ADBPROBE: myUid = 10890
+  ```
+
+  **没有任何权限就读到了。** 这推翻了我之前"只在 shell 下验证过、普通 App 能不能读不知道"的
+  不确定状态 —— 现在确定了。
+  （旁证：`tests/risk-sim/selfcheck.mjs` 用 shell 读也是 1，但 shell 读得到不代表 App 读得到，
+  所以另做了这次探针。）
+
+  顺带确认两件事：`Build.TAGS = release-keys`（不是 test-keys，这点正常）；
+  `overlay_display_devices` 是空串。
 - **影响**：**任何 App 读一个 Settings.Global 就能知道**，不需要任何权限。
   有银行的用户 FAQ 明写「检测到 ADB / USB 调试开着就终止会话」（马来西亚 Muamalat）；
   越南 2025 年 Circular 77/2025 直接监管要求银行 App 检测 ADB 并停止服务。
