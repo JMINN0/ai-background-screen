@@ -1,67 +1,25 @@
 {
-  "at": "2026-11-15T09:56:30.465Z",
+  "at": "2026-11-15T14:42:28.573Z",
   "results": [
     {
       "range": "strict",
-      "score": 100,
-      "total": 7,
-      "failed": 0,
-      "failedIds": [],
-      "round": {
-        "steps": [
-          "touch:btn-login",
-          "touch:btn-clear",
-          "touch:a",
-          "touch:b",
-          "touch:c",
-          "touch:d",
-          "scroll"
-        ],
-        "ms": 4619
-      }
+      "score": null,
+      "error": "Page.navigate 超时"
     },
     {
       "range": "probe",
-      "score": 18,
-      "hits": 2,
-      "hitIds": [
-        "device.touch-never-fired",
-        "input.no-pointer-events"
-      ],
-      "round": {
-        "steps": [
-          "touch:b1",
-          "touch:b2",
-          "touch:b3",
-          "touch:run",
-          "touch:reset",
-          "scroll"
-        ],
-        "ms": 3897
-      }
+      "score": null,
+      "error": "开标签失败: ?"
     },
     {
       "range": "video",
-      "score": 18,
-      "count": 0,
-      "round": {
-        "steps": [
-          "touch:like",
-          "touch:coin",
-          "touch:fav",
-          "touch:follow",
-          "touch:next",
-          "touch:pause",
-          "scroll"
-        ],
-        "ms": 4295
-      }
+      "score": null,
+      "error": "开标签失败: ?"
     },
     {
       "range": "net",
       "score": null,
-      "signals": 0,
-      "round": null
+      "error": "开标签失败: ?"
     }
   ]
 }

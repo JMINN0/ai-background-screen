@@ -71,6 +71,12 @@ export function clickSpec() {
       targetId: { type: 'string', required: true, description: 'targetId from web_open.' },
       selector: { type: 'string', description: 'CSS selector, e.g. "#submit". Optional if text is given.' },
       text: { type: 'string', description: 'Visible text to match instead, e.g. "创建仓库". Optional if selector is given.' },
+      touch: {
+        type: 'boolean',
+        description: '默认 true：走触摸事件（手机浏览器上真人用手指，而且拟人化轨迹接在这条路上）。'
+          + '传 false 走鼠标事件，只在桌面浏览器或需要 hover 的页面用 —— '
+          + '手机上鼠标路径本身是可识别的机器特征（"声明支持触摸却零个 touch 事件"）。',
+      },
     },
     output: out('Whether the element was found and clicked.'),
   };

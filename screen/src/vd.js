@@ -110,7 +110,11 @@ export async function ensureJar() {
 
   if (!localSize) {
     if (have > 0) {
-      await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+      // **必须把 jar 设成 444 并且目录设成 555。**
+      // scrcpy-server 启动时会 unlinkSelf（删自己），目录可写就删得掉 ——
+      // 然后下一次启动就 Aborted，而报错只有一句「Aborted」，极难定位。
+      // 这个坑代码注释里写着，但实现一直用 chmod 777 目录，等于没防。
+      await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null; chmod 555 ${REMOTE_DIR} 2>/dev/null`);
       return { ok: true, existed: true, remote: REMOTE_JAR, hint: '插件包里没有 jar，用设备上已有的（版本可能与客户端不匹配）' };
     }
     return { ok: false, hint: `设备上没有 jar，插件包里也没有：${local}（需要 scrcpy-server-v${SERVER_VER}，可从 GitHub 下载放进 assets/）` };
@@ -118,14 +122,22 @@ export async function ensureJar() {
 
   // 大小一致就当作同一个版本，跳过推送（省一次 700KB 传输）
   if (have === localSize) {
-    await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+    // **必须把 jar 设成 444 并且目录设成 555。**
+      // scrcpy-server 启动时会 unlinkSelf（删自己），目录可写就删得掉 ——
+      // 然后下一次启动就 Aborted，而报错只有一句「Aborted」，极难定位。
+      // 这个坑代码注释里写着，但实现一直用 chmod 777 目录，等于没防。
+      await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null; chmod 555 ${REMOTE_DIR} 2>/dev/null`);
     return { ok: true, existed: true, remote: REMOTE_JAR };
   }
 
   const p = await adb(['push', local, REMOTE_JAR], 120000);
   if (!p.ok) return { ok: false, hint: `推送 jar 失败：${p.err}` };
   // 文件本身设只读（防误改），目录保持可写（否则下次升级又会失败）
-  await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null`);
+  // **必须把 jar 设成 444 并且目录设成 555。**
+      // scrcpy-server 启动时会 unlinkSelf（删自己），目录可写就删得掉 ——
+      // 然后下一次启动就 Aborted，而报错只有一句「Aborted」，极难定位。
+      // 这个坑代码注释里写着，但实现一直用 chmod 777 目录，等于没防。
+      await shell(`chmod 444 ${REMOTE_JAR} 2>/dev/null; chmod 555 ${REMOTE_DIR} 2>/dev/null`);
   return { ok: true, existed: false, remote: REMOTE_JAR, hint: have > 0 ? 'jar 版本已更新' : '' };
 }
 

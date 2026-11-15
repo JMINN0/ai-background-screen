@@ -94,8 +94,17 @@ async function doHumanRound(tid, label) {
   // 1. 触摸点几个真实存在的目标
   let tapped = 0;
   for (const t of targets) {
-    if (tapped >= 6) break;
+    if (tapped >= 9) break;   // click-dwell 检查需要 ≥8 次点击样本
     if (t.rect.width < 4 || t.rect.height < 4) continue;    // 跳过不可见的
+    // **绝不点「清空/重置」类按钮。** 实测踩过：跑分器点了 probe 页的「清空记录」，
+    // EnvProbe.reset() 把采集数组清零后才 run，于是报 18 分（命中 touch-never-fired），
+    // 而手工跑是 6 分 —— 基线从此不可复现，还把「我们很好」和「我们很差」搞反。
+    const _label = ((t.id || '') + ' ' + (t.text || '')).toLowerCase();
+    if (/reset|clear|清空|重置|清除/.test(_label)) continue;
+    // **绝不能点"清空/重置"类按钮。** 实测踩过：跑分器点了 probe 页的「清空记录」，
+    // EnvProbe.reset() 把采集数组清零后才 run，于是 virtual屏报 18 分（命中 touch-never-fired），
+    // 而手工跑是 6 分 —— 基线从此不可复现，且把"我们很好"和"我们很差"搞反。
+    const label = (t.id + ' ' + (t.text || '')).toLowerCase();
     try {
       const sel = t.id ? ('#' + t.id) : null;
       const r = await cdp.tapTouch(tid, sel ? { selector: sel } : { text: t.text, x: t.rect.x + t.rect.width / 2, y: t.rect.y + t.rect.height / 2 });
@@ -195,10 +204,14 @@ async function runNet() {
   await sleep(1200);
   try {
     // evaluate 里是同步 IIFE，用 XHR 同步请求（靶场是本机，阻塞一下没关系）
+    //
+    // **必须是 POST。** server.mjs 只注册了 POST /api/net，用 GET 会 404，
+    // 于是网络层靶场从来没被量到，而之前"网络层 0 暴露"的结论是从手工跑的报告里抄来的。
     const raw = await cdp.evaluate(tid, `
       const xhr = new XMLHttpRequest();
-      xhr.open('GET', '/api/net', false);
-      xhr.send(null);
+      xhr.open('POST', '/api/net', false);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(JSON.stringify({ ua: navigator.userAgent }));
       return xhr.responseText;
     `);
     const res = typeof raw === 'string' ? JSON.parse(raw) : raw;

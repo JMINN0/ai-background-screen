@@ -140,8 +140,24 @@ export async function click(args) {
   const ch = await cdp.ensure();
   if (!ch.ok) return { text: `通道不可用：${ch.hint}` };
 
-  const r = await cdp.click(targetId, { selector, text }).catch((e) => ({ ok: false, reason: e.message }));
-  return { text: r.ok ? `已点击 ${selector || `「${text}」`}（<${r.tag}> ${r.text || ''}）` : `点击失败：${r.reason}` };
+  /*
+   * **默认走触摸，不走鼠标。**
+   *
+   * 这是手机浏览器，真人用手指。而拟人化（最小加加速度轨迹、双峰时序）
+   * 只接在 tapTouch 上，web_click 以前只调 cdp.click（纯鼠标事件）——
+   * 等于最好那条路没接工具。probe 靶场对鼠标路径报 touch-never-fired，
+   * 即"声明支持触摸却零个 touch 事件"，这本身就是机器特征。
+   * 这个 bug 是第三方核查指出来的。
+   *
+   * touch:false 保留鼠标路径，给桌面浏览器或需要 hover 的页面用。
+   */
+  const useTouch = args?.touch !== false;
+  const fn = useTouch ? cdp.tapTouch : cdp.click;
+  const r = await fn(targetId, { selector, text }).catch((e) => ({ ok: false, reason: e.message }));
+  const how = useTouch ? '触摸' : '鼠标';
+  return { text: r.ok
+    ? `已${how}点击 ${selector || ('「' + text + '」')}（<${r.tag}> ${r.text || ''}）`
+    : `点击失败：${r.reason || r.hint || '未知原因'}` };
 }
 
 export async function fill(args) {
