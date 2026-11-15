@@ -156,3 +156,22 @@ density 值: 520, 320, 321
 - 自己写 display host 的可行性未知（需要 app_process + VirtualDisplay API + 不依赖 scrcpy）
 - 用户的 App 被搬到虚拟屏之后，用户会看到什么、怎么恢复
 - 多用户（`pm create-user`）能不能做到真正的 App 分身，代价多大
+
+## U9 红魔 ROM 的自启动管理会拦「广播启动的进程」
+
+**实测（2026-11-16，做 ADB 探针 App 时撞上的）**：
+
+```
+AutoLaunchManagerService: Broadcast RelatedStart BlockResult = true, reason: DEFAULT
+```
+
+用 `am broadcast` 唤醒一个从未运行过的 App，**广播被投递了但接收器没跑**，
+进程也没起来（`Broadcast completed: result=0` 但 logcat 里零输出）。
+
+**绕过**：先 `am start` 把进程拉起来，再发广播就正常了。
+
+**对我们的影响**：目前**没有**影响 —— scrcpy-server 是 `app_process` 直接起的，
+不走应用自启动管理。实测起屏一直正常。
+
+**但如果将来要改成「自家 App + 广播/服务唤醒」的架构，这条会咬人** ——
+需要用户手动在红魔的设置里把 App 加进自启动白名单。
