@@ -225,20 +225,42 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   // 因为 scrcpy new_display 不直接支持旋转参数，只支持尺寸。
   // 旋转由 App 自己根据屏幕尺寸判断（横屏 App 看到宽>高的屏会自动横屏）。
   if (state.displayId) {
-    if (state.systemDecorations === systemDecorations && await alive()) {
-      // 复用分支以前不返回 canHost/flags，tools.js 把它当 false，
-      // 于是第二次 vdisplay_start 会误报"不能托管 App"，让 AI 放弃一个正常屏。
-      const fl = await shell(`dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1`);
+    /* **只要屏还活着就复用，配置不同只提示不重建。**
+     *
+     * 以前的逻辑只比较 systemDecorations，尺寸/DPI/方向全不比 —— 于是：
+     *   · 有人显式建了带装饰的屏，别处一句 start()（默认 false）就把它拆了，
+     *     屏上的 App 一起没了，工具还报"就绪"
+     *   · 更糟的是 forget() 不清 hwcPrev，重建时 getprop 已经是 1，
+     *     于是 hwcPrev 被记成 '1'，stop 时又恢复成 1，全局 HWC 残留到重启
+     *
+     * 现在的取舍：**拆掉一个正在用的屏，代价远大于配置和请求不一致**。
+     * 所以活着就复用，把差异如实说出来，让调用方自己决定要不要 stop 再建。
+     */
+    if (await alive()) {
+      const fl = await shell('dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1');
+      const wantW = width; const wantH = height;
+      const diff = [];
+      if (wantW && wantH && (wantW !== state.width || wantH !== state.height)) {
+        diff.push(`请求 ${wantW}x${wantH}，实际 ${state.width}x${state.height}`);
+      }
+      if (state.systemDecorations !== systemDecorations) {
+        diff.push(`请求 decorations=${systemDecorations}，实际 ${state.systemDecorations}`);
+      }
+      if (state.hwc !== hwc && hwc !== 'auto') {
+        diff.push(`请求 hwc=${hwc}，实际 ${state.hwc}`);
+      }
       return {
         ok: true, displayId: state.displayId, sfId: state.sfId, reused: true,
         width: state.width, height: state.height,
         canHost: /FLAG_OWN_CONTENT_ONLY/.test(fl) && /FLAG_OWN_FOCUS/.test(fl),
         flags: (fl.match(/FLAG_[A-Z_]+/g) || []).join(' '),
+        // 配置和请求不一致时明确告诉调用方，不要假装按请求建了
+        configMismatch: diff.length ? diff.join('；') : null,
       };
     }
-    // 走到这里说明：要么装饰设置变了要重建，要么记着有屏但实际已经没了
-    // （server 被回收 / adb 断开 / 被 pkill）。清干净重来，别继续报"已就绪"骗调用方。
-    forget('旧屏配置变化或已失效，重建');
+    // 走到这里说明记着有屏但实际已经没了（server 被回收 / adb 断开 / 被 pkill），
+    // 或者是调用方明确要换配置。清干净重来，别继续报"已就绪"骗调用方。
+    forget('旧屏已失效，重建');
   }
 
   const jar = await ensureJar();
@@ -581,6 +603,11 @@ function forget(reason) {
   state.child = null; state.sockets = [];
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   state.lastShotHash = null; state.lastShotPath = null; state.lastShotImgWidth = 0;
+  state.lastShotRegion = null;   // 尺寸/位置基准作废，否则 input 会按旧 region 换算
+  // **hwcPrev 必须清掉**：不清的话，重建时 getprop 已经是 1，于是 hwcPrev 被记成 '1'，
+  // stop 时又恢复成 1，全局 debug.sf.enable_hwc_vds 残到重启（对抗审查 S1）。
+  state.hwcPrev = null;
+  state.hwc = null;
   state.systemDecorations = false;
   return { ...dead, reason };
 }
@@ -748,20 +775,37 @@ export async function input(kind, a = {}) {
   // 实测照图片像素直接传会系统性偏 33%（点放大镜画面零变化）。
   // 先刷新真实尺寸：转屏后 state.width/height 是初始声明值，直接用来算 nx/ny 会点到屏外。
   await refreshRealSize();
+  // **交付图可能只是屏幕的一块（region），也可能被裁过（cropPx）。**
+  // 之前的实现只按「图宽 / 屏宽」比例换算，完全没算 region 的偏移 ——
+  // 于是看过 region 图之后，模型按那张图的像素给 x/y，会点到屏幕左上角那片去。
+  // 对抗审查给的算例：720 屏 + region{x:180,y:300,w:360,h:600} + 交付 420 宽，
+  // 图内 (100,50) 应该是屏幕 (265.7,342.9)，旧算法给出 (171.4,85.7)，差了一个 region 偏移。
+  const regionUsed = state.lastShotRegion;
   const imgW = state.lastShotImgWidth || state.width;
-  const scale = imgW > 0 ? state.width / imgW : 1;
-  const toX = () => (a.nx !== undefined && a.nx !== null)
-    ? Math.round(Number(a.nx) * state.width)
-    : Math.round((Number(a.x) || 0) * scale);
-  // ny 的基准：默认整屏。传 nyBasis='content' 时按「去掉底部裁剪量之后的高度」算。
-  // 为什么需要：crop=content 出来的图只有内容区，模型按那张图算 ny=0.9，
-  // 如果还乘整屏高度就会落进浏览器壳里，偏一个裁剪量（对抗审查点出的第 4 条）。
-  const nyHeight = (a.nyBasis === 'content' && a.cropBottom)
-    ? Math.max(1, state.height - Math.round(Number(a.cropBottom)))
-    : state.height;
-  const toY = () => (a.ny !== undefined && a.ny !== null)
-    ? Math.round(Number(a.ny) * nyHeight)
-    : Math.round((Number(a.y) || 0) * scale);
+  // **scale = 图内 1 像素对应屏幕多少像素。**
+  // 有 region 时基准是 region 的宽，不是屏宽 —— 第一版写成 state.width / regionUsed.w，
+  // region 恰好等于全宽时算出 1（而实际是 720/420=1.714），点下来偏了 59px，
+  // 本来要点「显示」结果进了上一行的「桌面设置」。
+  const srcW = regionUsed ? regionUsed.w : imgW;
+  const scale = imgW > 0 ? srcW / imgW : 1;
+
+  const toX = () => {
+    if (a.nx !== undefined && a.nx !== null) {
+      const base = regionUsed ? regionUsed.x + Number(a.nx) * regionUsed.w : Number(a.nx) * state.width;
+      return Math.round(base);
+    }
+    return Math.round((regionUsed ? regionUsed.x : 0) + (Number(a.x) || 0) * scale);
+  };
+  const toY = () => {
+    // ny 的基准：有 region 就按 region 高度；否则按整屏（cropPx 已不再自动产生，保留兼容）
+    const h = regionUsed ? regionUsed.h : Math.max(1, state.height - Math.round(Number(a.cropBottom) || 0));
+    if (a.ny !== undefined && a.ny !== null) {
+      const base = regionUsed ? regionUsed.y + Number(a.ny) * regionUsed.h : Number(a.ny) * h;
+      return Math.round(base);
+    }
+    return Math.round((regionUsed ? regionUsed.y : 0) + (Number(a.y) || 0) * scale);
+  };
+
 
   if (kind === 'tap') cmd = `input -d ${d} tap ${toX()} ${toY()}`;
   else if (kind === 'swipe') cmd = `input -d ${d} swipe ${toX()} ${Math.round((Number(a.y1)||0)*scale)} ${Math.round((Number(a.x2)||0)*scale)} ${Math.round((Number(a.y2)||0)*scale)} ${Number(a.ms) || 300}`;
@@ -923,11 +967,25 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     const rw = Math.round(region.w);
     const rh = Math.round(region.h || 0);
     if (rw < 8 || rh < 8) return '';
+    // 越界必须拦下来：ffmpeg 的 crop 默认 exact=0，会给一个超界的框自动平移进图内
+    // （比如 720 宽屏上要 x=700,w=360，实际裁 360..720），结果是看着成功、位置全错。
+    // 宁可报错让调用方改，也不静默平移。
+    if (state.width && state.height) {
+      if (rx + rw > state.width || ry + rh > state.height) {
+        region.__oob = `region 超出屏幕范围（屏 ${state.width}x${state.height}，要 ${rx},${ry} ${rw}x${rh}）`;
+        return '';
+      }
+    }
     return `crop=${rw}:${rh}:${rx}:${ry},`;
   })();
   // region 和 crop **互斥**：先 region 再切底部会把 region 里靠下的部分切掉，
   // region 高度 ≤ 裁剪量时 ffmpeg 还会直接报错、退回未裁剪整屏（连 region 都白给）。
   // 有 region 时以 region 为准，忽略 crop。
+  // region 越界直接拒绝，不要拿一张位置错的图给模型
+  if (region && region.__oob) {
+    return { ok: false, hint: region.__oob + '。请改成屏内的坐标，或用 nx/ny 归一化。' };
+  }
+
   const pre = region ? regionFilter : (cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0,` : '');
   if (format === 'jpeg') {
     const jpg = local.replace(/\.png$/, '.jpg');
@@ -976,6 +1034,8 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     }
     state.lastShotHash = hash;
     state.lastShotCacheKey = `${hash}|${width}|${format}|${Math.round(cropPx)}|${regionKey}`;
+    // 记下这张图是屏幕的哪一块，input 换算坐标时要用（region 没记会导致点歪）
+    state.lastShotRegion = region ? { x: Math.max(0, Math.round(region.x||0)), y: Math.max(0, Math.round(region.y||0)), w: Math.round(region.w), h: Math.round(region.h||0) } : null;
   state.lastShotPath = finalPath;
   state.lastShotImgWidth = finalImgWidth;
   return {
@@ -987,9 +1047,13 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     imageWidth: state.lastShotImgWidth || state.width,
     // imageHeight 必须按**实际出图**算：裁剪和 region 都改变了内容区域，
     // 以前直接按整屏比例算，裁剪后返回 1592 而实际只有 1372，谁拿它算坐标就会偏。
+    // **分母必须跟 region 一致**：出图高度 = region 高度 × (出图宽 / region 宽)。
+    // 之前用 state.width 当分母，region 时算出 464 而实际 929（差 2 倍），
+    // 谁拿它算坐标就偏一倍 —— 对抗审查第 S6 条。
     imageHeight: Math.round((() => {
-      const w0 = state.lastShotImgWidth || state.width;
-      const ratio = w0 / state.width;
+      const outW = state.lastShotImgWidth || state.width;
+      const srcW = region && Number(region.w) > 0 ? Number(region.w) : state.width;
+      const ratio = srcW > 0 ? outW / srcW : 1;
       let contentH = state.height;
       if (cropPx > 0 && cropPx < state.height) contentH -= cropPx;
       if (region && Number(region.h) > 0) contentH = Number(region.h);

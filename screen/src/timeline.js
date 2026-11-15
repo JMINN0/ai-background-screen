@@ -174,13 +174,32 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
   let captured = 0;
   const files = [];
 
-  for (let i = 0; i < actual; i += 1) {
-    const f = join(work, `f${String(i + 1).padStart(2, '0')}.png`);
-    // 第一帧不等；之后按 interval 间隔
-    if (i > 0 && intervalMs > 0) await new Promise((r) => setTimeout(r, intervalMs));
-    const ok = await grabOne(target, sfId, f);
-    if (ok) { captured += 1; files.push(f); }
-  }
+  /*
+   * **按变化采样，不是按固定间隔。**
+   *
+   * 老做法是每 intervalMs 抓一帧，跟内容速度无关：
+   *   · 静止画面 → 抓 N 张一样的图，白花 2 秒 + 全部 token
+   *   · 快动作   → 300ms 一格，中间十几帧的变化全丢
+   * dsh-video-storyboard 从 0.6.0 起就是按"累积画面变化量"补采样点，
+   * 我们这一项本来是落后的（对抗分析指出），这里补上。
+   *
+   * 做法：以 minGapMs 为最小间隔快抓，每帧先缩到 32x32 灰度跟上一帧比，
+   * 累积变化超过阈值才留下来当一格；够数就停，超时也停。
+   * 32x32 的比较成本约 40ms，换掉的是"白抓一张 720x1592 存盘再拼进图"。
+   */
+  const { captureFramesAdaptive } = await import('./sampling.js');
+  const sampled = await captureFramesAdaptive({
+    grab: async (dest) => grabOne(target, sfId, dest),
+    dir: work,
+    need: actual,
+    minGapMs: 0,   // 只留变化的帧，所以不用人为间隔，抓得越快越好（实测 gap=0 比 80ms 快 0.6 秒）
+    maxGapMs: intervalMs,
+    budgetMs: Math.min(6000, 500 + actual * (intervalMs + 260)),
+  });
+  captured = sampled.frames.length;
+  files.push(...sampled.frames);
+
+
 
   if (captured === 0) {
     await rm(work, { recursive: true, force: true });
@@ -229,6 +248,19 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
   const out = join(dir, `vd-timeline-${stamp}.png`);
 
   // ffmpeg 拼图：用 filenames 序列 + tile
+  // 采样器产出的是 s001..sNNN，而且可能含重复帧（静止画面用重复帧填满网格），
+  // 所以不能靠 ffmpeg 的通配符读，先按顺序复制成 f01..fNN 再拼。
+  const { copyFile } = await import('node:fs/promises');
+  const seqFiles = [];
+  for (let k = 0; k < files.length; k += 1) {
+    const dst = join(work, `f${String(k + 1).padStart(2, '0')}.png`);
+    try { await copyFile(files[k], dst); seqFiles.push(dst); } catch { /* 跳过 */ }
+  }
+  if (seqFiles.length < cols * rows) {
+    await rm(work, { recursive: true, force: true });
+    return { ok: false, hint: `只凑到 ${seqFiles.length} 帧（需要 ${cols * rows}）。` };
+  }
+
   const pattern = join(work, 'f%02d.png');
   const pre = cropPx > 0 ? `crop=iw:ih-${cropPx}:0:0,` : '';
   const vf = `${pre}scale=${cellWidth}:${cellH}:force_original_aspect_ratio=decrease,`

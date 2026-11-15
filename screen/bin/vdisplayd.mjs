@@ -79,33 +79,15 @@ const ACTIONS = {
     return vd.launch(pkg, args?.activity ? String(args.activity).trim() : '');
   },
   async shot(args) {
-    // **这里也要验浏览器**，不能只靠 tools.js 那层。
-    // 理由：daemon 的 /cmd 是可直接调用的 HTTP 端点，开放裸 cropPx 等于给了一条
-    // 绕过前台校验的通道 —— 实测直接传 cropPx=220，非浏览器 App 的底部就被切掉了。
-    // 所以 daemon 只接受语义参数 crop:'content'，校验和换算在这里自己做一遍。
-    let cropPx = 0;
-    const region = args?.region && typeof args.region === 'object' ? args.region : null;
-    if (args?.crop === 'content' && !region) {
-      const BROWSE_RE = /emmx|chrome|browser|quark|ucmobile|sogou|baidu\.searchbox|firefox/i;
-      let focus = '';
-      try { focus = await vd.focusedApp(); } catch { focus = ''; }
-      if (BROWSE_RE.test(String(focus || ''))) {
-        try {
-          const st = await vd.status();
-          const tl = await import('../src/timeline.js');
-          const ch = await tl.contentHeight(st?.width || 0);
-          if (ch && st?.height > ch.height + 20) {
-            const raw = st.height - ch.height;
-            cropPx = raw % 2 ? raw + 1 : raw;   // 偶数化，免得编码器报高度不可整除
-          }
-        } catch { /* 拿不到就不裁 */ }
-      }
-    }
+    // crop:'content' 整段删掉了。理由：浏览器壳在顶部还是底部拿不到可靠信号
+    // （Edge 顶部会有翻译条，只从底部裁会留下顶栏并切掉真实内容），
+    // 而且 daemon 是可直接 POST 的端点，留着这段等于留一条绕过前台校验的通道。
+    // 想看细节用 region，它更清楚也更便宜。
     return vd.shot(args?.dir || '/tmp', {
       width: Math.min(Math.max(Number(args?.width) || 540, 240), 1080),
       format: args?.format === 'png' ? 'png' : 'jpeg',
-      cropPx,
-      region,
+      cropPx: 0,
+      region: args?.region && typeof args.region === 'object' ? args.region : null,
     });
   },
   async mainShot(args) {
