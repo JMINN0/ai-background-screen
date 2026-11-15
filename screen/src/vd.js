@@ -182,7 +182,29 @@ const state = {
 };
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 720, height = 1280, dpi = 320, systemDecorations = false, orientation, hwc = 'auto' } = {}) {
+export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto' } = {}) {
+  // **尺寸自动探测**：不传 width/height 时按物理屏比例生成同比例的虚拟屏。
+  // 虚拟屏是合成的（scrcpy new_display），跟物理屏大小无关，但比例会影响 App 的
+  // 布局判断（平板/手机模式、横竖屏）。写死 720x1280 在 9:19.4 的屏上窄 25%，
+  // 少数 App 会进错布局。默认值从设备真实比例推，换手机也适用。
+  if (!width || !height) {
+    let pw = 0;
+    let ph = 0;
+    try {
+      const r = await shell('wm size 2>/dev/null');
+      const m = String(r || '').match(/(\d+)x(\d+)/);
+      if (m) { pw = Number(m[1]); ph = Number(m[2]); }
+    } catch { /* 拿不到就用兜底 */ }
+    if (pw > 0 && ph > 0) {
+      // 宽度基准 720，长边不超过 1600（太高的屏会拖慢截图和编码）
+      const scale = Math.min(720 / pw, 1600 / ph);
+      width = Math.max(320, Math.round(pw * scale));
+      height = Math.max(320, Math.round(ph * scale));
+    } else {
+      width = 720; height = 1280;
+    }
+  }
+
   // 处理 orientation 参数：landscape 时自动交换宽高
   let finalWidth = width;
   let finalHeight = height;

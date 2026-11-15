@@ -21,8 +21,8 @@ export async function modes() {
 
 export async function start(args) {
   const r = await vd.start({
-    width: Number(args?.width) || 720,
-    height: Number(args?.height) || 1280,
+    width: Number(args?.width) || 0,       // 0 = 自动按物理屏比例
+    height: Number(args?.height) || 0,
     dpi: Number(args?.dpi) || 320,
     systemDecorations: args?.systemDecorations === true,   // 默认 false：屏上不带二级桌面/导航栏
     orientation: args?.orientation,                        // portrait / landscape

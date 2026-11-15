@@ -58,8 +58,8 @@ async function clearState() {
 const ACTIONS = {
   async start(args) {
     const r = await vd.start({
-      width: Number(args?.width) || 720,
-      height: Number(args?.height) || 1280,
+      width: Number(args?.width) || 0,        // 0 = 自动按物理屏比例
+      height: Number(args?.height) || 0,
       dpi: Number(args?.dpi) || 320,
       systemDecorations: args?.systemDecorations === true,
       orientation: args?.orientation,
