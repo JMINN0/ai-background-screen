@@ -21,7 +21,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { adb, shell } from './vd.js';
+import { adb, shell, focusedApp } from './vd.js';
 import { adbTarget } from './target.js';
 
 const ADB = process.env.ADB_BIN || 'adb';
@@ -82,20 +82,60 @@ async function grabOne(target, sfId, dest) {
  * 拿不到（没开 CDP、不是浏览器、报错）就返回 null，调用方按原图处理 —— 不能因为
  * 这个增强失败就把截图也搞坏。
  */
-export async function contentHeight() {
+/**
+ * 问浏览器「页面内容真实占据多高」，用来裁掉浏览器外壳。
+ *
+ * **三条必须同时满足才返回结果，任何一条不满足就返回 null（不裁）：**
+ *
+ * ① 虚拟屏前台必须真的是浏览器。**这是致命的一条** —— 不校验的话，用户在虚拟屏上
+ *    开着游戏/微信、而 Edge 只是把某个本机页面挂在后台，照样会按 220px 去裁，
+ *    把普通 App 的底部静默切掉。对抗审查给的两张 720x1372 产出图就是这个 bug，
+ *    源图是全黑的、根本没有浏览器。
+ *
+ * ② 用 `cssLayoutViewport` 而不是 `layoutViewport`。后者协议里标了 deprecated：
+ *    "Can be in DP or in CSS pixels depending on the enable-use-zoom-for-dsf flag"。
+ *    这台机器上 layoutViewport=1372（设备像素）、cssLayoutViewport=686（CSS 像素）、
+ *    dpr=2，今天恰好对；但那个 flag 一变，同一个值会从 1372 变成 686，
+ *    cropPx 从 220 变成 906，直接切掉一半内容。
+ *    用 `css.clientHeight * fullW / css.clientWidth` 换算，跟 DPR、pinch、
+ *    zoom-for-dsf 开关全部无关。
+ *
+ * ③ 挑当前可见的那个标签，不按 URL 白名单挑。按 `127.0.0.1:3xxx` 匹配的话，
+ *    虚拟屏上开真实网站时永远匹配不到，crop 会静默失效、还拿不到那 13%。
+ *
+ * @param {number} fullW 整屏截图的宽度（设备像素），用来把 CSS 高度换算成设备像素
+ * @returns {Promise<{height:number, url:string, browser:string}|null>}
+ */
+export async function contentHeight(fullW = 0) {
   try {
     const cdp = await import('../../web/src/cdp.js');
     const ens = await cdp.ensure();
     if (!ens || ens.ok === false) return null;
-    const tabs = await cdp.listAllTabs();
-    // 只认本机靶场/本地页，别去读用户的标签
-    const t = tabs.find((x) => x.url && (/127\.0\.0\.1:3\d{3}/.test(x.url) || x.url.startsWith('file:')));
-    if (!t) return null;
+
     const { send } = await cdp;
-    const m = await send(t.targetId, 'Page.getLayoutMetrics', {});
-    const h = m?.result?.layoutViewport?.clientHeight ?? m?.layoutViewport?.clientHeight;
-    if (!h || h < 200) return null;
-    return { height: Math.round(h), url: t.url };
+    // 挑可见标签：visibilityState === 'visible' 且不是 devtools/扩展页
+    const tabs = await cdp.listAllTabs();
+    let target = null;
+    for (const t of tabs) {
+      if (!t.url || !/^https?:|^file:/.test(t.url)) continue;
+      try {
+        const v = await cdp.evaluate(t.targetId, "return document.visibilityState");
+        if (v === 'visible') { target = t; break; }
+      } catch { /* 这个标签取不到，试下一个 */ }
+    }
+    if (!target) return null;
+
+    const m = await send(target.targetId, 'Page.getLayoutMetrics', {});
+    const res = m?.result ?? m;
+    const css = res?.cssLayoutViewport;
+    if (!css || !(css.clientWidth > 0) || !(css.clientHeight > 0)) return null;
+
+    // 换算成设备像素：不管 css 用的是 DP 还是 CSS px，比例都是对的
+    const ratio = fullW > 0 ? fullW / css.clientWidth : 1;
+    const height = Math.round(css.clientHeight * ratio);
+    if (height < 200) return null;
+
+    return { height, url: target.url, browser: ens.browser || '' };
   } catch {
     return null;
   }
@@ -162,9 +202,23 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
   } catch { /* 用默认比例 */ }
 
   let cropPx = 0;
+  let cropNote = '';
   if (crop === 'content' && fullH > 200) {
-    const ch = await contentHeight();
-    if (ch && ch.height > 200 && ch.height < fullH - 20) cropPx = fullH - ch.height;
+    // **必须验前台是不是浏览器**：不验的话虚拟屏上开着游戏/微信时，
+    // 会按浏览器壳的高度把 App 底部切掉（对抗审查给出的致命 bug）。
+    const BROWSE_RE = /emmx|chrome|browser|quark|ucmobile|sogou|baidu\.searchbox|firefox/i;
+    let focus = '';
+    try { focus = await focusedApp(); } catch { focus = ''; }
+    if (!BROWSE_RE.test(String(focus || ''))) {
+      cropNote = `前台是「${focus || '未知'}」，不是浏览器，未裁剪`;
+    } else {
+      const ch = await contentHeight(fullW);
+      if (ch && ch.height > 200 && ch.height < fullH - 20) {
+        // 偶数化：奇数高度会让某些编码器报 "height not divisible by 2"
+        const rawCrop = fullH - ch.height;
+        cropPx = rawCrop % 2 ? rawCrop + 1 : rawCrop;
+      }
+    }
   }
 
   const effH = fullH > 0 ? fullH - cropPx : 0;
@@ -207,5 +261,6 @@ export async function capture({ sfId, frames = 9, intervalMs = 300, cellWidth = 
     elapsedMs: Date.now() - t0,
     intervalMs,
     croppedPx: cropPx,
+    cropNote,
   };
 }

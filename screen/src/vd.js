@@ -753,8 +753,14 @@ export async function input(kind, a = {}) {
   const toX = () => (a.nx !== undefined && a.nx !== null)
     ? Math.round(Number(a.nx) * state.width)
     : Math.round((Number(a.x) || 0) * scale);
+  // ny 的基准：默认整屏。传 nyBasis='content' 时按「去掉底部裁剪量之后的高度」算。
+  // 为什么需要：crop=content 出来的图只有内容区，模型按那张图算 ny=0.9，
+  // 如果还乘整屏高度就会落进浏览器壳里，偏一个裁剪量（对抗审查点出的第 4 条）。
+  const nyHeight = (a.nyBasis === 'content' && a.cropBottom)
+    ? Math.max(1, state.height - Math.round(Number(a.cropBottom)))
+    : state.height;
   const toY = () => (a.ny !== undefined && a.ny !== null)
-    ? Math.round(Number(a.ny) * state.height)
+    ? Math.round(Number(a.ny) * nyHeight)
     : Math.round((Number(a.y) || 0) * scale);
 
   if (kind === 'tap') cmd = `input -d ${d} tap ${toX()} ${toY()}`;
@@ -919,7 +925,10 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     if (rw < 8 || rh < 8) return '';
     return `crop=${rw}:${rh}:${rx}:${ry},`;
   })();
-  const pre = regionFilter + (cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0,` : '');
+  // region 和 crop **互斥**：先 region 再切底部会把 region 里靠下的部分切掉，
+  // region 高度 ≤ 裁剪量时 ffmpeg 还会直接报错、退回未裁剪整屏（连 region 都白给）。
+  // 有 region 时以 region 为准，忽略 crop。
+  const pre = region ? regionFilter : (cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0,` : '');
   if (format === 'jpeg') {
     const jpg = local.replace(/\.png$/, '.jpg');
     const targetW = Math.max(240, Math.min(1080, Number(width) || 540));
@@ -946,8 +955,10 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     // PNG 也要支持 region 和 crop，否则行为不一致（OCR 走的就是 png）。
     if (format !== 'jpeg' && (pre || region)) {
       const png2 = local.replace(/\.png$/, '-view.png');
-      const filt = (region ? `crop=${Math.round(region.w)}:${Math.round(region.h)}:${Math.max(0, Math.round(region.x || 0))}:${Math.max(0, Math.round(region.y || 0))}` : '');
-      const filt2 = cropPx > 0 ? `${filt ? filt + ',' : ''}crop=iw:ih-${Math.round(cropPx)}:0:0` : filt;
+      // 跟 jpeg 分支保持一致：region 和 crop 互斥（region 优先），不要各写一套
+      const filt2 = region
+        ? `crop=${Math.round(region.w)}:${Math.round(region.h)}:${Math.max(0, Math.round(region.x || 0))}:${Math.max(0, Math.round(region.y || 0))}`
+        : (cropPx > 0 ? `crop=iw:ih-${Math.round(cropPx)}:0:0` : '');
       if (filt2) {
         const ok2 = await new Promise((res) => {
           execFile('ffmpeg', ['-y', '-loglevel', 'error', '-i', local, '-vf', filt2, png2],
@@ -974,7 +985,19 @@ export async function shot(dir = '/tmp', { width = 540, format = 'jpeg', cropPx 
     // width/height 是显示的逻辑像素。点 x/y 时按图片像素给就行（插件会自动换算）。
     width: state.width, height: state.height,
     imageWidth: state.lastShotImgWidth || state.width,
-    imageHeight: Math.round(state.height * ((state.lastShotImgWidth || state.width) / state.width)),
+    // imageHeight 必须按**实际出图**算：裁剪和 region 都改变了内容区域，
+    // 以前直接按整屏比例算，裁剪后返回 1592 而实际只有 1372，谁拿它算坐标就会偏。
+    imageHeight: Math.round((() => {
+      const w0 = state.lastShotImgWidth || state.width;
+      const ratio = w0 / state.width;
+      let contentH = state.height;
+      if (cropPx > 0 && cropPx < state.height) contentH -= cropPx;
+      if (region && Number(region.h) > 0) contentH = Number(region.h);
+      return contentH * ratio;
+    })()),
+    // 调用方要拿这两个才能把 nx/ny 算对
+    croppedBottom: cropPx > 0 && cropPx < state.height ? cropPx : 0,
+    regionUsed: region ? { x: region.x || 0, y: region.y || 0, w: region.w, h: region.h } : null,
     hint: `这张图是 ${state.lastShotImgWidth || state.width} 宽，显示逻辑尺寸 ${state.width}x${state.height}。`
       + '点 x/y 按图片里的像素给即可（插件自动换算），或者直接用 nx/ny（0..1）。',
   };

@@ -84,29 +84,43 @@ export async function shot(args) {
 
   // frames=1 → 单张截图（读字用）
   if (frames <= 1) {
-    // crop=content 时问浏览器要内容区高度，裁掉地址栏+导航栏。
-    // 实测 720x1592 里内容只有 1372（壳 220px = 13%，这些像素照样按 token 收）。
-    let cropPx = 0;
-    if (args?.crop === 'content') {
-      try {
-        const ch = await timeline.contentHeight();
-        if (ch && ch.height > 200) {
-          const st0 = await vd.status();
-          if (st0.running && st0.height > ch.height + 20) cropPx = st0.height - ch.height;
-        }
-      } catch { /* 拿不到就不裁 */ }
-    }
+    const region = (args?.region && typeof args.region === 'object') ? args.region : null;
+    // **不做自动裁剪浏览器壳了**（原来的 crop:'content' 已移除）。
+    //
+    // 原因是经过对抗审查和实测，这个功能有三个拿不到的假设：
+    //   ① 壳在底部 —— 实测这台 Edge 顶部还会有翻译条，clientHeight 从 1372 变 1276，
+    //      只从底部切会把顶部壳留下、同时切掉 96px 真实内容；
+    //   ② 单位不变 —— layoutViewport 是 deprecated 字段（可能是 DP 也可能是 CSS px），
+    //      那个 flag 一翻，裁剪量从 220 变 906，直接切掉一半画面；
+    //   ③ 前台真是浏览器 —— 不校验时虚拟屏上开着设置页也会被切掉底部。
+    // 而它只省 13%，region 已经能更好地解决"想看清"这个需求（2 倍细节、更便宜、不用猜）。
+    // 所以宁可多花 13% 的 token，也不留三个静默出错的口子。
+    //
+    // 需要跳过浏览器壳时，用 region 显式选内容区，坐标自己给 —— 明确比自动猜可靠。
+    const cropPx = 0;
+    let cropNote = args?.crop === 'content'
+      ? '\nℹ️ crop 已废弃：浏览器壳的上下分布拿不到可靠信号，自动裁会切错内容。想看细节请用 region。'
+      : '';
+
     const r = await vd.shot(String(args?.dir || '/tmp'), {
       width: Number(args?.width) || 540,
       format: args?.format === 'png' ? 'png' : 'jpeg',
       cropPx,
-      region: args?.region && typeof args.region === 'object' ? args.region : null,
+      region,
     });
     if (!r.ok) return { text: `截图失败：${r.hint}` };
     const lines = [`虚拟屏截图：${r.path}（displayId=${r.displayId}，屏 ${r.width}x${r.height}）`];
     if (r.unchanged) lines.push('画面和上次完全一样，可以直接复用这张，不用再看一次。');
     else lines.push('用 read_image 打开它就能看到界面。');
     lines.push('点坐标时可以用 nx/ny（0..1 归一化）代替 x/y，不用自己算像素。');
+    // **裁剪后 nx/ny 的基准变了**：ny 按整屏算会落到壳里，偏一个裁剪量。
+    // 对抗审查指出的第 4 条 —— 这里必须说清楚，否则模型照着推荐用 nx/ny 就会点歪。
+    if (cropPx > 0) {
+      lines.push(`⚠️ 已裁掉底部 ${cropPx}px 浏览器壳。这张图的 ny=0..1 对应的是「内容区」，不是整屏；`
+        + `若要用整屏归一化坐标，请改用 x/y（按图片像素给）。`);
+    }
+    if (region) lines.push('这是一张局部放大图，坐标请按这张图自己的像素给 x/y。');
+    if (cropNote) lines.push(cropNote);
     lines.push('');
     lines.push('想看"在动吗、往哪动"就传 frames=9 再调一次。');
     return { text: lines.join('\n') };
@@ -123,7 +137,8 @@ export async function shot(args) {
     intervalMs: args?.intervalMs === undefined ? 300 : Math.max(0, Number(args.intervalMs) || 0),
     cellWidth: Number(args?.width) || 262,
     dir: String(args?.dir || '/tmp'),
-    crop: args?.crop === 'content' ? 'content' : 'none',
+    // 网格也不自动裁壳了，理由同上（壳的上下分布不可靠）。
+    crop: 'none',
   });
   if (!r.ok) return { text: `抓时间线失败：${r.hint}` };
 
