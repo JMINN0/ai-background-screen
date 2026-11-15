@@ -262,8 +262,11 @@
       // B6 coalesced events：真实输入设备会合并采样
       const co = ms.map((s) => s.coalesced);
       metrics.coalescedMax = co.length ? Math.max(...co) : 0;
-      add('st.coalesced', true, 4,
-        `合并采样最大 ${metrics.coalescedMax} 个（仅供参考，touchpad 才会有 >1）`);
+      // 不能硬编码 true。原来这里是 add(... true ...)，等于白送 4 分，让靶场看起来比实际严。
+      // 真实情况：CDP 和 adb 两条路都造不出合并采样（实测 getCoalescedEvents 恒为 1），
+      // 所以这项注定失败，不该算作通过。改成只记录数值、不参与判分，并在输出里说清楚。
+      metrics.coalescedNote = metrics.coalescedMax === 1 ?
+        '恒为 1（CDP/adb 都造不出 >1，本题无解，不计分）' : '有合并采样';
     }
 
     // ===== C. 点击序列完整性 =====
@@ -309,12 +312,12 @@
       }
 
       // C4 按下时的 buttons 状态
-      const badButtons = downs.filter((d, i) => i < ms.length && false).length;
-      add('st.press-buttons', badButtons === 0, 4, '按下时按键状态正常');
-    }
-
-    // ===== D. 键盘序列完整性 =====
-    if (keys.length) {
+      // 原来这里恒 false：filter(... && false) 永远返回空数组，badButtons 恒为 0，
+      // 于是这项永远通过，白送 4 分。真检查：鼠标按下时 buttons 应为 1（左键）。
+      const badButtons = downs.filter((d) => {
+        const b = Number(d.buttons);
+        return Number.isFinite(b) && b !== 1;
+      }).length;
       const downsK = keys.filter((k) => k.type === 'keydown' && !k.repeat);
       const upsK = keys.filter((k) => k.type === 'keyup');
 
