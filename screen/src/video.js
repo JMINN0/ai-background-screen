@@ -79,7 +79,16 @@ function makeState() {
   };
 }
 
-const PACKET_KEEP = 120;   // 最多留多少包（约 4 秒 @30fps），防止内存涨
+/*
+ * 留多少包。
+ *
+ * **不能太小。** 关键帧间隔实测约 10 秒（25fps 就是 250 帧），第一版留 120 个包，
+ * 关键帧很快被挤出去，之后所有解码都报「无输出」——因为没有 SPS/PPS 就解不了。
+ * 留 400（约 16 秒）能保证绝大多数时候缓冲里至少有一个关键帧。
+ *
+ * 内存代价：每帧平均 9KB × 400 ≈ 3.6MB，可以接受。
+ */
+const PACKET_KEEP = 400;
 
 function makeStateChecked() {
   const s = makeState();
@@ -222,6 +231,7 @@ export function stats(st) {
     bytes: st.bytes,
     fps: fps(st),
     hasConfig: Boolean(st.config),
+    hasKeyframe: st.packets.some((p) => p.key),
     badSizes: st.badSizes || 0,
   };
 }

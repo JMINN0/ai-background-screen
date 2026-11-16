@@ -854,6 +854,14 @@ export async function liveShot(o = {}) {
   const st = mod.stats(rd);
   if (!st.headerDone) return { ok: false, hint: `视频流头部还没到（已收 ${st.bytes} 字节）` };
   if (st.headerError) return { ok: false, hint: st.headerError };
+  if (!st.hasKeyframe) {
+    return {
+      ok: false,
+      hint: `视频流有 ${st.frames} 帧但缓冲里还没有关键帧（SPS/PPS），解不出来。`
+        + '等画面变化出下一个关键帧，或者用 vdisplay_shot。',
+      fps: st.fps,
+    };
+  }
   if (!st.frames) {
     return {
       ok: false,
