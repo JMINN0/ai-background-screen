@@ -19,7 +19,8 @@
  * [0]        dummy 字节（scrcpy 在第一个连接上发的握手字节）
  * [1..64]    设备名，64 字节补零
  * [65..68]   编码格式 ascii，"h264"
- * [69..72]   0x80000000（含义未确认，固定值）
+ * [69..71]   session 包头：0x80 = bit63 置位，表示这是 session 包
+ * [72]       低 1 位 = client_resized
  * [73..76]   宽（u32 BE）
  * [77..80]   高（u32 BE）
  * [81..]     视频包
@@ -28,9 +29,10 @@
  * 每个视频包：
  *
  * ```
- * [0..7]    PTS（u64 BE，微秒）—— **高位是 flag**
- *              bit63 = 编码配置包（SPS/PPS），不是画面
- *              bit62 = 关键帧
+ * [0..7]    u64 BE：高 3 位是 flag，低 61 位是 PTS（微秒）
+ *              bit63 = session 包（尺寸变化/编码器重启时重发，本层已跳过）
+ *              bit62 = config 包（SPS/PPS），这种包 PTS 是 0
+ *              bit61 = 关键帧
  * [8..11]   载荷长度（u32 BE）
  * [12..]    H.264 载荷（Annex-B，自带 00 00 00 01 起始码）
  * ```
@@ -126,9 +128,17 @@ export function push(st, chunk) {
     }
     if (st.buf.length < 12 + size) break;   // 还没收全
 
-    const cfg = (rawPts & (1n << 63n)) !== 0n;
-    const key = (rawPts & (1n << 62n)) !== 0n;
-    const pts = Number(rawPts & ((1n << 62n) - 1n));
+    /*
+     * **标志位在 u64 的高 3 位，低 61 位才是 PTS（微秒）。**
+     *   位 63 = session 包（这层已经跳过了，媒体包里不会出现）
+     *   位 62 = config 包（SPS/PPS），PTS 被清零
+     *   位 61 = 关键帧
+     * 我第一版把 63 当 config、62 当 key，分类全错位 —— 碰巧因为包顺序没变还能解出画面，
+     * 但那是运气，不是正确。
+     */
+    const cfg = (rawPts & (1n << 62n)) !== 0n;
+    const key = (rawPts & (1n << 61n)) !== 0n;
+    const pts = Number(rawPts & ((1n << 61n) - 1n));
     const data = st.buf.subarray(12, 12 + size);
 
     if (cfg) {
