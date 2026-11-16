@@ -400,3 +400,115 @@ export function leasesSpec() {
     output: out('租约列表。'),
   };
 }
+
+/* ============================================================
+ * 感知层工具定义（2026-11-16）
+ *
+ * 对应的实现在 tools.js：live / liveShot / waitStable / roi / probeSecure。
+ * 这些能力在 vd.js 里已经真机验证过，之前只是没暴露给工具层。
+ * ============================================================ */
+
+export function liveSpec() {
+  return {
+    name: 'vdisplay_live',
+    description: [
+      '视频流的常驻解码器：启动 / 停止 / 看状态。',
+      '',
+      '为什么值得开：常驻之后读一帧是内存拷贝（<1ms）；不开的话每次都要按需解码（约 244ms）。',
+      '',
+      '**重要限制**：scrcpy 只在画面变化时发帧。画面静止时一个包都不发，读不到画面是正常的。',
+      '要一张确定的静止帧，用 vdisplay_shot（走 screencap）。',
+      '',
+      '实测：GIF/动画能跑 60fps；但**视频（MediaCodec 输出）在虚拟屏上不刷新**，别指望它看视频。',
+    ].join('\n'),
+    parameters: {
+      action: { type: 'string', description: '"start" | "stop" | "status"（默认 status）' },
+      quality: { type: 'integer', description: 'start 时的 MJPEG 质量 2-31，默认 5（越小越好）。' },
+    },
+    output: out('解码器状态、流宽高、帧数、实测 fps。'),
+  };
+}
+
+export function liveShotSpec() {
+  return {
+    name: 'vdisplay_live_shot',
+    description: [
+      '从视频流里取一张最新帧（比 vdisplay_shot 快得多）。',
+      '',
+      '前提两条：① 先 vdisplay_live action=start；② 画面要动（静止屏收不到帧）。',
+      '满足不了就回退到 vdisplay_shot。',
+      '',
+      '实测：常驻解码后读一帧 <1ms，按需解码约 244ms，screencap 约 143ms。',
+    ].join('\n'),
+    parameters: {
+      width: { type: 'integer', description: '缩放宽度，0=原生 720。默认 0。' },
+      dir: { type: 'string', description: '输出目录，默认 /tmp。' },
+    },
+    output: out('图片路径、宽高、来源（persistent-decoder / on-demand）、帧龄、实测 fps。'),
+  };
+}
+
+export function waitStableSpec() {
+  return {
+    name: 'vdisplay_wait_stable',
+    description: [
+      '等画面稳定下来再继续（替代固定 sleep）。',
+      '',
+      '用 32×32 灰度信号判断：连续 stableMs 内变化量低于阈值才算稳。',
+      '实测滑动后 121-182ms 就稳了，比固定 sleep(500) 快约 300ms，而且截图不会撞上转场中间态。',
+      '',
+      '典型用法：vdisplay_input 之后调它，再 vdisplay_shot。',
+    ].join('\n'),
+    parameters: {
+      stableMs: { type: 'integer', description: '要连续稳多久才算稳，默认 120ms。' },
+      maxWaitMs: { type: 'integer', description: '最多等多久，超了就用当前帧，默认 2500。' },
+      threshold: { type: 'number', description: 'tailMad 低于它算稳，默认 0.5（滑动时 8-9，静止 0）。' },
+    },
+    output: out('等了多久、是否稳定、当前变化量。'),
+  };
+}
+
+export function roiSpec() {
+  return {
+    name: 'vdisplay_roi',
+    description: [
+      '自动挑一块值得看的区域，拿去做局部放大。',
+      '',
+      '为什么有用：token 按 ⌈宽/42⌉×⌈高/42⌉ 计费，小于 544² 按地板价收。',
+      '所以同样一笔 169 token，裁 420 见方是 1:1 像素，全屏缩到 420 宽只有 0.58x —— 清晰度差近 2 倍。',
+      '',
+      '区域怎么选：灰度变化包围盒 → 太大就用变化热力图挑最密集的 544² 子区 → 实在没有就用最近点击位置兜底。',
+      '',
+      '返回的 region 直接传给 vdisplay_shot 的 region 参数。',
+    ].join('\n'),
+    parameters: {
+      outputWidth: { type: 'integer', description: '打算输出的宽度，默认 420。裁剪区超过它就没有放大收益。' },
+      minArea: { type: 'number', description: '区域至少占整屏多少，默认 0.04。太小没信息量。' },
+    },
+    output: out('region（x/y/w/h）、来源（sensor-bbox / sensor-bbox+hotspot / last-input）、占屏面积。'),
+  };
+}
+
+export function probeSecureSpec() {
+  return {
+    name: 'vdisplay_probe_secure',
+    description: [
+      '黑屏探针：判断这块屏上的内容是不是抓不到（FLAG_SECURE）。',
+      '',
+      'FLAG_SECURE 是 Android 对受保护内容的保护：任何截屏 API 拿到的都是纯黑，',
+      'screencap / 视频流 / MediaProjection 全一样。**这是无 root 的硬边界，绕不过去。**',
+      '',
+      '判定：',
+      '  A  正常出画',
+      '  B? 疑似受保护（上半黑、下半可读）—— 会再用 dumpsys 的 FLAG_SECURE 窗口数复核',
+      '  C  整屏黑 —— App 拒绝在虚拟屏渲染，或者没起来',
+      '  A? 原本疑似但复核为不是受保护（通常是底部弹窗造成的误报）',
+      '',
+      '投屏之后建议先跑一次，能提前知道这条线能不能做。',
+    ].join('\n'),
+    parameters: {
+      dir: { type: 'string', description: '截图输出目录，默认 /tmp。' },
+    },
+    output: out('verdict、置信度、判定理由、上下半亮度、dumpsys 里的 FLAG_SECURE 窗口数。'),
+  };
+}

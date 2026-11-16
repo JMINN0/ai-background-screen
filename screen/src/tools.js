@@ -416,3 +416,147 @@ export async function leases() {
   const lease = await import('./lease.js');
   return { text: lease.describeList() };
 }
+
+/* ============================================================
+ * 感知层工具（2026-11-16 新增）
+ *
+ * 这些能力在 vd.js / video.js 里已经做好并真机验证过，但一直只是模块导出，
+ * 工具层没暴露 —— 等于 AI 用不到。这里补齐。
+ * ============================================================ */
+
+/**
+ * 起/停视频流的常驻解码器，或只看状态。
+ *
+ * 为什么要单独一个工具：常驻解码器不启动的话，`vdisplay_live_shot` 只能走
+ * 按需解码（244ms）；启动之后读帧是内存拷贝（<1ms）。
+ */
+export async function live(args) {
+  const action = String(args?.action || 'status');
+  if (action === 'start') {
+    const r = await vd.startLive({ quality: Number(args?.quality) || 5 });
+    const s = await vd.videoStats();
+    return {
+      ok: Boolean(r.ok),
+      hint: r.hint,
+      decoder: s.decoder,
+      stream: { width: s.width, height: s.height, frames: s.frames, fps: s.fps },
+      note: r.ok
+        ? '常驻解码器已启动。画面静止时 scrcpy 不发帧，读不到画面是正常的。'
+        : undefined,
+    };
+  }
+  if (action === 'stop') {
+    const r = await vd.stopLive();
+    return { ok: true, ...r };
+  }
+  const s = await vd.videoStats();
+  return {
+    ok: Boolean(s.headerDone && !s.headerError),
+    width: s.width,
+    height: s.height,
+    frames: s.frames,
+    fps: s.fps,
+    hasKeyframe: s.hasKeyframe,
+    badSizes: s.badSizes,
+    decoder: s.decoder,
+    hint: s.headerDone ? undefined : '视频流还没接上（先 vdisplay_start 建屏）',
+  };
+}
+
+/**
+ * 从视频流里取一张**最新帧**（比 vdisplay_shot 快得多）。
+ *
+ * 前提：必须先 `vdisplay_live action=start`，而且**画面要动** ——
+ * scrcpy 只在内容变化时发帧，静止的屏一个包都不发。
+ */
+export async function liveShot(args) {
+  const r = await vd.liveShot({
+    dir: String(args?.dir || '/tmp'),
+    width: Number(args?.width) || 0,
+  });
+  if (!r.ok) {
+    return {
+      ok: false,
+      hint: r.hint,
+      fallback: '用 vdisplay_shot（走 screencap，静止屏也能截）',
+    };
+  }
+  return {
+    ok: true,
+    path: r.path,
+    width: r.width,
+    height: r.height,
+    source: r.source,
+    frameAgeMs: r.frameAgeMs,
+    fps: r.fps,
+    displayId: r.displayId,
+  };
+}
+
+/**
+ * 等画面稳定下来再返回（替代固定 sleep）。
+ *
+ * 实测：滑动后 121-182ms 就稳了，比固定 `sleep(500)` 快 300ms 左右，
+ * 而且截图不会撞上转场中间态。
+ */
+export async function waitStable(args) {
+  const r = await vd.waitStable({
+    stableMs: Number(args?.stableMs) || 120,
+    maxWaitMs: Number(args?.maxWaitMs) || 2500,
+    threshold: Number(args?.threshold) || 0.5,
+  });
+  return {
+    ok: r.stable !== false,
+    waitedMs: r.waitedMs,
+    stable: r.stable,
+    tailMad: r.tailMad,
+    hint: r.hint,
+  };
+}
+
+/**
+ * 自动挑一块值得看的区域（局部放大）。
+ *
+ * 同样的 token 预算下，裁剪 1:1 比全屏缩放清晰 2 倍左右。
+ * 返回的 `region` 可以直接传给 `vdisplay_shot`。
+ */
+export async function roi(args) {
+  const r = await vd.pickRoi({
+    outputWidth: Number(args?.outputWidth) || 420,
+    minArea: Number(args?.minArea) || 0.04,
+  });
+  if (!r) {
+    return {
+      ok: false,
+      hint: '挑不出合适的区域（画面可能完全没有变化，也没有最近的点击位置）。直接 vdisplay_shot 全屏。',
+    };
+  }
+  return {
+    ok: true,
+    region: { x: r.x, y: r.y, w: r.w, h: r.h },
+    src: r.src,
+    area: r.area,
+    hint: `把 region 传给 vdisplay_shot，同 token 下清晰约 2 倍`,
+  };
+}
+
+/**
+ * 黑屏探针：判断这块屏上的内容是不是抓不到（FLAG_SECURE）。
+ *
+ * A 正常 / B? 疑似受保护 / C 整屏黑 / A? 误报纠正
+ */
+export async function probeSecure(args) {
+  const r = await vd.probeSecure({ dir: String(args?.dir || '/tmp') });
+  if (!r.ok) return { ok: false, hint: r.hint };
+  return {
+    ok: true,
+    verdict: r.verdict,
+    confidence: r.confidence,
+    why: r.why,
+    upperMax: r.upMax,
+    lowerMax: r.downMax,
+    secureWindows: r.secureWins,
+    path: r.path,
+    hint: r.hint,
+  };
+}

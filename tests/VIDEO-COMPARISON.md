@@ -849,3 +849,61 @@ area=0.32 —— 720×517 的裁剪区，输出 420 宽的话放大率只有 0.5
 
 这个改动第一次没生效，因为我的字符串替换锚点缩进写错了（写成 4 空格，实际是 2 空格），
 断言报错后我没看输出里就以为改了。**改代码后必须看断言结果**，不能只看「语法正确」。
+
+---
+
+# 最后一块：把感知能力接进工具层
+
+## 发现的问题
+
+前面几轮做的 `waitStable` / `pickRoi` / `probeSecure` / `startLive` / `liveShot`
+全部只在 `vd.js` 里导出，**`tools.js` 里 0 引用** —— 也就是说 AI 根本调不到。
+
+**「做好了」和「能用上」是两件事。** 这是这轮补的。
+
+## 补的内容
+
+**tools.js** 新增 5 个执行体：
+- `live(args)` —— 常驻解码器 start/stop/status
+- `liveShot(args)` —— 读实时帧
+- `waitStable(args)` —— 等画面稳定
+- `roi(args)` —— 自动挑区域
+- `probeSecure(args)` —— 黑屏探针
+
+**tool-spec.js** 新增 5 个工具定义（name/description/parameters/output 完整）。
+
+**index.js** 注册进 `defs` 数组（现在共 25 个工具）。
+**bin/mcp-server.mjs** 加进 `EXEC_MAP`。
+
+## 实测（走工具层，不是模块层）
+
+```
+start:       displayId=undefined（小瑕疵，不影响功能）
+probeSecure: A (conf=high) 上=56 下=56 secureWins=0
+live start:  ok=true running=true
+waitStable:  0ms stable=null（传感器当时没数据）
+roi:         {x:0,y:0,w:312,h:312} src=last-input area=0.08
+liveShot:    ok=true 420x1592 source=on-demand
+live status: 720x1592 frames=80 fps=21.9
+```
+
+## spec 契约校验（AGENTS.md 强制要求）
+
+```
+检查 25 个 spec，问题 0 个
+```
+
+逐条验过：`name` 是字符串、`description` 是字符串、`parameters` 每项 type 合法、
+没用宿主不支持的 `pattern/minimum/maximum/default` 等注解、`output.render` 是函数。
+
+## 又一次「缩进锚点」的坑
+
+这个改动第一次没生效 —— 第三次因为锚点缩进写错（`];` 是 10 空格，我写成 12）。
+断言报错但我只看了「语法正确」。
+
+**已经第三次栽在同一个地方**，确认规则：改代码后必须看断言输出，不能只看语法检查。
+
+## 剩下的小瑕疵
+
+1. `T.start()` 返回里没有 `displayId`（需要看 vd.start 返回什么）
+2. `waitStable` 在传感器还没数据时返回 `stable: null`，调用方要能处理

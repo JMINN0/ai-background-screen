@@ -12,6 +12,8 @@ import {
   streamStartSpec, streamStopSpec, textSpec, appsSpec,
   poolSpec, newScreenSpec, useScreenSpec, closeScreenSpec, checkAppSpec,
   claimAppSpec, releaseAppSpec, leasesSpec,
+  // 感知层（2026-11-16）：常驻解码、实时帧、等稳定、自动 ROI、黑屏探针
+  liveSpec, liveShotSpec, waitStableSpec, roiSpec, probeSecureSpec,
 } from './tool-spec.js';
 import * as T from './tools.js';
 
@@ -85,6 +87,12 @@ export async function apply(ctx) {
             [stopSpec, (a) => T.stop(a)],   // 以前写成 () => T.stop()，把 args 丢了，forceStopApps 永远无效
             [streamStartSpec, (a) => T.streamStart(a)],
             [streamStopSpec, () => T.streamStop()],
+            // 感知层（2026-11-16）：常驻解码、实时帧、等稳定、自动 ROI、黑屏探针
+            [liveSpec, (a) => T.live(a)],
+            [liveShotSpec, (a) => T.liveShot(a)],
+            [waitStableSpec, (a) => T.waitStable(a)],
+            [roiSpec, (a) => T.roi(a)],
+            [probeSecureSpec, (a) => T.probeSecure(a)],
           ];
           for (const [spec, exec] of defs) {
             try {
