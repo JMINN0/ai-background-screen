@@ -938,3 +938,77 @@ vdisplay_probe_secure:  ✅ 307 字描述, schema 正常
 
 MCP stdio 传输用的是**换行分隔 JSON**，不是 `Content-Length` 帧。
 我第一次用 Content-Length 握手，拿不到任何响应 —— 那是测错协议了。
+
+---
+
+# 场景实测：微信 + Minecraft（用户授权后完成）
+
+## 微信：完整渲染，不黑屏【实测】
+
+```
+虚拟屏 displayId=300 720×1592
+窗口: Display: mDisplayId=300 (organized)
+      mCurrentFocus=com.tencent.mm/com.tencent.mm.ui.LauncherUI   ← 在虚拟屏上
+视频流: 720×1592 frames=97 fps=11.9
+```
+
+截图确认：聊天列表、底部四个标签（微信/通讯录/发现/我）全部正常渲染，
+**没有 FLAG_SECURE**。
+
+### 顺带发现的插件 bug
+
+`vd.launch()` 返回 `landedOnVd: false`，但实测微信**确实落在虚拟屏上**了。
+说明 `landed` 的判定逻辑太严 —— 这个检测不可靠，不能作为唯一依据。
+（本次是用 `am start --display` 直接起的，如果走 `vd.launch` 会误报失败。）
+
+## Minecraft：3D 游戏完整可操作【实测】
+
+### 启动条件
+
+```js
+await vd.start({ orientation: 'landscape', hwc: 'on' });   // 横屏 + HWC 必须
+```
+
+### 渲染
+
+```
+视频流: 1592×720 H.264
+主菜单 2.8 秒新增 169 帧 → 约 60fps
+MC 自己的 FPS 计数器: 59.8 ~ 124.5
+探针: A（上=165 下=198）
+```
+
+截图里能看到 MINECRAFT 标题画面、3D 峡谷背景、日落、角色小人、版本号 v1.20.40.20。
+
+### 交互
+
+| 步骤 | 结果 |
+|---|---|
+| OCR 找「游戏」按钮 | ✅ `nx=0.500 ny=0.509` |
+| 点击 | ✅ 包数 1296→1942（画面大变化） |
+| 进入世界列表 | ✅ OCR 读到「世界 / 新建 / 切换到新UI / 恢复世界」 |
+| 点击后帧率 | ✅ 3.5 秒 211 帧 ≈ 60fps（持续满帧） |
+
+**完整闭环：OCR 定位 → 点击 → 验证跳转 → 继续读界面，全程 60fps。**
+
+## 这一条推翻了我之前的一个重要判断
+
+之前我写「视频在虚拟屏上冻住 → 推测是 SurfaceView/hardware overlay 的问题」。
+**MC 证明 SurfaceView + OpenGL ES 完全正常**，跑满 60fps。
+
+所以精确的结论是：
+
+| 内容 | 渲染路径 | 结果 |
+|---|---|---|
+| 3D 游戏（MC） | OpenGL ES → SurfaceView | ✅ **60-124fps** |
+| GIF/Canvas 动画 | 普通 View 绘制 | ✅ 60fps |
+| 滑动/点击/转场 | 输入驱动 | ✅ 25-60fps |
+| **视频** | **MediaCodec → Surface** | ❌ **只出首帧** |
+
+**问题精确锁定在「MediaCodec 输出的 Surface」这一条路**，不是 SurfaceView、不是 HWC、不是定时器。
+
+## 所以产品定位可以更准
+
+不只「能操作 App」——**能操作 3D 游戏**，而且帧率足够（60fps）。
+
+这对 storyboard 的对比又多了一条：**它能看视频但我们不能，我们能玩 3D 游戏但它不能。**
