@@ -907,3 +907,34 @@ live status: 720x1592 frames=80 fps=21.9
 
 1. `T.start()` 返回里没有 `displayId`（需要看 vd.start 返回什么）
 2. `waitStable` 在传感器还没数据时返回 `stable: null`，调用方要能处理
+
+## 真实入口验证：MCP server 上 5 个工具都活着
+
+不走模块导入（那不算验证），直接起 `bin/mcp-server.mjs` 用 MCP 协议调 `tools/list`：
+
+```
+工具总数: 23
+vdisplay_live:          ✅ 223 字描述, schema 正常
+vdisplay_live_shot:     ✅ 160 字描述, schema 正常
+vdisplay_wait_stable:   ✅ 166 字描述, schema 正常
+vdisplay_roi:           ✅ 236 字描述, schema 正常
+vdisplay_probe_secure:  ✅ 307 字描述, schema 正常
+```
+
+（`index.js` 注册 25 个，MCP server 按自己的映射表暴露 23 个，都是有意的子集。）
+
+## 顺便纠正两个我自己报错的「瑕疵」
+
+上一轮说有两个瑕疵，**其实都是我测试读错了**：
+
+1. `T.start()` 返回 `{text: '...'}` 是**工具层惯例**（给用户看的渲染文本），
+   不是结构化对象。我去读 `r.displayId` 当然是 undefined —— 不是 bug。
+2. `waitStable` 在传感器没数据时返回 `stable: null` 是**设计如此**，
+   表示"无法判断"，调用方应该回退到固定等待。
+
+**教训：判断「有没有 bug」之前，先确认自己读的是不是那个 API 的返回契约。**
+
+## 一个工具层的事实
+
+MCP stdio 传输用的是**换行分隔 JSON**，不是 `Content-Length` 帧。
+我第一次用 Content-Length 握手，拿不到任何响应 —— 那是测错协议了。
