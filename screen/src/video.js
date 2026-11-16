@@ -338,9 +338,11 @@ export async function grabJpeg(st, o = {}) {
  * 会报 `non-existing PPS 0 referenced` 然后一帧都出不来。
  * 所以启动后要**先扔掉所有 P 帧，等到下一个关键帧才开始喂**。
  *
- * 代价是冷启动要等一个关键帧间隔（实测约 10 秒）。想更快就得让服务端重发 IDR
- * —— 往控制通道发一个 0x11 字节（TYPE_RESET_VIDEO），那需要控制 socket 配合，
- * 后面再做。
+ * 所以启动时会用 `h264(st)`（config + 最近关键帧起的全部包）自举，让解码器立刻能工作。
+ * 自举喂进去的历史帧**按帧数跳过**，不进传感器环（时间闸不可靠，会泄漏）。
+ *
+ * 想更快拿到画面就得让服务端重发 IDR —— 往控制通道发一个 0x11 字节
+ * （TYPE_RESET_VIDEO），那需要控制 socket 配合，后面再做。
  */
 
 /** 起一个常驻解码器，挂在 st 上。重复调用会先停掉旧的。 */
@@ -387,6 +389,10 @@ export async function startDecoder(st, o = {}) {
     latestAt: 0,           // 最近一帧灰度的到达时间
     frames: 0,             // 解出多少张
     needKeyframe: true,    // 还没等到关键帧
+    // **必须在初始化里就赋 0。** 只在自举成功时赋值的话，自举失败（h264(st) 为 null）
+    // 就一直是 undefined，`Date.now() >= undefined` 恒为 false → pushSensor 永不调用，
+    // 传感器永久空。而 motion() 把「空」翻译成 stable:true，故障看起来跟静止一模一样。
+    skipSensorUntil: 0,
     stderr: '',
     closed: false,
     bytesIn: 0,
@@ -404,9 +410,12 @@ export async function startDecoder(st, o = {}) {
       acc = acc.subarray(THUMB_BYTES);
       dec.frames += 1;
       dec.latestAt = Date.now();
-      if (Date.now() >= dec.skipSensorUntil) pushSensor(st, buf, dec);
+      // 自举帧按数量跳过（见上面说明），跳完才开始记传感器
+      if (dec.skipFrames > 0) { dec.skipFrames -= 1; } else pushSensor(st, buf, dec);
     }
-    if (acc.length > THUMB_BYTES * 4) acc = Buffer.alloc(0);   // 防垃圾数据涨内存
+    // 这里原来有一行 `if (acc.length > THUMB_BYTES*4) acc = Buffer.alloc(0)`。
+    // 它是死代码（while 退出时 acc 必然 < 1024），而且**万一触发就会丢掉
+    // 非 1024 整数倍的前缀，从此永久错位**。删掉。
   });
 
   proc.stderr.on('data', (d) => {
@@ -431,8 +440,17 @@ export async function startDecoder(st, o = {}) {
       proc.stdin.write(bst);
       dec.needKeyframe = false;      // 自举数据里已经含有关键帧
       dec.bootstrapped = true;
-      // 给自举帧 600ms 的消化窗口，这期间不记传感器
-      dec.skipSensorUntil = Date.now() + 600;
+      /*
+       * **按帧数跳，不用时间闸。**
+       *
+       * 原来给 600ms 消化窗口：实测 dec.frames 到 258 时 sensorFrames 已经 17，
+       * 也就是 241 帧在窗口内解完、剩 17 帧漏到窗口外被当成实时帧记下。
+       * 泄漏量随 GOP 长度和 CPU 快慢漂移，不可控。
+       *
+       * 改成：自举喂了多少帧，就让解码器跳过多少帧 —— `-fps_mode passthrough`
+       * 保证出帧数与入帧数 1:1，所以这个计数是准的。
+       */
+      dec.skipFrames = st.packets.length;
     } catch { /* 起不来就退回等待模式 */ }
   }
 
@@ -473,7 +491,14 @@ export function decoderStats(st) {
     hasFrame: sens.length > 0,
     sensorFrames: sens.length,
     lastMad: sens.length ? sens[sens.length - 1].mad : null,
+    // **ageMs 说明不了传感器新鲜度** —— 它用的是解码器活着的时间。
+    // 真正的传感器新鲜度看 sensorAgeMs。
     ageMs: dec.latestAt ? Date.now() - dec.latestAt : null,
+    sensorAgeMs: sens.length ? Date.now() - sens[sens.length - 1].at : null,
+    // 两路帧计数应该 1:1；2x/3x 就是解码器在重复吐帧
+    decoderFrames: dec.frames,
+    streamFrames: st.frames,
+    skipLeft: dec.skipFrames || 0,
     uptimeMs: Date.now() - dec.startedAt,
     stderr: dec.stderr ? dec.stderr.slice(-300) : '',
   };
@@ -503,6 +528,16 @@ function pushSensor(st, gray, dec) {
   if (!st.sensor) st.sensor = [];
   const prev = st.sensor.length ? st.sensor[st.sensor.length - 1] : null;
 
+  // 顺手把亮度统计出来：全 0 = 黑屏（FLAG_SECURE），min==max = 纯色（卡住）
+  let sum = 0, min = 255, max = 0;
+  for (let k = 0; k < 1024; k += 1) {
+    const v = gray[k];
+    sum += v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const mean = Math.round((sum / 1024) * 10) / 10;
+
   let mad = 0;
   let bbox = null;
   if (prev) {
@@ -527,7 +562,7 @@ function pushSensor(st, gray, dec) {
     if (maxX >= 0) bbox = { minX, minY, maxX, maxY };
   }
 
-  st.sensor.push({ at: Date.now(), mad, bbox, gray });
+  st.sensor.push({ at: Date.now(), mad, bbox, mean, min, max, gray });
   if (st.sensor.length > SENSOR_KEEP) st.sensor.shift();
   if (dec) dec.lastMad = mad;
 }
@@ -547,16 +582,30 @@ export function motion(st, { recent = 25 } = {}) {
    * 白白回退到昂贵路径。
    */
   if (!sens.length) {
+    /*
+     * **空要分两种情况，不能一律当"稳定"。**
+     *
+     *   · 解码器没在跑 → 没数据是正常的（没开这项能力）
+     *   · 解码器在跑但传感器空 → **可能坏了**（比如自举失败导致 pushSensor 从不被调用）
+     *
+     * 原来两种情况都返回 stable:true，于是"传感器坏了"看起来跟"画面静止"一模一样 ——
+     * 这种故障最难查。现在用 degraded 标出来。
+     */
+    const dec = st && st.decoder;
+    const running = Boolean(dec && !dec.closed);
     return {
-      ok: true,
+      ok: !(running && dec.frames > 0),
       frames: 0,
       windowFrames: 0,
       peakMad: 0, avgMad: 0, tailMad: 0,
-      stable: true,          // 没观察到变化 = 稳定
+      stable: true,
       changing: false,
-      spanMs: 0, fps: 0,
+      spanMs: 0, fps: null,
       lastBbox: null,
-      hint: '传感器还没有任何帧（画面一直静止，scrcpy 不发帧）—— 视为稳定',
+      degraded: running && dec.frames > 0,   // 解码器出过帧但传感器收不到 = 坏了
+      hint: running
+        ? `解码器已解 ${dec.frames} 帧但传感器是空的 —— 传感器链路可能坏了（看 degraded）`
+        : '传感器还没有任何帧（解码器没在跑，或画面一直静止）',
     };
   }
   const win = sens.slice(-recent);
@@ -576,10 +625,29 @@ export function motion(st, { recent = 25 } = {}) {
     stable: tailMad < 0.5,
     changing: tailMad >= 0.5,
     spanMs: win.length > 1 ? win[win.length - 1].at - win[0].at : 0,
-    fps: win.length > 1 && win[win.length - 1].at > win[0].at
-      ? Math.round(((win.length - 1) / ((win[win.length - 1].at - win[0].at) / 1000)) * 10) / 10
-      : 0,
+    /*
+     * **帧率必须用 ≥1 秒的窗口算。**
+     *
+     * socket 的 data 事件是批量到达的（64KB ≈ 64 帧，同一批时间戳只差 0-1ms）。
+     * 用 25 帧的跨度算，一碰到批量边界 span 就塌成 173ms → 得出 138fps；
+     * 下个窗口正常 → 19-21fps。69/138/21.8/19.2 全是这么来的。
+     */
+    fps: (() => {
+      if (sens.length < 2) return 0;
+      const last = sens[sens.length - 1].at;
+      // 从最后往前找到第一个 ≥1000ms 之前的帧
+      let i = sens.length - 1;
+      while (i > 0 && last - sens[i].at < 1000) i -= 1;
+      const span = last - sens[i].at;
+      if (span < 900 || i === sens.length - 1) return null;   // 窗口不够 1 秒就不给数
+      return Math.round(((sens.length - 1 - i) / (span / 1000)) * 10) / 10;
+    })(),
     lastBbox: win.length ? win[win.length - 1].bbox : null,
+    // 最后一次的亮度：全 0 = 黑屏（FLAG_SECURE），min==max = 纯色（卡住）
+    lastMean: win.length ? win[win.length - 1].mean : null,
+    lastMin: win.length ? win[win.length - 1].min : null,
+    lastMax: win.length ? win[win.length - 1].max : null,
+    blackScreen: win.length ? win[win.length - 1].max === 0 : null,
   };
 }
 
