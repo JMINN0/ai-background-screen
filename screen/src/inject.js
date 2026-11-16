@@ -160,6 +160,78 @@ export function buildTap(o) {
  * @param {number} [o.steps=14]
  * @returns {{bufs:Buffer[], totalMs:number, delays:number[]}}
  */
+/**
+ * 生成一次「按住」的报文序列（长时间保持按下，手指几乎不动）。
+ *
+ * ## 为什么需要
+ *
+ * `swipe` 是「从 A 划到 B」，起点和终点不同。但有两类操作它不是：
+ *
+ *   ① **游戏虚拟摇杆** —— 按住左下角不放，角色持续行走。摇杆的位移很小
+ *      （几十像素内），但必须**持续**送 MOVE，引擎才认为手指还在推。
+ *   ② **长按菜单 / 挖方块** —— 按住同一位置一段时间。
+ *
+ * ## 关键：MOVE 必须够密
+ *
+ * 实测教训：原来 `buildSwipe` 固定 14 步，300ms 时是 47Hz 还行，
+ * 但「按住 5 秒」就退化成 3Hz —— 游戏直接把手指当成没动。
+ *
+ * 这里按 **60Hz** 出 MOVE（16.7ms 一帧），并且叠一点微小抖动模拟真人手指。
+ * 摇杆的抖动不能太大，否则角色会走歪；默认半径 2px 以内。
+ *
+ * @param {object} o
+ * @param {number} o.x @param {number} o.y       按住的位置
+ * @param {number} o.screenW @param {number} o.screenH
+ * @param {number} [o.ms=1000]    按住多久
+ * @param {number} [o.jitter=2]   手指抖动半径（px），0 = 完全不动
+ * @param {number} [o.driftX=0]   持续偏移方向 x（摇杆推方向用）
+ * @param {number} [o.driftY=0]   持续偏移方向 y
+ * @returns {{bufs:Buffer[], totalMs:number, delays:number[]}}
+ */
+export function buildHold(o) {
+  const { x, y, screenW, screenH } = o;
+  const totalMs = Math.max(80, Number(o.ms) || 1000);
+  const steps = Math.max(2, Math.min(600, Math.round(totalMs / 16.7)));   // ~60Hz
+  const jitter = Math.max(0, Number(o.jitter) || 0);
+  const driftX = Number(o.driftX) || 0;
+  const driftY = Number(o.driftY) || 0;
+
+  const bufs = [];
+  // 按下
+  bufs.push(buildTouch({
+    action: ACTION.DOWN, x, y, screenW, screenH,
+    pressure: 0.45 + Math.random() * 0.1,
+    actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+  }));
+
+  const delays = [];
+  const stepMs = totalMs / steps;
+  for (let i = 1; i <= steps; i += 1) {
+    // 沿 drift 方向缓慢推过去（摇杆推满需要一点时间），再叠抖动
+    const t = i / steps;
+    const px = x + driftX * t + (Math.random() - 0.5) * jitter * 2;
+    const py = y + driftY * t + (Math.random() - 0.5) * jitter * 2;
+    bufs.push(buildTouch({
+      action: ACTION.MOVE, x: px, y: py, screenW, screenH,
+      pressure: Math.max(0.3, Math.min(0.9, 0.6 + (Math.random() - 0.5) * 0.1)),
+      actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+    }));
+    // 间隔带一点随机，但不偏离 60Hz 太多
+    delays.push(Math.max(8, Math.round(stepMs * (0.85 + Math.random() * 0.3))));
+  }
+
+  // 抬起（位置是最后的落点）
+  const endX = x + driftX;
+  const endY = y + driftY;
+  bufs.push(buildTouch({
+    action: ACTION.UP, x: endX, y: endY, screenW, screenH,
+    pressure: 0.2 + Math.random() * 0.1,
+    actionButton: BUTTON_PRIMARY, buttons: 0,
+  }));
+
+  return { bufs, totalMs, delays };
+}
+
 export function buildSwipe(o) {
   const { x1, y1, x2, y2, screenW, screenH } = o;
   const totalMs = Math.max(60, Number(o.ms) || 300);

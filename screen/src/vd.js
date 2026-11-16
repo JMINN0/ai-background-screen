@@ -1424,6 +1424,37 @@ export async function input(kind, a = {}) {
       cmd = `input -d ${d} tap ${toX()} ${toY()}`;
       state.lastInjectVia = 'adb-input';
     }
+  } else if (kind === 'hold') {
+    /*
+     * 按住不动（游戏摇杆 / 长按菜单 / 挖方块）。
+     *
+     * 和 swipe 的区别：起点终点基本相同，重点是**持续**送 60Hz 的 MOVE。
+     * 实测固定 14 步在 5 秒长按时会退化成 3Hz，游戏直接当手指没动。
+     */
+    const hx = a.nx != null ? Number(a.nx) * state.width : Number(a.x);
+    const hy = a.ny != null ? Number(a.ny) * state.height : Number(a.y);
+    if (!Number.isFinite(hx) || !Number.isFinite(hy)) return { ok: false, hint: 'hold 需要坐标（x/y 或 nx/ny）' };
+    const inj = await import('./inject.js');
+    if (sendControlRaw() === null) {
+      // 控制通道不可用时 hold 没法做（adb input 没有等价的「按住不放」）
+      return { ok: false, hint: 'hold 需要 scrcpy 控制通道，当前不可用' };
+    }
+    const h = inj.buildHold({
+      x: hx, y: hy, screenW: state.width, screenH: state.height,
+      ms: Number(a.ms) || 1000,
+      jitter: a.jitter != null ? Number(a.jitter) : 2,
+      driftX: Number(a.driftX) || 0,
+      driftY: Number(a.driftY) || 0,
+    });
+    // 按 buildHold 算出的间隔逐帧送出去
+    let sentH = 0;
+    for (let k = 0; k < h.bufs.length; k += 1) {
+      if (!sendControl(h.bufs[k])) break;
+      sentH += 1;
+      if (k < h.delays.length) await sleep(h.delays[k]);
+    }
+    // 和 tap/swipe 一致：直接 return，不设外层变量
+    return { ok: sentH > 0, displayId: d, out: `hold ${sentH} 帧（${h.bufs.length - 2} 个 MOVE @60Hz, ${h.totalMs}ms）`, changed: null };
   } else if (kind === 'swipe') {
     // **四个坐标都要映射，起点也不能漏。** 上一版起点读的是 a.x（用户给的是 x1），
     // 于是恒为 0；另外 y1/x2/y2 只乘比例没加 region 偏移。
