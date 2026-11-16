@@ -941,6 +941,42 @@ export async function stopLive() {
   return mod.stopDecoder(state.videoReader);
 }
 
+/**
+ * 一次「画面现在变了多少」的廉价探测。
+ *
+ * ## 为什么不能用 frameHash 做输入校验
+ *
+ * 原来 input() 用 `frameHash()` 前后各截一张图比哈希：**两次 screencap = 286ms**，
+ * 而且实测会误判 —— 明明视频流涨了 8 帧（画面确实变了），哈希却判"没变"，
+ * 于是 `ok:false`，调用方以为没生效就重试，造成重复操作。
+ *
+ * ## 用视频流包数当信号
+ *
+ * scrcpy 的编码器**只在画面变化时出帧**。所以「包数涨没涨」就是最直接的
+ * 「画面变了没」的证据，而且：
+ *   · 免费（包本来就在收）
+ *   · 即时（一次内存读取，0ms）
+ *   · 更灵敏（25fps 粒度 vs screencap 的 143ms 粒度）
+ *
+ * 视频流不可用时才回退到 screencap 哈希。
+ */
+function frameTick() {
+  const st = state.videoReader;
+  if (st && st.packets) return { kind: 'packets', v: st.packets.length };
+  return { kind: 'none', v: 0 };
+}
+
+/** 等画面变化：返回 true 表示在 waitMs 内观察到了变化。 */
+async function waitChanged(tick, waitMs = 900) {
+  const t0 = Date.now();
+  for (;;) {
+    const cur = frameTick();
+    if (cur.kind === tick.kind && cur.v !== tick.v) return true;
+    if (Date.now() - t0 >= waitMs) return false;
+    await sleep(60);
+  }
+}
+
 async function frameHash() {
   // 必须刷新 SF id：转屏后旧 id 失效，两次 screencap 都失败会让 before/after 都为 null，
   // 于是 changed 变 null、调用方看到 ok=true —— **校验被静默关闭**（监督复核指出的高危项）。
@@ -1132,26 +1168,54 @@ export async function input(kind, a = {}) {
   else return { ok: false, hint: `不认识的输入类型：${kind}` };
 
   const verify = a.verify !== false;
-  const before = verify ? await frameHash() : null;
+  /*
+   * **优先用视频流包数做校验，不用 screencap 哈希。**
+   *
+   * 实测：一次滑动让视频流从 102 个包涨到 110 个（画面确实变了），
+   * 但 frameHash 前后哈希一样，于是返回 ok:false，调用方以为失败会重试。
+   * 而且每次双截图要 286ms。
+   *
+   * 包数探测是 0ms、免费、而且 25fps 粒度比 screencap 的 143ms 灵敏。
+   */
+  const tick = verify ? frameTick() : null;
   // SET_CLIPBOARD 那条路 cmd 是 null（server 已经自己粘过，不能再发 keyevent）
   const out = cmd ? await shell(cmd) : '（SET_CLIPBOARD 已连带粘贴）';
   if (!verify) return { ok: true, displayId: d, out: out.trim(), changed: null };
 
   await sleep(Number(a.settleMs) || 500);
-  let after = await frameHash();
-  let changed = before && after ? before !== after : null;
+  let changed = null;
+  let probe = 'none';
+  if (tick && tick.kind === 'packets') {
+    // 视频流这条路：等包数涨
+    changed = await waitChanged(tick, Number(a.settleMs) || 900);
+    probe = 'video-packets';
+    if (!changed) {
+      // 包数没动可能是编码器暂时没吐，再用 screencap 确认一次（贵但准）
+      const bh = await frameHash();
+      if (bh) {
+        const ah = await sleep(300).then(() => frameHash());
+        if (bh && ah && bh !== ah) { changed = true; probe = 'screencap-fallback'; }
+      }
+    }
+  } else {
+    // 没有视频流：回退到原来的 screencap 哈希
+    const before = await frameHash();
+    const after = await frameHash();
+    changed = before && after ? before !== after : null;
+    probe = 'screencap';
+  }
 
   // 只查一次会误报。实测：给虚拟屏发 KEYCODE_BACK 退掉设置页，
   // 画面确实变了（随后截是纯黑），但 500ms 那个时间点还没变完，
   // 于是返回 changed:false —— AI 会以为没生效、重复操作，造成双击这类事故。
   // 所以没变的时候再轮询几次，任一次变了就算生效。
   if (changed === false) {
-    for (let i = 0; i < 4 && changed === false; i += 1) {
+    // 再给一点时间：有些操作（BACK 退动画）在 500ms 那个点还没变完
+    for (let i = 0; i < 3 && changed === false; i += 1) {
       await sleep(400);
-      const again = await frameHash();
-      if (before && again && again !== before) {
-        after = again;
-        changed = true;
+      if (tick && tick.kind === 'packets') {
+        const cur = frameTick();
+        if (cur.v !== tick.v) changed = true;
       }
     }
   }
@@ -1160,6 +1224,7 @@ export async function input(kind, a = {}) {
     ok: changed !== false,          // 轮询完还是没变，才算这次操作大概率没生效
     displayId: d,
     changed,
+    probe,                          // 用哪条路判断的：video-packets / screencap / screencap-fallback
     hint: changed === false
       ? '画面在 2 秒内一直没有变化，这一下可能真的没生效（坐标偏了 / 控件不可点 / 界面还没加载完）。建议重新截一张图确认位置，不要盲目重复点同一坐标。'
       : undefined,

@@ -366,6 +366,16 @@ export async function startDecoder(st, o = {}) {
     '-f', 'h264', '-i', 'pipe:0',
     '-an', '-sn', '-dn',
     '-vf', 'scale=32:32:flags=area,format=gray',
+    /*
+     * **`-fps_mode passthrough` 必须有。**
+     *
+     * 默认 rawvideo 输出会按恒定帧率**补帧/复制帧**，于是连续两帧内容一模一样，
+     * 灰度差恒为 0 —— 传感器看起来永远"静止"。实测就是这个现象：帧数在涨
+     * （21.6fps）、环也满了，但 mad 全是 0，滑动时也不变。
+     *
+     * passthrough 表示「解码出多少就吐多少，不补不丢」。
+     */
+    '-fps_mode', 'passthrough',
     '-f', 'rawvideo', '-pix_fmt', 'gray',
     'pipe:1',
   ];
