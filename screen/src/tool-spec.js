@@ -487,7 +487,7 @@ export function roiSpec() {
       '返回的 region 直接传给 vdisplay_shot 的 region 参数。',
     ].join('\n'),
     parameters: {
-      outputWidth: { type: 'integer', description: '打算输出的宽度，默认 420。裁剪区超过它就没有放大收益。' },
+      outputWidth: { type: 'integer', description: '打算输出的宽度，默认 544。注意 544 以下都是地板价 169，所以 544 比 420 同价多看 68% 面积。' },
       minArea: { type: 'number', description: '区域至少占整屏多少，默认 0.04。太小没信息量。' },
     },
     output: out('region（x/y/w/h）、来源（sensor-bbox / sensor-bbox+hotspot / last-input）、占屏面积。'),

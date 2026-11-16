@@ -163,7 +163,19 @@ export function buildTap(o) {
 export function buildSwipe(o) {
   const { x1, y1, x2, y2, screenW, screenH } = o;
   const totalMs = Math.max(60, Number(o.ms) || 300);
-  const steps = Math.max(3, Number(o.steps) || 14);
+  /*
+   * **步数必须跟时长匹配，不能固定 14。**
+   *
+   * 固定 14 步只在 300ms 左右合理（≈47Hz，够用）。
+   * 但「按住摇杆 5 秒」时 14 步 = 2.8Hz —— 游戏会当成手指根本没动，
+   * 因为触摸帧率掉到个位数，引擎的摇杆采样读不到连续位移。
+   *
+   * 目标 ~60Hz（16.7ms 一帧），上限 400 步防止极端时长把报文撑爆。
+   * 调用方显式传 steps 时以调用方为准。
+   */
+  const steps = o.steps != null
+    ? Math.max(3, Number(o.steps))
+    : Math.max(3, Math.min(400, Math.round(totalMs / 16.7)));
   const bufs = [];
 
   // 缓动：真人手指是"快起 - 匀 - 缓停"，用 easeInOutQuad

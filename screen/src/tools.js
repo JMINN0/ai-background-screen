@@ -525,7 +525,8 @@ export async function waitStable(args) {
  */
 export async function roi(args) {
   const r = await vd.pickRoi({
-    outputWidth: Number(args?.outputWidth) || 420,
+    // 544 而不是 420：地板价 169 覆盖到 544²，同价多 68% 面积
+    outputWidth: Number(args?.outputWidth) || 544,
     minArea: Number(args?.minArea) || 0.04,
   });
   if (!r) {

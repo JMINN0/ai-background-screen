@@ -1014,7 +1014,16 @@ export async function pickRoi(o = {}) {
 
   const minArea = Number(o.minArea) || 0.04;
   // 输出宽度：裁剪区超过它就得不到放大收益，就是该往细里挑的信号
-  const outW = Number(o.outputWidth) || 420;
+  /*
+   * **默认输出宽度 544，不是 420。**
+   *
+   * token 计价是 ceil(w/42)*ceil(h/42)，544 以下全部按地板价 169 收。
+   * 所以 420 见方和 544 见方**同一个价钱**，但 544 多了 29.5% 边长、68% 面积。
+   *
+   * 之前默认 420 是白扔分辨率 —— 纯粹是浪费，没有任何好处。
+   * 544 = ceil(544/42)=13 → 13*13=169，正好卡在地板价线上。
+   */
+  const outW = Number(o.outputWidth) || 544;
 
   let box = null;
   let src = '';
@@ -1080,6 +1089,7 @@ export async function pickRoi(o = {}) {
      * 这时候应该在包围盒里挑一块 outW 见方（且不超过 544 地板价上限）的子区，
      * 挑变化最密集的位置。这样无论画面动得多散，都能拿到 1:1 像素。
      */
+    // 544 是地板价上限；再大就开始按面积收费了（560² = 196 token）
     const side = Math.min(Math.max(outW, 64), 544, W, H);
     const winCells = Math.max(1, Math.round((side / W) * 32));
     const hot = mod.densestCellWindow(st, winCells);
