@@ -1135,26 +1135,66 @@ export async function probeSecure(o = {}) {
   const downMean = downSum / half;
   const wholeMax = Math.max(upMax, downMax);
 
-  // 三态判定
+  /*
+   * 三态判定。
+   *
+   * **这里踩过一个假阳性，值得写下来。**
+   *
+   * 第一版规则是「上黑下亮 = FLAG_SECURE」。实测遇到一个「打开方式」选择器弹窗
+   * （底部 bottom sheet + 黑色背景），上 max=0 下 max=189，被误判成 B。
+   * 截图一看根本不是受保护内容，就是个选择器。
+   *
+   * 所以现在 B 判得更严：**必须同时**
+   *   ① 上黑下亮，且
+   *   ② 黑色区域占比很大（不是薄薄一条），且
+   *   ③ 下半部有明显内容（说明 App 确实在渲染，只是上半部被屏蔽）
+   *
+   * 而且 B 只作为**怀疑**，最终确认要靠窗口标志（`secureWindows()`）。
+   */
   let verdict = '?';
   let why = '';
+  let confidence = 'low';
   if (wholeMax === 0) {
     verdict = 'C';
     why = '整屏纯黑 —— App 可能拒绝在虚拟屏渲染，或者根本没起来';
-  } else if (upMax <= 6 && downMax > 20) {
-    verdict = 'B';
-    why = '上半屏纯黑、下半屏有内容 —— 典型的 FLAG_SECURE（视频区受保护，UI 正常）';
+    confidence = 'high';
+  } else if (upMax <= 6 && downMax > 40) {
+    // 上黑下亮：可能是 FLAG_SECURE，也可能是底部弹窗，需要进一步确认
+    verdict = 'B?';
+    why = '上半屏纯黑、下半屏有明显内容 —— 疑似 FLAG_SECURE，但底部弹窗也会这样，需核对窗口标志';
+    confidence = 'low';
   } else if (upMax > 20 && downMax > 20) {
     verdict = 'A';
     why = '上下都有内容，出画正常';
+    confidence = 'high';
   } else {
     verdict = '?';
     why = `分不清（上 max=${upMax} 下 max=${downMax}）`;
+    confidence = 'low';
+  }
+  // 顺便查一下窗口标志 —— 这才是 FLAG_SECURE 的权威证据
+  let secureWins = null;
+  try {
+    const w = await shell('dumpsys window windows 2>/dev/null | grep -c "FLAG_SECURE"');
+    secureWins = Number(String(w).trim()) || 0;
+  } catch { /* 查不到就算了 */ }
+
+  // 有窗口标志这个权威证据时，用它纠正 B?
+  if (verdict === 'B?' && secureWins !== null) {
+    if (secureWins === 0) {
+      verdict = 'A?';
+      why += '（但 dumpsys 里没有任何 FLAG_SECURE 窗口，所以大概率不是受保护内容，而是弹窗）';
+    } else {
+      confidence = 'high';
+      why += `（dumpsys 里有 ${secureWins} 个 FLAG_SECURE 窗口，支持这个判断）`;
+    }
   }
 
   return {
     ok: true,
     verdict,
+    confidence,
+    secureWins,
     why,
     upMax, downMax, upMean: Math.round(upMean), downMean: Math.round(downMean),
     path: shotR.path,
