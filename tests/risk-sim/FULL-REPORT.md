@@ -247,3 +247,69 @@ node bin/vdisplay.mjs launch com.microsoft.emmx
 **最该记住的一句：**
 
 > **越往下越暴露。网络层干净、行为层做得不错、环境层接近干净、系统层是硬伤。**
+
+---
+
+# 补充（2026-11-17）：为什么自制注入器注不进去
+
+## 新发现：`input` 命令已经不是 app_process 了
+
+```bash
+$ cat /system/bin/input
+#!/system/bin/sh
+cmd input "$@"
+```
+
+**它现在是 `cmd input`** —— 跑在 **system_server 进程里**，通过 shell command 接口执行。
+不是以前那样 `app_process /system/bin com.android.commands.input.Input`。
+
+这解释了一件事：**为什么 `input -d <displayId> tap` 能注入，而我的 app_process 注入器不能。**
+
+## 注入器的现状
+
+事件造得**完全正确**（实测打印）：
+
+```
+EV act=0 dev=7 disp=0 src=0x1002 size=0.08
+```
+
+- `deviceId=7`：借的是真实触摸屏 `synaptics_tcm_touch`（SPI、非虚拟）
+- `size=0.08`：接触面积自填，不是 0 也不是 1
+- `src=0x1002`：真实触摸屏来源
+
+但 `InputManagerGlobal.injectInputEvent(event, mode)` 返回 **false**，且不抛异常。
+
+## 为什么
+
+`com.android.shell` 的 `INJECT_EVENTS` 确实是 `granted=true`，所以**不是权限问题**。
+
+差别在**调用位置**：
+
+| | 跑在哪 | 结果 |
+|---|---|---|
+| `cmd input` | **system_server** | ✅ 能注入 |
+| 我的 app_process | 独立进程 | ❌ 返回 false |
+
+`InputManagerGlobal` 是**客户端侧**的单例，它把请求转给 `InputManagerService`。
+从独立 app_process 进程调用时，可能缺某些初始化（Looper / 客户端注册），
+导致请求到达 system_server 后被判定无效。
+
+**这条没验证完**（需要在 app_process 里加 Looper 初始化再试），
+但方向明确了：**不是能力问题，是调用上下文问题。**
+
+## 这条对防风控意味着什么
+
+即使注入器修好了，能补的也只有**环境层的三个字段**（`deviceId`、`PointerCoords.size`、`getHistorySize`）。
+
+**系统层依然无解**：
+- `displayId != 0`（虚拟屏身份）—— 改不了
+- `FLAG_SECURE` 黑屏 —— 改不了
+- 注入事件的 `isTrusted` 标记 —— 只有 system_server 能给
+
+所以**防风控的天花板没变**：环境层从 6/100 可能能降到 3/100 左右，系统层依然必然暴露。
+
+## 下一步（如果想继续）
+
+1. 在 app_process 里加 `Looper.prepareMainLooper()` 再试 `injectInputEvent`
+2. 或者反射调 `IInputManager` 的 binder 接口直接看返回码（-1/-2/-3 分别代表什么）
+3. 或者接受现状：`cmd input` 已经是无 root 能拿到的最好注入方式
