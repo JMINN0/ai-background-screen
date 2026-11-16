@@ -1009,7 +1009,8 @@ export async function pickRoi(o = {}) {
   if (!(W > 0 && H > 0)) return null;
 
   const minArea = Number(o.minArea) || 0.04;
-  const maxArea = Number(o.maxArea) || 0.35;
+  // 输出宽度：裁剪区超过它就得不到放大收益，就是该往细里挑的信号
+  const outW = Number(o.outputWidth) || 420;
 
   let box = null;
   let src = '';
@@ -1063,8 +1064,29 @@ export async function pickRoi(o = {}) {
     h = Math.min(H, Math.round(need));
     x = Math.max(0, Math.min(W - w, Math.round(cx - w / 2)));
     y = Math.max(0, Math.min(H - h, Math.round(cy - h / 2)));
-  } else if (area > maxArea) {
-    return null;   // 太大，裁了也没意义
+  } else if (w > outW) {
+    /*
+     * **判据是「裁剪后能不能 1:1」，不是「面积有没有超过某个比例」。**
+     *
+     * 第一版用 `area > 0.35` 判断该不该裁 —— 实测横屏 B站首页拿到 720×517、
+     * 面积 0.32，刚好没超阈值于是原样返回，输出 420 宽时放大率只有 0.58x，
+     * 白丢裁剪红利。
+     *
+     * 正确的判据：输出宽度是 outW 时，裁剪区宽度**超过 outW 就没有放大收益了**。
+     * 这时候应该在包围盒里挑一块 outW 见方（且不超过 544 地板价上限）的子区，
+     * 挑变化最密集的位置。这样无论画面动得多散，都能拿到 1:1 像素。
+     */
+    const side = Math.min(Math.max(outW, 64), 544, W, H);
+    const winCells = Math.max(1, Math.round((side / W) * 32));
+    const hot = mod.densestCellWindow(st, winCells);
+    if (!hot) return null;                      // 没有热力图数据，只能放弃
+    const gx = W / 32;
+    const gy = H / 32;
+    w = side;
+    h = side;
+    x = Math.max(0, Math.min(W - w, Math.round(hot.cx * gx - w / 2)));
+    y = Math.max(0, Math.min(H - h, Math.round(hot.cy * gy - h / 2)));
+    src = `${src}+hotspot`;
   }
 
   return { x, y, w, h, src, area: Math.round(((w * h) / (W * H)) * 100) / 100 };

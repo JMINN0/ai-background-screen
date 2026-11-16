@@ -651,6 +651,79 @@ export function motion(st, { recent = 25 } = {}) {
   };
 }
 
+/**
+ * 变化热力图：最后两帧之间，32×32 每一格的灰度差。
+ *
+ * ## 为什么需要
+ *
+ * `bbox` 只给一个包围盒。当画面在大范围里动（比如横屏时的首页、滚动中的长列表），
+ * 包围盒会覆盖大半个屏，按面积比例算就「太大、不值得裁」——于是放弃裁切，
+ * 退化成全屏缩放，白白丢掉「裁剪 = 1:1 像素」的清晰度红利。
+ *
+ * 有了热力图就能在大包围盒里**挑一块最值得看的 544² 子区**，
+ * 而不是要么裁小的、要么放弃。
+ *
+ * @returns {Float32Array|null} 长度 1024（32×32 行优先），每格 0-255 的差值
+ */
+export function changeHeatmap(st) {
+  const sens = (st && st.sensor) || [];
+  if (sens.length < 2) return null;
+  const a = sens[sens.length - 2].gray;
+  const b = sens[sens.length - 1].gray;
+  if (!a || !b) return null;
+  const out = new Float32Array(1024);
+  let total = 0;
+  for (let i = 0; i < 1024; i += 1) {
+    const d = Math.abs(b[i] - a[i]);
+    out[i] = d;
+    total += d;
+  }
+  if (total <= 0) return null;
+  return out;
+}
+
+/**
+ * 在变化热力图里找「最密集的一块」。
+ *
+ * 用滑动窗口累加：格子边长 winCells，找总和最大的位置。
+ * 32×32 上找 544² 对应约多少格，由调用方按屏宽换算后传进来。
+ *
+ * @param {object} st
+ * @param {number} winCells 窗口边长（格），1-32
+ * @returns {{cx:number, cy:number, score:number}|null} 格子坐标中心 + 该窗口的总变化量
+ */
+export function densestCellWindow(st, winCells) {
+  const hm = changeHeatmap(st);
+  if (!hm) return null;
+  const k = Math.max(1, Math.min(32, Math.round(winCells)));
+  if (k >= 32) return { cx: 16, cy: 16, score: 1 };
+
+  // 先算二维前缀和，滑动窗口就是 O(1)
+  const pre = new Float64Array((32 + 1) * (32 + 1));
+  for (let y = 0; y < 32; y += 1) {
+    for (let x = 0; x < 32; x += 1) {
+      pre[(y + 1) * 33 + (x + 1)] = hm[y * 32 + x]
+        + pre[y * 33 + (x + 1)]
+        + pre[(y + 1) * 33 + x]
+        - pre[y * 33 + x];
+    }
+  }
+  const sum = (x0, y0, x1, y1) => pre[(y1 + 1) * 33 + (x1 + 1)]
+    - pre[y0 * 33 + (x1 + 1)] - pre[(y1 + 1) * 33 + x0] + pre[y0 * 33 + x0];
+
+  let best = -1;
+  let bx = 0;
+  let by = 0;
+  for (let y = 0; y + k <= 32; y += 1) {
+    for (let x = 0; x + k <= 32; x += 1) {
+      const v = sum(x, y, x + k - 1, y + k - 1);
+      if (v > best) { best = v; bx = x; by = y; }
+    }
+  }
+  if (best <= 0) return null;
+  return { cx: bx + k / 2, cy: by + k / 2, score: best };
+}
+
 export function feedDecoder(st, pkt, isConfig) {
   const dec = st && st.decoder;
   if (!dec || dec.closed) return;
