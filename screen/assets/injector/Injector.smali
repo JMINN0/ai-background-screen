@@ -51,6 +51,23 @@
 .method public static main([Ljava/lang/String;)V
     .locals 6
 
+    # **先建 Looper。** InputManagerGlobal 是客户端单例，
+    # 它在没有 Looper 的线程上 getInstance() 可能拿到一个不可用的实例，
+    # 导致 injectInputEvent 静默返回 false（实测现象：事件字段全对但注入被拒）。
+    # 这里只 prepare 不 loop()，避免阻塞。
+    :try_looper
+    invoke-static {}, Landroid/os/Looper;->myLooper()Landroid/os/Looper;
+    move-result-object v0
+    if-eqz v0, :looper_ok
+    invoke-static {}, Landroid/os/Looper;->prepareMainLooper()V
+    :looper_ok
+    :try_looper_end
+    .catch Ljava/lang/Throwable; {:try_looper .. :try_looper_end} :catch_looper
+    goto :looper_done
+    :catch_looper
+    # 建不起来就算了，继续走老路
+
+    :looper_done
     const/4 v0, 0x0
     sput v0, Lcom/dsh/inject/Injector;->sDisplay:I
     const/4 v0, -0x1

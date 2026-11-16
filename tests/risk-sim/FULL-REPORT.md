@@ -313,3 +313,53 @@ EV act=0 dev=7 disp=0 src=0x1002 size=0.08
 1. 在 app_process 里加 `Looper.prepareMainLooper()` 再试 `injectInputEvent`
 2. 或者反射调 `IInputManager` 的 binder 接口直接看返回码（-1/-2/-3 分别代表什么）
 3. 或者接受现状：`cmd input` 已经是无 root 能拿到的最好注入方式
+
+## 补充实验：加 Looper 也救不了（2026-11-17）
+
+假设：`InputManagerGlobal` 是客户端单例，在没有 Looper 的线程上 `getInstance()` 可能
+拿到不可用实例，导致 `injectInputEvent` 静默返回 false。
+
+**做法**：在 `main` 开头加
+```smali
+invoke-static {}, Landroid/os/Looper;->myLooper()Landroid/os/Looper;
+# 为 null 才 prepareMainLooper()，避免重复 prepare 抛异常
+invoke-static {}, Landroid/os/Looper;->prepareMainLooper()V
+```
+只 prepare 不 loop()，避免阻塞。用 try/catch 包住，建不起来就继续。
+
+**结果：仍然 `ok=false`。**
+
+```
+EV act=0 dev=7 disp=351 src=0x1002 size=0.08
+ONESHOT down done
+ONESHOT done ok=false
+注入后帧 47 (+0)
+```
+
+**假设否掉。不是 Looper 的问题。**
+
+## 现在排除掉的
+
+| 假设 | 怎么验的 | 结果 |
+|---|---|---|
+| 权限不够 | `dumpsys package com.android.shell` | ❌ `INJECT_EVENTS: granted=true` |
+| 事件造错了 | 打印所有字段 | ❌ 全部正确（dev=7/size=0.08/disp/src 都对） |
+| 缺 Looper | 加 prepareMainLooper 重测 | ❌ 仍是 false |
+| 用错了重载 | 试了 2 参 / 3 参（targetUid=-1） | ❌ 都是 false |
+| 目标屏不对 | 注入到 0 和虚拟屏都试过 | ❌ 都是 false |
+
+## 剩下的可能（都需要更深的实验）
+
+1. **`InputManagerGlobal` 在 Android 16 上可能要求调用方是「已注册的输入客户端」**
+   —— 需要走 `InputManagerGlobal.getInstance()` 之外的注册路径
+2. **native 层返回码是 -1/-2/-3 之一**，Java 层压成 boolean 看不出原因
+   —— 需要反射调 `IInputManager` binder 接口直接拿 int
+3. **`cmd input` 有特殊豁免** —— 它在 system_server 内运行，可能有调用方白名单
+
+## 判断
+
+**这条路的投入产出比已经很低了。** 即使修好，能补的也只是环境层三个字段
+（`deviceId`、`PointerCoords.size`、`getHistorySize`），
+**系统层（displayId≠0、FLAG_SECURE、isTrusted）依然无解。**
+
+**建议：冻结这条线。** `cmd input` 已经是无 root 能拿到的最好注入方式。
