@@ -187,6 +187,9 @@ function makeState() {
   return {
   child: null,
   sockets: [],
+  // 视频流解析状态（src/video.js）。以前 socket[0] 的数据是直接丢掉的，
+  // 现在喂给它 —— 实测这条流是 720x1592 的 H.264，约 25fps。
+  videoReader: null,
   scid: null,
   port: null,
   displayId: null,
@@ -417,15 +420,26 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   // 屏建不出来（实测 10.6 秒后失败）。1800ms 是 server 初始化 + new_display 的时序要求。
   await sleep(1800);
 
-  // 哑客户端 ×2（video + control），断开即销毁
-  const connect = () => new Promise((res) => {
+  // 两个客户端：video（第 0 个）+ control（第 1 个）。断开即销毁整个屏。
+  //
+  // **第 0 个不是「哑客户端」** —— 它传的是实时 H.264。以前这里写
+  // `s.on('data', () => {})` 把数据丢了，于是所有截图只能走 screencap（7fps）。
+  // 现在喂给 video.js 解析，能用的时候就有 25fps 的实时帧。
+  const videoMod = await import('./video.js');
+  state.videoReader = videoMod.createReader();
+
+  const connect = (isVideo) => new Promise((res) => {
     const s = net.connect(port, '127.0.0.1', () => res(s));
     s.on('error', () => res(null));
-    s.on('data', () => {});
+    if (isVideo) {
+      s.on('data', (d) => { try { videoMod.push(state.videoReader, d); } catch { /* 解析出错不能影响连接 */ } });
+    } else {
+      s.on('data', () => {});
+    }
   });
-  const s1 = await connect();
+  const s1 = await connect(true);
   await sleep(500);
-  const s2 = await connect();
+  const s2 = await connect(false);
   state.sockets = [s1, s2].filter(Boolean);
   state.startedAt = Date.now();
 
@@ -544,6 +558,7 @@ export async function stop({ forceStopApps = false } = {}) {
   }
   state.hwcPrev = null;
   state.sockets = [];
+  state.videoReader = null;
   state.child = null;
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   state.lastShotHash = null; state.lastShotPath = null;
@@ -803,6 +818,71 @@ export function setClipboard(text) {
   buf.writeInt32BE(body.length, off); off += 4;
   body.copy(buf, off);
   return sendControl(buf);
+}
+
+/**
+ * 从视频流里拿一张实时画面。
+ *
+ * ## 和 `shot()` 的区别（实测数据）
+ *
+ * ```
+ * shot()        screencap   143 ms/帧   7 fps   每次一次 adb 往返
+ * liveShot()    视频流解码    4 ms/帧  25 fps   不占 adb 通道
+ * ```
+ *
+ * 但 liveShot 有个**严格前提**：画面必须在他妈的动，scrcpy 才会发帧。
+ * 静止的屏（空虚拟屏、纯黑）一个包都收不到，这时会返回 `ok:false`，
+ * 调用方应该回退到 `shot()`。
+ *
+ * ## 为什么不是「更快就无脑用它」
+ *
+ * 它是**编解码后的画面**，可能比 screencap 少几个像素的精度（H.264 有损），
+ * 而且要求画面有变化。所以策略应该是：
+ *   · 要快的连续观察 → liveShot
+ *   · 要一张确定准确的定帧 → shot
+ *
+ * @param {object} [o]
+ * @param {string} [o.dir='/tmp']  输出目录
+ * @param {number} [o.width=0]     缩放宽度，0=原生
+ * @returns {Promise<{ok:boolean, path?:string, width?:number, height?:number, ms?:number, fps?:number, hint?:string}>}
+ */
+export async function liveShot(o = {}) {
+  const mod = await import('./video.js');
+  const rd = state.videoReader;
+  if (!rd) return { ok: false, hint: '视频流没接上（屏可能没起，或者用了不支持的 server 配置）' };
+
+  const st = mod.stats(rd);
+  if (!st.headerDone) return { ok: false, hint: `视频流头部还没到（已收 ${st.bytes} 字节）` };
+  if (st.headerError) return { ok: false, hint: st.headerError };
+  if (!st.frames) {
+    return {
+      ok: false,
+      hint: `视频流已连上（${st.width}x${st.height}）但还没收到画面 —— `
+        + 'scrcpy 只在画面变化时发帧，静止的屏收不到。这种情况用 vdisplay_shot。',
+      fps: 0,
+    };
+  }
+
+  const dir = String(o.dir || '/tmp').replace(/\/+$/, '') || '/tmp';
+  const stamp = Date.now();
+  const out = `${dir}/vd-live-${stamp}.jpg`;
+  const r = await mod.grabJpeg(rd, { out, width: Number(o.width) || 0 });
+  if (!r.ok) return { ok: false, hint: r.hint };
+  return {
+    ok: true,
+    path: r.path,
+    width: Number(o.width) || st.width,
+    height: st.height,
+    ms: r.ms,
+    fps: st.fps,
+    displayId: state.displayId,
+  };
+}
+
+/** 视频流的现状（给诊断用） */
+export async function videoStats() {
+  const mod = await import('./video.js');
+  return mod.stats(state.videoReader);
 }
 
 async function frameHash() {
