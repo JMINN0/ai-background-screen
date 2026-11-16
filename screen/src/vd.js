@@ -232,7 +232,7 @@ export function setActive(ctx) {
 export function newContext() { return makeState(); }
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto' } = {}) {
+export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto', maxFps = 60 } = {}) {
   // **尺寸自动探测**：不传 width/height 时按物理屏比例生成同比例的虚拟屏。
   // 虚拟屏是合成的（scrcpy new_display），跟物理屏大小无关，但比例会影响 App 的
   // 布局判断（平板/手机模式、横竖屏）。写死 720x1280 在 9:19.4 的屏上窄 25%，
@@ -370,7 +370,11 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     // 二级桌面 launcher、导航栏和权限弹窗——AI 截图会把这些系统 UI 一起截进去，
     // 以为是自己要操作的界面。实测关掉后屏上窗口数=0，画面干净。
     + `log_level=info tunnel_forward=true display_ime_policy=hide vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${finalWidth}x${finalHeight}/${dpi} `
-    + `control=true audio=false scid=${scid}`;
+    + `control=true audio=false scid=${scid}`
+    // **max_fps 以前从来没传过 —— 等于无限帧率。**
+    // 实测 MC 跑起来视频流 145fps（远超 60），CPU 和带宽都白烧。
+    // 默认限到 60：够流畅，又不浪费。
+    + (maxFps > 0 ? ` max_fps=${maxFps}` : '');
   // 把 server 的输出落到日志文件：出问题时没有日志只能瞎猜（刚踩过：服务秒退却不知道为什么）
   const logPath = '/tmp/dsh-vd-server.log';
   const { openSync } = await import('node:fs');

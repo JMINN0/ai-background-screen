@@ -27,6 +27,9 @@ export async function start(args) {
     systemDecorations: args?.systemDecorations === true,   // 默认 false：屏上不带二级桌面/导航栏
     orientation: args?.orientation,                        // portrait / landscape
     hwc: args?.hwc || 'auto',                              // 3D 游戏需要 HWC 参与合成
+    // 帧率上限。以前没传过 = 无限，实测 MC 跑起来 145fps 白烧 CPU/带宽。
+    // 默认 60；传 0 表示不限。
+    maxFps: args?.maxFps === 0 ? 0 : (Number(args?.maxFps) || 60),
   });
   if (!r.ok) return { text: `建屏失败：${r.hint}` };
   // HWC 状态以真实属性为准（复用分支以前不返回 hwc，开着 HWC 的屏会被报成「会黑屏」）。

@@ -33,6 +33,11 @@ export function startSpec() {
       '屏与插件进程同生共死：客户端断开或引擎重启，屏自动消失，不会留垃圾。',
     ].join('\n'),
     parameters: {
+      maxFps: {
+        type: 'integer',
+        description: '视频流帧率上限，默认 60。传 0 表示不限。'
+          + '以前没这个参数等于无限帧率，实测 3D 游戏会跑到 145fps，白烧 CPU 和带宽。',
+      },
       width: { type: 'integer', description: '宽度，默认 720。' },
       height: { type: 'integer', description: '高度，默认 1280。' },
       dpi: { type: 'integer', description: '密度，默认 320。' },
