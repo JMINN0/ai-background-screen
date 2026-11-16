@@ -1601,3 +1601,98 @@ mCurrentFocus=null → 但没有窗口获得焦点
 之前 ZTE 播放器和相册播放器能拿到画面（26 帧后冻住），说明它们至少进了播放状态。
 
 **mpv 这个卡点更像是「启动方式不对」，不是「视频不能播」。**
+
+---
+
+# 补充：mpv/VLC 路线的源码级结论（2026-11-17，子代理核实）
+
+## 一、「焦点」这条线可能是伪命题 —— 我的诊断方法有误
+
+**touch 事件按命中测试投递，不需要窗口焦点。** 只有按键/输入法需要焦点。
+
+所以：
+- MC / 微信「能用」很可能**从来就没拿到焦点**
+- 我用 `grep mCurrentFocus` 抓到的可能不是目标 display 那一段
+- **正确做法**：看 `dumpsys window displays` 里 `Display: mDisplayId=N` 块内的 `mCurrentFocus`
+
+**播视频根本不需要焦点** —— 把 URI 放进 intent 就会自动播。
+我花在「点不动打开文件」上的时间可能是白费的（那个按钮会拉起 SAF 选择器，可能开在主屏上）。
+
+## 二、mpv 强制软解：源码级坏消息
+
+**`am` 根本传不进去。**
+
+mpv-android 的 `MPVActivity.kt` 里，`decode_mode` 是 **Byte**：
+
+```kotlin
+// decode_mode == 2 → set file-local-options/hwdec no
+```
+
+但 AOSP 的 `Intent.parseCommandArgs` **没有 `--eb`**（只有 `--es/--esn/--ez/--ei/--el/--ef/--ed/--eu/--ecn/--eia/...`）。
+
+`--ei` 存成 `Integer`，`BaseBundle.getByte` 捕获 ClassCastException 后**返回默认值 0** ——
+只会打一条 `Bundle: Key decode_mode expected Byte but value was java.lang.Integer`。
+
+**从 shell 静默失效。**
+
+### 绕法
+
+1. 让 scrcpy-server 那个 app_process 自己 `putExtra("decode_mode", (byte)2)` 再 startActivity
+2. 或者一次性进 mpv 的应用内设置手动改（需要能操作 UI）
+
+### 配置目录也不是我以为的
+
+**mpv 的配置在 `/data/data/is.xyz.mpv/files`**（`player.initialize(filesDir, cacheDir)`），
+不是 `/sdcard/Android/data/is.xyz.mpv/files` —— 那个空目录正好解释了为什么我找不到配置。
+
+**uid 2000 写不进去。**
+
+Android 11+ 共享存储的 `.conf` include 也被上游判死（sfan5，issue #1091）。
+
+## 三、VLC 不会更好
+
+- `org.videolan.vlc` 最新 3.7.0（2026-02-25）
+- **官方 intent 只支持** `title/from_start/position/subtitles_location/extra_duration`
+- **没有传 libVLC 参数的通道**，`--avcodec-hw=none` 传不进去
+- 硬解开关在「设置→高级→硬件加速」，落到 SharedPreferences，**uid 2000 不可写**
+
+## 四、软解大概率能救 —— 而且它同时是判别实验
+
+**关键推理**：
+- 游戏（GLSurfaceView = SurfaceView + App 自己 GL 输出）在这块 VD 上 **60fps**
+- 说明「App GL → BufferQueue → SF → VD 输出」整条链是通的
+- **软解 + glTexImage2D 上传走的正是这条链**
+- 硬解直投走的是「codec 私有格式 buffer + overlay-eligible 图层」另一条链
+
+所以软解若失败，说明坏点不在 codec buffer，而在该 App 的窗口/EGL 或 VD 输出队列只收一次 ——
+那时换 VLC 也没用，得自己写测试 App 定死。
+
+**必须补的中间实验**：`hwdec=mediacodec-copy`（codec→CPU 拷贝→GL 普通纹理）。
+它和软解只差「谁解码」，能区分「buffer 格式问题」和「解码器问题」。
+
+## 五、诊断顺序（比换播放器更值钱）
+
+**第 0 步我竟然没做**：
+
+0. **先分清「解码停了」还是「合成停了」** —— `dumpsys media_session` 看 position 是否在走。
+   现有证据**无法区分这两者**，这是方法论漏洞。
+1. `screencap -d <id>` 连拍两张 1 秒间隔 `cmp` → VD 自己有没有在变
+2. `dumpsys SurfaceFlinger --list` + `--latency <视频图层>` 两次 → 图层有没有新帧；
+   `dumpsys SurfaceFlinger` 看该图层 `composition=HWC/CLIENT`
+3. 用 HTTP（proot 起 `http.server`）喂 mpv，排除 `/sdcard` 读权限变量
+4. `dumpsys display` 看这块 display 的 flags（有没有 `TRUSTED`）—— Android 14+ 输入/焦点信任的关键位
+
+## 六、当前判断
+
+**别再为焦点花时间。** 先做第 0-2 步把 decode/compose 分开，
+再用 `decode_mode=Byte` 那条路（需要自己发 Java intent）或 `mediacodec-copy` 做判别。
+
+**软解值得试，但它是判别手段，不是「换个播放器就好了」。**
+
+## 七、但这条路线已经不是最高优先级了
+
+**因为缓存文件路线已经通了**（见 `VIDEO-VIA-CACHE.md`）：
+微信/App 缓存的视频能直接 pull + ffmpeg，画面音频字幕全有，不需要虚拟屏。
+
+所以上面这些是「**如果还想让通用 App 内视频在虚拟屏玩**」才需要的。
+**对「AI 理解视频内容」这个需求，缓存路线已经够了。**
