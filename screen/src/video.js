@@ -349,26 +349,32 @@ export async function startDecoder(st, o = {}) {
   if (st.decoder) return { ok: true, reused: true };
 
   const { spawn } = await import('node:child_process');
+  /*
+   * 常驻解码器现在只出 **32x32 灰度**（每帧 1024 字节、7.6ms），
+   * 用来算画面变化量 —— 这是「免费的时间信号」：25Hz 盯着，但不花图片 token。
+   *
+   * 全尺寸 JPEG 仍走按需解码（`grabJpeg`），因为：
+   *   ① 双输出（split + 两个 -map 到 pipe:1/pipe:3）实测两边都是 0 字节，不通
+   *   ② 灰度流很便宜，没必要为了省一次解码而承担管道帧序对齐的风险
+   *
+   * **`-fflags nobuffer -flags low_delay` 绝对不能加。**
+   * 实测加上之后 ffmpeg 静默不出任何输出（既没报错也没帧），去掉就正常。
+   * 这个坑害我以为是解码器写错了，查了很久。
+   */
   const args = [
-    '-hide_banner', '-nostdin', '-loglevel', 'error',
-    // 低延迟：不要囤帧
-    '-fflags', 'nobuffer', '-flags', 'low_delay',
+    '-hide_banner', '-loglevel', 'error',
     '-f', 'h264', '-i', 'pipe:0',
     '-an', '-sn', '-dn',
-    '-f', 'image2pipe', '-c:v', 'mjpeg',
-    '-q:v', String(o.quality || 5),
+    '-vf', 'scale=32:32:flags=area,format=gray',
+    '-f', 'rawvideo', '-pix_fmt', 'gray',
+    'pipe:1',
   ];
-  if (Number(o.width) > 0) args.push('-vf', `scale=${Number(o.width)}:-1:flags=bilinear`);
-  // **必须有输出目标**，第一版漏了这一行，ffmpeg 起来就报
-  // "At least one output file must be specified" 然后退出。
-  args.push('pipe:1');
 
   const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
   const dec = {
     proc,
-    latest: null,          // 最新一张 JPEG 的 Buffer
-    latestAt: 0,           // 收到它的时间
+    latestAt: 0,           // 最近一帧灰度的到达时间
     frames: 0,             // 解出多少张
     needKeyframe: true,    // 还没等到关键帧
     stderr: '',
@@ -378,24 +384,19 @@ export async function startDecoder(st, o = {}) {
   };
   st.decoder = dec;
 
-  // ---- stdout：按 JPEG 魔术字切帧 ----
+  // ---- stdout：每 1024 字节一帧 32x32 灰度 ----
+  const THUMB_BYTES = 32 * 32;
   let acc = Buffer.alloc(0);
   proc.stdout.on('data', (d) => {
     acc = acc.length ? Buffer.concat([acc, d]) : d;
-    // 反复切出完整的 FFD8...FFD9
-    for (;;) {
-      const soi = acc.indexOf(Buffer.from([0xff, 0xd8]));
-      if (soi < 0) { if (acc.length > 8) acc = Buffer.alloc(0); break; }
-      const eoi = acc.indexOf(Buffer.from([0xff, 0xd9]), soi + 2);
-      if (eoi < 0) { if (soi > 0) acc = acc.subarray(soi); break; }
-      dec.latest = acc.subarray(soi, eoi + 2);
-      dec.latestAt = Date.now();
+    while (acc.length >= THUMB_BYTES) {
+      const buf = Buffer.from(acc.subarray(0, THUMB_BYTES));
+      acc = acc.subarray(THUMB_BYTES);
       dec.frames += 1;
-      acc = acc.subarray(eoi + 2);
-      // 只留最新一张：中间的解出来就丢，不用存
+      dec.latestAt = Date.now();
+      if (Date.now() >= dec.skipSensorUntil) pushSensor(st, buf, dec);
     }
-    // 防内存涨：连续垃圾数据直接清
-    if (acc.length > 4 * 1024 * 1024) acc = Buffer.alloc(0);
+    if (acc.length > THUMB_BYTES * 4) acc = Buffer.alloc(0);   // 防垃圾数据涨内存
   });
 
   proc.stderr.on('data', (d) => {
@@ -420,6 +421,8 @@ export async function startDecoder(st, o = {}) {
       proc.stdin.write(bst);
       dec.needKeyframe = false;      // 自举数据里已经含有关键帧
       dec.bootstrapped = true;
+      // 给自举帧 600ms 的消化窗口，这期间不记传感器
+      dec.skipSensorUntil = Date.now() + 600;
     } catch { /* 起不来就退回等待模式 */ }
   }
 
@@ -443,20 +446,23 @@ export function stopDecoder(st) {
  * 这样拿一帧只有内存拷贝成本，实测远低于 1ms。
  */
 export function latestJpeg(st) {
-  const dec = st && st.decoder;
-  if (!dec || !dec.latest) return null;
-  return dec.latest;
+  // 常驻解码器现在只出灰度（用来算变化量），不出 JPEG。
+  // 全尺寸帧统一走 grabJpeg 的按需解码 —— 返回 null 让调用方回退。
+  return null;
 }
 
 /** 常驻解码器状态 */
 export function decoderStats(st) {
   const dec = st && st.decoder;
   if (!dec) return { running: false };
+  const sens = st.sensor || [];
   return {
     running: !dec.closed,
     frames: dec.frames,
     needKeyframe: dec.needKeyframe,
-    hasFrame: Boolean(dec.latest),
+    hasFrame: sens.length > 0,
+    sensorFrames: sens.length,
+    lastMad: sens.length ? sens[sens.length - 1].mad : null,
     ageMs: dec.latestAt ? Date.now() - dec.latestAt : null,
     uptimeMs: Date.now() - dec.startedAt,
     stderr: dec.stderr ? dec.stderr.slice(-300) : '',
@@ -471,6 +477,102 @@ export function decoderStats(st) {
  *   · 还没等到关键帧之前，所有 P 帧都扔掉（喂了也解不出）
  *   · 关键帧到达时，先写 config 再写它，然后才进入正常喂流
  */
+/*
+ * 传感器环：每来一帧 32x32 灰度，算它和上一帧的平均绝对差（MAD），
+ * 顺带算一个粗略的「变化都在哪儿」的包围盒。
+ *
+ * 这是整个「免费时间信号」的地基：25Hz 盯着屏幕，但一个 token 都不花。
+ * 后面所有决策（要不要截图、截哪儿、截几张）都从这里来。
+ *
+ * 内存：每帧存 1024 字节灰度 + 几个数字，100 帧约 110KB。
+ */
+export const SENSOR_KEEP = 100;      // 约 4 秒 @25fps
+
+function pushSensor(st, gray, dec) {
+  if (!st) return;
+  if (!st.sensor) st.sensor = [];
+  const prev = st.sensor.length ? st.sensor[st.sensor.length - 1] : null;
+
+  let mad = 0;
+  let bbox = null;
+  if (prev) {
+    let sum = 0;
+    let minX = 32, minY = 32, maxX = -1, maxY = -1;
+    // 判定「这个像素变了」的阈值：32x32 上 8 灰阶差已经很明显
+    const TH = 8;
+    for (let y = 0; y < 32; y += 1) {
+      for (let x = 0; x < 32; x += 1) {
+        const i = y * 32 + x;
+        const d = Math.abs(gray[i] - prev.gray[i]);
+        sum += d;
+        if (d >= TH) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    mad = sum / 1024;
+    if (maxX >= 0) bbox = { minX, minY, maxX, maxY };
+  }
+
+  st.sensor.push({ at: Date.now(), mad, bbox, gray });
+  if (st.sensor.length > SENSOR_KEEP) st.sensor.shift();
+  if (dec) dec.lastMad = mad;
+}
+
+/**
+ * 最近的变化曲线（给决策用）。
+ *
+ * 返回的是数值，**不含任何图片** —— 用它决定要不要花 token，本身就是免费的。
+ */
+export function motion(st, { recent = 25 } = {}) {
+  const sens = (st && st.sensor) || [];
+  /*
+   * **传感器空 ≠ 出错。**
+   *
+   * scrcpy 只在画面变化时发帧。屏幕一直静止的时候一个包都没有，传感器环自然空。
+   * 这时候正确的结论是「没有任何变化」，而不是「探测失败」—— 后者会让调用方
+   * 白白回退到昂贵路径。
+   */
+  if (!sens.length) {
+    return {
+      ok: true,
+      frames: 0,
+      windowFrames: 0,
+      peakMad: 0, avgMad: 0, tailMad: 0,
+      stable: true,          // 没观察到变化 = 稳定
+      changing: false,
+      spanMs: 0, fps: 0,
+      lastBbox: null,
+      hint: '传感器还没有任何帧（画面一直静止，scrcpy 不发帧）—— 视为稳定',
+    };
+  }
+  const win = sens.slice(-recent);
+  const mads = win.map((s) => s.mad).filter((v, i) => i > 0 || win.length > 1);
+  const peak = mads.length ? Math.max(...mads) : 0;
+  const avg = mads.length ? mads.reduce((a, b) => a + b, 0) / mads.length : 0;
+  // 用后 1/4 的平均值判断「稳没稳」
+  const tail = win.slice(-Math.max(2, Math.ceil(win.length / 4)));
+  const tailMad = tail.reduce((a, s) => a + s.mad, 0) / Math.max(1, tail.length);
+  return {
+    ok: true,
+    frames: sens.length,
+    windowFrames: win.length,
+    peakMad: Math.round(peak * 100) / 100,
+    avgMad: Math.round(avg * 100) / 100,
+    tailMad: Math.round(tailMad * 100) / 100,
+    stable: tailMad < 0.5,
+    changing: tailMad >= 0.5,
+    spanMs: win.length > 1 ? win[win.length - 1].at - win[0].at : 0,
+    fps: win.length > 1 && win[win.length - 1].at > win[0].at
+      ? Math.round(((win.length - 1) / ((win[win.length - 1].at - win[0].at) / 1000)) * 10) / 10
+      : 0,
+    lastBbox: win.length ? win[win.length - 1].bbox : null,
+  };
+}
+
 export function feedDecoder(st, pkt, isConfig) {
   const dec = st && st.decoder;
   if (!dec || dec.closed) return;
