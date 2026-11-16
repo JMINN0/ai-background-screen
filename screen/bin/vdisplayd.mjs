@@ -206,8 +206,8 @@ const ACTIONS = {
   },
   async input(args) {
     const kind = String(args?.kind || '');
-    if (!['tap', 'swipe', 'text', 'key', 'paste'].includes(kind)) {
-      return { hint: `不认识的输入类型「${kind}」。可选：tap / swipe / text / key / paste` };
+    if (!['tap', 'swipe', 'hold', 'text', 'key', 'paste'].includes(kind)) {
+      return { hint: `不认识的输入类型「${kind}」。可选：tap / swipe / hold / text / key / paste` };
     }
     return vd.input(kind, args);
   },

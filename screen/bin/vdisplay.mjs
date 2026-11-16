@@ -257,7 +257,7 @@ async function main() {
     action = 'text';
     args = { minConf: num('minconf'), maxLines: num('maxlines'), fresh: flags.fresh === true };
   } else if (cmd === 'input') {
-    if (!sub) { console.error('需要输入类型：tap / swipe / text / key / paste'); process.exit(1); }
+    if (!sub) { console.error('需要输入类型：tap / swipe / hold / text / key / paste'); process.exit(1); }
     action = 'input';
     args = {
       kind: sub,
