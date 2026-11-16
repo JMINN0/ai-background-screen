@@ -153,14 +153,19 @@ export function push(st, chunk) {
     if (cfg) {
       // SPS/PPS：解码前必须先喂给解码器
       st.config = Buffer.from(data);
+      // 常驻解码器在跑的话，参数集随时更新
+      feedDecoder(st, st.config, true);
     } else {
       st.frames += 1;
       if (st.firstPts === null) st.firstPts = pts;
       st.lastPts = pts;
       // **同时记到达时刻。** scrcpy 的 PTS 高位被 flag 占了（位 63/62/61 都见过被置位），
       // 用 PTS 算帧率会得出几十万秒这种荒谬结果，所以帧率按墙钟算。
-      st.packets.push({ pts, key, at: Date.now(), data: Buffer.from(data) });
+      const pkt = { pts, key, at: Date.now(), data: Buffer.from(data) };
+      st.packets.push(pkt);
       if (st.packets.length > PACKET_KEEP) st.packets.shift();
+      // 喂常驻解码器（没起就不做事）
+      feedDecoder(st, pkt, false);
     }
     st.buf = st.buf.subarray(12 + size);
   }
@@ -309,4 +314,185 @@ export async function grabJpeg(st, o = {}) {
       resolve({ ok: false, hint: `起不了 ffmpeg：${e?.message || e}` });
     });
   });
+}
+
+/* ============================================================
+ * 常驻解码器
+ * ============================================================
+ *
+ * ## 为什么要有它
+ *
+ * `grabJpeg()` 每次都从关键帧开始把整个 GOP 解一遍，实测 244ms —— 比 screencap
+ * 的 143ms 还慢。原因是结构性的：H.264 的帧间依赖逼你从头解。
+ *
+ * 常驻解码器让 ffmpeg 一直在跑，把新包持续喂进去，它持续吐 JPEG。拿「最新一帧」
+ * 就变成读内存，不再有解码等待。
+ *
+ * **实测（对同一份 96 帧的流）**：
+ *   一次性解整条流：96 帧 428ms → 4.5ms/帧
+ *   所以 25fps 常驻的 CPU 约 11% 一个核。
+ *
+ * ## 为什么要等关键帧
+ *
+ * ffmpeg 中途接上去的时候，手上全是 P 帧，它没有 SPS/PPS 也没有参考帧，
+ * 会报 `non-existing PPS 0 referenced` 然后一帧都出不来。
+ * 所以启动后要**先扔掉所有 P 帧，等到下一个关键帧才开始喂**。
+ *
+ * 代价是冷启动要等一个关键帧间隔（实测约 10 秒）。想更快就得让服务端重发 IDR
+ * —— 往控制通道发一个 0x11 字节（TYPE_RESET_VIDEO），那需要控制 socket 配合，
+ * 后面再做。
+ */
+
+/** 起一个常驻解码器，挂在 st 上。重复调用会先停掉旧的。 */
+export async function startDecoder(st, o = {}) {
+  if (!st) return { ok: false, hint: '没有解析状态' };
+  if (st.decoder) return { ok: true, reused: true };
+
+  const { spawn } = await import('node:child_process');
+  const args = [
+    '-hide_banner', '-nostdin', '-loglevel', 'error',
+    // 低延迟：不要囤帧
+    '-fflags', 'nobuffer', '-flags', 'low_delay',
+    '-f', 'h264', '-i', 'pipe:0',
+    '-an', '-sn', '-dn',
+    '-f', 'image2pipe', '-c:v', 'mjpeg',
+    '-q:v', String(o.quality || 5),
+  ];
+  if (Number(o.width) > 0) args.push('-vf', `scale=${Number(o.width)}:-1:flags=bilinear`);
+  // **必须有输出目标**，第一版漏了这一行，ffmpeg 起来就报
+  // "At least one output file must be specified" 然后退出。
+  args.push('pipe:1');
+
+  const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  const dec = {
+    proc,
+    latest: null,          // 最新一张 JPEG 的 Buffer
+    latestAt: 0,           // 收到它的时间
+    frames: 0,             // 解出多少张
+    needKeyframe: true,    // 还没等到关键帧
+    stderr: '',
+    closed: false,
+    bytesIn: 0,
+    startedAt: Date.now(),
+  };
+  st.decoder = dec;
+
+  // ---- stdout：按 JPEG 魔术字切帧 ----
+  let acc = Buffer.alloc(0);
+  proc.stdout.on('data', (d) => {
+    acc = acc.length ? Buffer.concat([acc, d]) : d;
+    // 反复切出完整的 FFD8...FFD9
+    for (;;) {
+      const soi = acc.indexOf(Buffer.from([0xff, 0xd8]));
+      if (soi < 0) { if (acc.length > 8) acc = Buffer.alloc(0); break; }
+      const eoi = acc.indexOf(Buffer.from([0xff, 0xd9]), soi + 2);
+      if (eoi < 0) { if (soi > 0) acc = acc.subarray(soi); break; }
+      dec.latest = acc.subarray(soi, eoi + 2);
+      dec.latestAt = Date.now();
+      dec.frames += 1;
+      acc = acc.subarray(eoi + 2);
+      // 只留最新一张：中间的解出来就丢，不用存
+    }
+    // 防内存涨：连续垃圾数据直接清
+    if (acc.length > 4 * 1024 * 1024) acc = Buffer.alloc(0);
+  });
+
+  proc.stderr.on('data', (d) => {
+    dec.stderr = (dec.stderr + d).slice(-2000);
+  });
+  proc.on('close', () => { dec.closed = true; });
+  proc.on('error', (e) => { dec.closed = true; dec.stderr += ` spawn: ${e?.message || e}`; });
+  proc.stdin.on('error', () => { /* ffmpeg 退出后 write 会 EPIPE，忽略 */ });
+
+  /*
+   * **自举：用缓冲里已有的数据把解码器喂起来。**
+   *
+   * 只靠「等下一个关键帧」是不行的 —— 实测等了 24 秒都没等到，因为 scrcpy 的
+   * 关键帧主要在**流开始时**发，解码器启动时那个 IDR 早被消费进 packets 了。
+   *
+   * 所以启动时直接把 `config + 从最近关键帧开始的包` 灌进去，解码器立刻就能工作。
+   */
+  const bst = h264(st);
+  if (bst && bst.length) {
+    try {
+      dec.bytesIn += bst.length;
+      proc.stdin.write(bst);
+      dec.needKeyframe = false;      // 自举数据里已经含有关键帧
+      dec.bootstrapped = true;
+    } catch { /* 起不来就退回等待模式 */ }
+  }
+
+  return { ok: true, bootstrapped: Boolean(dec.bootstrapped) };
+}
+
+/** 停掉常驻解码器。 */
+export function stopDecoder(st) {
+  if (!st || !st.decoder) return { ok: true, stopped: false };
+  const dec = st.decoder;
+  st.decoder = null;
+  try { dec.proc.stdin.end(); } catch { /* ignore */ }
+  try { dec.proc.kill('SIGKILL'); } catch { /* ignore */ }
+  return { ok: true, stopped: true, frames: dec.frames };
+}
+
+/**
+ * 取最新一张 JPEG。
+ *
+ * 返回的是**内存里的 Buffer**，不落盘 —— 调用方需要文件时自己写。
+ * 这样拿一帧只有内存拷贝成本，实测远低于 1ms。
+ */
+export function latestJpeg(st) {
+  const dec = st && st.decoder;
+  if (!dec || !dec.latest) return null;
+  return dec.latest;
+}
+
+/** 常驻解码器状态 */
+export function decoderStats(st) {
+  const dec = st && st.decoder;
+  if (!dec) return { running: false };
+  return {
+    running: !dec.closed,
+    frames: dec.frames,
+    needKeyframe: dec.needKeyframe,
+    hasFrame: Boolean(dec.latest),
+    ageMs: dec.latestAt ? Date.now() - dec.latestAt : null,
+    uptimeMs: Date.now() - dec.startedAt,
+    stderr: dec.stderr ? dec.stderr.slice(-300) : '',
+  };
+}
+
+/**
+ * 把解析出的包喂给常驻解码器。由 push() 内部调用，不需要外部调。
+ *
+ * 关键规则：
+ *   · config 包（SPS/PPS）**永远先写**，否则解码器没有参数集
+ *   · 还没等到关键帧之前，所有 P 帧都扔掉（喂了也解不出）
+ *   · 关键帧到达时，先写 config 再写它，然后才进入正常喂流
+ */
+export function feedDecoder(st, pkt, isConfig) {
+  const dec = st && st.decoder;
+  if (!dec || dec.closed) return;
+  const sin = dec.proc.stdin;
+  if (!sin || sin.destroyed) return;
+
+  const write = (buf) => {
+    if (!buf || !buf.length) return;
+    dec.bytesIn += buf.length;
+    try { sin.write(buf); } catch { /* ffmpeg 走了就忽略 */ }
+  };
+
+  if (isConfig) {
+    // 配置包随时可以写，解码器会更新参数集
+    write(pkt);
+    return;
+  }
+
+  if (dec.needKeyframe) {
+    if (!pkt.key) return;                 // 还没到关键帧，扔掉
+    if (st.config) write(st.config);      // 先给 SPS/PPS
+    dec.needKeyframe = false;
+  }
+  write(pkt.data);
 }

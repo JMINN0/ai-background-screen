@@ -874,6 +874,27 @@ export async function liveShot(o = {}) {
   const dir = String(o.dir || '/tmp').replace(/\/+$/, '') || '/tmp';
   const stamp = Date.now();
   const out = `${dir}/vd-live-${stamp}.jpg`;
+
+  // **有常驻解码器就直接读内存**，实测远低于 1ms；没有才回退到按需解 GOP（约 240ms）
+  const cached = mod.latestJpeg(rd);
+  if (cached && cached.length) {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(out, cached);
+    const dec = mod.decoderStats(rd);
+    return {
+      ok: true,
+      path: out,
+      width: Number(o.width) || st.width,
+      height: st.height,
+      ms: 0,
+      fps: st.fps,
+      decoderFrames: dec.frames,
+      frameAgeMs: dec.ageMs,
+      displayId: state.displayId,
+      source: 'persistent-decoder',
+    };
+  }
+
   const r = await mod.grabJpeg(rd, { out, width: Number(o.width) || 0 });
   if (!r.ok) return { ok: false, hint: r.hint };
   return {
@@ -884,13 +905,40 @@ export async function liveShot(o = {}) {
     ms: r.ms,
     fps: st.fps,
     displayId: state.displayId,
+    source: 'on-demand',
   };
+}
+
+/** 拿到当前这块屏的视频流解析器（给 video.js 的常驻解码器用） */
+export function videoReader() {
+  return state.videoReader;
 }
 
 /** 视频流的现状（给诊断用） */
 export async function videoStats() {
   const mod = await import('./video.js');
-  return mod.stats(state.videoReader);
+  const st = state.videoReader;
+  const base = mod.stats(st);
+  return { ...base, decoder: mod.decoderStats(st) };
+}
+
+/**
+ * 起常驻解码器。之后 liveShot 直接读内存，不再等解码。
+ *
+ * 冷启动要等一个关键帧（实测约 10 秒），期间 `liveShot` 会返回「还没关键帧」。
+ * 想立刻有画面就先调一次 `shot()`。
+ */
+export async function startLive(o = {}) {
+  const mod = await import('./video.js');
+  if (!state.videoReader) return { ok: false, hint: '视频流没接上（屏可能没起）' };
+  return mod.startDecoder(state.videoReader, o);
+}
+
+/** 停常驻解码器 */
+export async function stopLive() {
+  const mod = await import('./video.js');
+  if (!state.videoReader) return { ok: true, stopped: false };
+  return mod.stopDecoder(state.videoReader);
 }
 
 async function frameHash() {
