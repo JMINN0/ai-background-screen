@@ -1546,3 +1546,58 @@ hold 后差异  11.69   （hold 2500ms，150 个 MOVE @60Hz）
 ```bash
 adb shell dumpsys window | grep isKeyguardShowing   # 必须是 false
 ```
+
+---
+
+# 视频：mpv 实验（子代理建议的最优先方案）
+
+## 为什么试 mpv
+
+子代理分析：物理屏上视频层能被 HWC overlay 直通，GPU 一次不碰；
+虚拟屏没有物理显示管线，SF 必须 GPU 合成，于是「codec 产的 buffer 能否被 GPU 采样」
+第一次成为硬条件。这是 GLES（天生可采样）与 MediaCodec 的实质差别。
+
+它给的方案优先级第一是 **VLC 纯软解（85-90%）**，第二是 **mpv-android（85%）**。
+设备上已装 `is.xyz.mpv`，直接用。
+
+## 实测结果
+
+| 尝试 | 结果 |
+|---|---|
+| `am start --display N -n is.xyz.mpv/.MPVActivity -d file://...` | **黑屏（亮度 0）**，0 帧 |
+| `vd.launch('is.xyz.mpv')` | `landed=false`，焦点 null |
+| `am start --display N -n is.xyz.mpv/.MainActivity` | **UI 正常渲染（亮度 60.5）** |
+| 在 mpv UI 上点「打开文件」 | **点不动** |
+
+## 关键发现：mpv 渲染了但没有窗口焦点
+
+```
+画面亮度 60.5   → mpv 的 UI 确实画出来了
+mCurrentFocus=null → 但没有窗口获得焦点
+```
+
+**能渲染但收不到输入**，所以点不动按钮，也就没法导航它去打开视频文件。
+
+这和之前遇到的模式一致：**App 在虚拟屏上渲染 ≠ 有焦点 ≠ 能接收注入的输入**。
+
+## 本轮没能验证的
+
+**mpv 播视频到底会不会刷新，没测到。** 因为进不去播放状态：
+- VIEW intent 不起作用（MPVActivity 不抢焦点）
+- UI 点不动（无焦点）
+
+**所以「软解能不能救视频」这个问题仍然没有答案。**
+
+## 下一步（留给下轮）
+
+1. **让 MPVActivity 拿到焦点** —— 可能要给 `am start` 加 `-f NEW_TASK` 或者先 `am stack` 操作
+2. **预置 mpv 配置**强制软解再打开 —— 配置路径没找到（`/sdcard/Android/data/is.xyz.mpv/files/` 是空的）
+3. **换 VLC** —— 用户设备上没装，需要下载 APK（手机能上网）
+4. **用 mpv 的 `--input-ipc-server`** 从外部发命令，绕开点按
+
+## 一个更根本的怀疑
+
+如果连 mpv 都没焦点，那么**所有第三方播放器在虚拟屏上都可能有这个问题**。
+之前 ZTE 播放器和相册播放器能拿到画面（26 帧后冻住），说明它们至少进了播放状态。
+
+**mpv 这个卡点更像是「启动方式不对」，不是「视频不能播」。**
