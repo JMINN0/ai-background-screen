@@ -914,6 +914,162 @@ export function videoReader() {
   return state.videoReader;
 }
 
+/**
+ * P0-2：**等画面稳了再截图。**
+ *
+ * ## 为什么比固定 sleep 强
+ *
+ * 原来点完之后 `sleep(500)` 再截图。撞上转场/动画中间态就会截到：
+ * 半截页面、半透明叠层、运动模糊的字 —— 贵（一张 230-684 token）而且读不准，
+ * 模型会判断"页面坏了"，然后做错决策。
+ *
+ * 现在用 32×32 灰度信号盯：**连续 stableMs 内 tailMad 都低于阈值**才截图。
+ * 这个信号免费（本来就在收），粒度 25Hz，比 sleep 准得多。
+ *
+ * ## 和固定 sleep 的实测差别
+ *
+ * 固定 500ms：可能还在动（滑动惯性 800ms+），也可能早就稳了（白等）。
+ * 这里：稳了立刻截，没稳就等，上限兜底。
+ *
+ * @param {object} [o]
+ * @param {number} [o.stableMs=120]   要连续稳多久才算稳
+ * @param {number} [o.maxWaitMs=2500] 最多等多久，超了就用当前帧
+ * @param {number} [o.threshold=0.5]  tailMad 低于它算稳（实测滑动时 8-9，静止 0）
+ * @returns {Promise<{waitedMs:number, stable:boolean}>}
+ */
+export async function waitStable(o = {}) {
+  const mod = await import('./video.js');
+  const st = state.videoReader;
+  const stableMs = Number(o.stableMs) || 120;
+  const maxWait = Number(o.maxWaitMs) || 2500;
+  const th = Number(o.threshold) || 0.5;
+  const t0 = Date.now();
+
+  // 没有视频流就别等了，直接返回（调用方按老路走）
+  if (!st || !st.sensor || !st.sensor.length) {
+    return { waitedMs: 0, stable: null, hint: '没有灰度信号，无法判断稳定性' };
+  }
+
+  let quietSince = null;
+  for (;;) {
+    const m = mod.motion(st, { recent: 8 });
+    const now = Date.now();
+    if (m.tailMad !== null && m.tailMad < th) {
+      if (quietSince === null) quietSince = now;
+      if (now - quietSince >= stableMs) {
+        return { waitedMs: now - t0, stable: true, tailMad: m.tailMad };
+      }
+    } else {
+      quietSince = null;   // 又动了，重新计时
+    }
+    if (now - t0 >= maxWait) {
+      return {
+        waitedMs: now - t0,
+        stable: false,
+        tailMad: m.tailMad,
+        hint: `等了 ${maxWait}ms 还没稳（tailMad=${m.tailMad}），直接截当前帧`,
+      };
+    }
+    await sleep(60);
+  }
+}
+
+/**
+ * P0-3：**自动挑 ROI（局部放大）。**
+ *
+ * ## 为什么值得
+ *
+ * token 计价是 `⌈宽/42⌉ × ⌈高/42⌉`，低于 544×544 按地板价 169-180 收。
+ * 所以同样 171 token：
+ *   · 全屏 720 缩到 360 宽 → 只有 0.5x 像素（字糊）
+ *   · 裁一块 360 宽原生 → **1:1 像素**（字清楚）
+ *
+ * 一倍清晰度的差价，就在这里。
+ *
+ * ## 怎么挑
+ *
+ * 优先级：
+ *   ① 灰度 bbox（哪里在动）—— 0 成本
+ *   ② 最近一次交互坐标 ±120px
+ *   ③ 都不可用 → 返回 null，调用方走全屏
+ *
+ * 然后把区域扩 15% 边距，并保证**不超出屏幕**、**面积不超过整屏 35%**
+ * （太大就没有裁剪的意义了）。
+ *
+ * @param {object} [o]
+ * @param {number} [o.minArea=0.04]  区域至少占整屏多少（太小没信息）
+ * @param {number} [o.maxArea=0.35]  超过这个比例就不裁了，直接全屏
+ * @returns {{x:number,y:number,w:number,h:number,src:string}|null}
+ */
+export async function pickRoi(o = {}) {
+  const mod = await import('./video.js');
+  const st = state.videoReader;
+  const W = state.width;
+  const H = state.height;
+  if (!(W > 0 && H > 0)) return null;
+
+  const minArea = Number(o.minArea) || 0.04;
+  const maxArea = Number(o.maxArea) || 0.35;
+
+  let box = null;
+  let src = '';
+
+  // ① 灰度 bbox：32×32 分辨率下 1 格 = 屏宽/32 ≈ 22px
+  if (st && st.sensor && st.sensor.length) {
+    const m = mod.motion(st, { recent: 10 });
+    if (m.lastBbox) {
+      const gx = W / 32;
+      const gy = H / 32;
+      box = {
+        x: m.lastBbox.minX * gx,
+        y: m.lastBbox.minY * gy,
+        w: (m.lastBbox.maxX - m.lastBbox.minX + 1) * gx,
+        h: (m.lastBbox.maxY - m.lastBbox.minY + 1) * gy,
+      };
+      src = 'sensor-bbox';
+    }
+  }
+
+  // ② 回退：最近一次交互坐标
+  if (!box && state.lastInputAt) {
+    const { x, y } = state.lastInputAt;
+    const r = 120;
+    box = { x: x - r, y: y - r, w: r * 2, h: r * 2 };
+    src = 'last-input';
+  }
+
+  if (!box) return null;
+
+  // 扩 15% 边距（别把控件边缘切掉）
+  const mx = box.w * 0.15;
+  const my = box.h * 0.15;
+  let x = Math.max(0, Math.round(box.x - mx));
+  let y = Math.max(0, Math.round(box.y - my));
+  let w = Math.round(box.w + mx * 2);
+  let h = Math.round(box.h + my * 2);
+
+  // 贴边修正
+  if (x + w > W) w = W - x;
+  if (y + h > H) h = H - y;
+  if (w < 40 || h < 40) return null;
+
+  const area = (w * h) / (W * H);
+  if (area < minArea) {
+    // 太小了，扩到最小面积（以中心扩）
+    const need = Math.sqrt(minArea * W * H);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    w = Math.min(W, Math.round(need));
+    h = Math.min(H, Math.round(need));
+    x = Math.max(0, Math.min(W - w, Math.round(cx - w / 2)));
+    y = Math.max(0, Math.min(H - h, Math.round(cy - h / 2)));
+  } else if (area > maxArea) {
+    return null;   // 太大，裁了也没意义
+  }
+
+  return { x, y, w, h, src, area: Math.round(((w * h) / (W * H)) * 100) / 100 };
+}
+
 /** 视频流的现状（给诊断用） */
 export async function videoStats() {
   const mod = await import('./video.js');
@@ -1166,6 +1322,12 @@ export async function input(kind, a = {}) {
     }
   }
   else return { ok: false, hint: `不认识的输入类型：${kind}` };
+
+  // 记下这次点/滑的位置，pickRoi 在没有 bbox 时用它兜底
+  state.lastInputAt = {
+    x: a.nx != null ? Number(a.nx) * state.width : (Number(a.x) || 0),
+    y: a.ny != null ? Number(a.ny) * state.height : (Number(a.y) || 0),
+  };
 
   const verify = a.verify !== false;
   /*
