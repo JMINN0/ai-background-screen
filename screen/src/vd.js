@@ -1070,6 +1070,101 @@ export async function pickRoi(o = {}) {
   return { x, y, w, h, src, area: Math.round(((w * h) / (W * H)) * 100) / 100 };
 }
 
+/**
+ * 黑屏探针：判断这块屏上「视频/受保护内容」是不是抓不到。
+ *
+ * ## 为什么这条最要紧
+ *
+ * Android 对受保护内容（DRM 视频、银行界面）会给窗口设 `FLAG_SECURE`，
+ * 任何截屏 API 拿到的都是**纯黑**。这不分 screencap / scrcpy 流 / MediaProjection
+ * —— 全是黑的，是无 root 的硬边界。
+ *
+ * 所以它决定三条产品线的生死：
+ *   · 会员长视频（腾讯/爱奇艺 VIP）
+ *   · 微信视频号
+ *   · 游戏过场动画
+ *
+ * ## 三态判定（必须分开记，不能混成「通过/失败」）
+ *
+ *   A 正常出画     → 视频区有内容，可以做
+ *   B 视频区黑但 UI 可读 → FLAG_SECURE，结构性不可做
+ *   C 整屏黑/App 拒启动  → 虚拟屏不支持这个 App
+ *
+ * B 和 C 的区别很重要：B 是「内容受保护」，C 是「这个 App 不认虚拟屏」。
+ *
+ * ## 判据
+ *
+ * 用灰度统计，不看像素内容：
+ *   · 整屏 max == 0            → C（全黑）
+ *   · 下半屏 max 很小、上半屏正常 → B（视频区黑，UI 可读）
+ *   · 两半都有内容             → A
+ *
+ * @returns {Promise<{verdict:'A'|'B'|'C'|'?', ...}>}
+ */
+export async function probeSecure(o = {}) {
+  const mod = await import('./video.js');
+  const st = state.videoReader;
+
+  // 先拿一张全尺寸帧做像素级统计（不走 OCR，快）
+  const shotR = await shot(o.dir || '/tmp', { width: 360 });
+  if (!shotR.ok) return { ok: false, verdict: '?', hint: `截图失败：${shotR.hint}` };
+
+  const { execFile } = await import('node:child_process');
+  // 用 ffmpeg 把图缩成 16x16 灰度，读原始像素 —— 比装图像库轻
+  const raw = await new Promise((resolve) => {
+    const p2 = execFile('ffmpeg', [
+      '-v', 'error', '-i', shotR.path,
+      '-vf', 'scale=16:16:flags=area,format=gray',
+      '-f', 'rawvideo', '-pix_fmt', 'gray', 'pipe:1',
+    ], { encoding: 'buffer', maxBuffer: 1 << 20 }, (err, stdout) => resolve(err ? null : stdout));
+    if (!p2) resolve(null);
+  });
+  if (!raw || raw.length < 256) {
+    return { ok: false, verdict: '?', hint: '读不出像素（ffmpeg 失败）' };
+  }
+
+  // 分上下两半统计（视频一般在上，UI 在下；这里只做粗判）
+  const half = 128;   // 16x16 的上半 8 行 = 128 像素
+  let upMax = 0, downMax = 0, upSum = 0, downSum = 0;
+  for (let i = 0; i < 256; i += 1) {
+    const v = raw[i];
+    if (i < half) { upSum += v; if (v > upMax) upMax = v; }
+    else { downSum += v; if (v > downMax) downMax = v; }
+  }
+  const upMean = upSum / half;
+  const downMean = downSum / half;
+  const wholeMax = Math.max(upMax, downMax);
+
+  // 三态判定
+  let verdict = '?';
+  let why = '';
+  if (wholeMax === 0) {
+    verdict = 'C';
+    why = '整屏纯黑 —— App 可能拒绝在虚拟屏渲染，或者根本没起来';
+  } else if (upMax <= 6 && downMax > 20) {
+    verdict = 'B';
+    why = '上半屏纯黑、下半屏有内容 —— 典型的 FLAG_SECURE（视频区受保护，UI 正常）';
+  } else if (upMax > 20 && downMax > 20) {
+    verdict = 'A';
+    why = '上下都有内容，出画正常';
+  } else {
+    verdict = '?';
+    why = `分不清（上 max=${upMax} 下 max=${downMax}）`;
+  }
+
+  return {
+    ok: true,
+    verdict,
+    why,
+    upMax, downMax, upMean: Math.round(upMean), downMean: Math.round(downMean),
+    path: shotR.path,
+    displayId: state.displayId,
+    hint: verdict === 'B'
+      ? '这块屏上的受保护内容抓不到（FLAG_SECURE）。换非 DRM 内容，或者接受这条线做不了。'
+      : undefined,
+  };
+}
+
 /** 视频流的现状（给诊断用） */
 export async function videoStats() {
   const mod = await import('./video.js');
