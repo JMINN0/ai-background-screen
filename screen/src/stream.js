@@ -9,9 +9,9 @@
  * 实测成本（同一颗 SoC，360x640@2fps）：screencap 133 ms/帧 + ffmpeg 转码 14 ms/帧 ≈ 0.30 核。
  * 帧率才是成本主轴，分辨率不是——screencap 的固定开销约 60 ms（binder/内核拷贝）。
  */
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { adbTarget } from './target.js';
@@ -210,4 +210,50 @@ export function info() {
     displayId: st.displayId, frames: st.frames, errors: st.errors,
     bytesPerFrame: st.latest?.length || 0,
   };
+}
+
+/**
+ * reconcileState —— 修掉「状态文件说谎」
+ *
+ * ## 问题
+ *
+ * stream.json 记录 `running: true`，但推流是绑在**创建虚拟屏的那个进程**上的。
+ * 进程一退，屏没了、端口也没了，可状态文件还写着「在跑」。
+ *
+ * 结果：DSH Go 的「AI 画面」胶囊读这个文件，以为有画面，实际拿不到 ——
+ * 用户看到的就是「胶囊里没有画面」。
+ *
+ * ## 做法
+ *
+ * 模块加载时验证一次：文件说在跑，就去连一下端口。
+ * 连不上 = 那个进程已经死了，把状态改回 false，别让胶囊再被骗。
+ *
+ * 用例：
+ *   await reconcileStreamState();
+ */
+export async function reconcileStreamState() {
+  try {
+    const raw = await readFile(STATE_FILE, 'utf8');
+    const st = JSON.parse(raw);
+    if (!st.running || !st.port) return { healed: false, reason: '不在运行' };
+    // 试着连一下
+    const ok = await new Promise((resolve) => {
+      const req = request({
+        host: '127.0.0.1', port: st.port, path: '/', method: 'GET', timeout: 800,
+      }, (res) => { res.resume(); resolve(true); });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.end();
+    });
+    if (ok) return { healed: false, reason: '端口还活着' };
+    // 死了 —— 改写状态
+    await writeFile(STATE_FILE, JSON.stringify({
+      port: 0, running: false, startedAt: 0,
+      fps: st.fps || 2, width: st.width || 360,
+      displayId: null, focusedApp: '',
+    }));
+    return { healed: true, reason: `端口 ${st.port} 已死，状态已重置` };
+  } catch {
+    return { healed: false, reason: '没有状态文件' };
+  }
 }

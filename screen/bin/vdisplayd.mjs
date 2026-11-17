@@ -14,6 +14,8 @@
  * CLI 读这个文件找到守护进程。
  */
 
+
+import('./../src/stream.js').then(m => m.reconcileStreamState()).catch(() => {});
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, unlink, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';

@@ -58,6 +58,8 @@ async function loadDefineTool() {
 }
 
 export async function apply(ctx) {
+  // 启动时修一次假状态（见 stream.js 的 reconcileStreamState）
+  import('./stream.js').then(m => m.reconcileStreamState?.()).catch(() => {});
   // Cordis 规定：没通过 ctx.inject 声明依赖之前，**碰 ctx 的任何属性都会抛**
   // （"cannot get property X without inject"）。所以所有 ctx 访问都放进 inject 回调里。
   // 这个坑让三个插件在真实引擎里全部加载失败过，工具一个都没出现。
