@@ -92,3 +92,47 @@ ffmpeg -i /tmp/v.res -vn -ar 16000 -ac 1 -y a.wav
 
 **不要 force-stop 用户正在用的 App**（这条已经踩过，杀了用户正在看的 B站）。
 读缓存文件是只读操作，不需要停 App，安全。
+
+---
+
+# 音频转文字：装了 sherpa-onnx，但模型缺 CMVN（未跑通）
+
+## 做到哪一步
+
+```
+✅ 音频能抽出来（ffmpeg -vn -ar 16000 -ac 1）
+   实测：9.8 秒 wav，峰值 -22.5dB，98.3% 非零采样 —— 不是静音
+✅ sherpa-onnx 2.0.1 装上了
+✅ 模型能加载、能推理
+❌ 转写结果是空字符串（'.'）
+```
+
+## 根因【实测】
+
+查 `model.int8.onnx` 的 metadata：
+
+```
+lfr_window_size   = 7
+lfr_window_shift  = 6
+model_type        = sense_voice_ctc
+model_author      = iic
+lang_auto / lang_zh / lang_en / lang_yue / lang_ko / lang_nospeech ...
+without_itn = 15    with_itn = 14
+onnx.infer  = onnxruntime.quant
+```
+
+**缺 `neg_mean` / `inv_stddev`（CMVN 统计量）。**
+
+没有 CMVN，fbank 特征不做归一化，模型输入是错的 → 输出空。
+
+## 怎么修（下次）
+
+1. **换官方带 CMVN 的模型包** —— k2-fsa/sherpa-onnx 的 release 里有 sense-voice 模型，
+   现在的这份可能是别人转的、少了 metadata
+2. **改 whisper.cpp** —— `whisper-cli -m ggml-base.bin -l zh -f x.wav`，不依赖 CMVN
+3. 自己实现 fbank + CMVN（复杂，不推荐）
+
+## 已经写好的
+
+`screen/bin/asr.mjs` —— 封装了调用，换模型就能用。
+文件头注释里写清了这个坑，免得下次又查一遍。
