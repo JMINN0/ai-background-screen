@@ -50,6 +50,7 @@ export async function start(args) {
 }
 
 export async function launch(args) {
+  try { stream.setState('acting'); } catch { /* ignore */ }
   const pkg = String(args?.pkg || '').trim();
   if (!/^[a-z][\w.]*$/i.test(pkg)) return { text: 'pkg 看起来不是合法包名。' };
   const act = args?.activity ? String(args.activity).trim() : '';
@@ -71,6 +72,8 @@ export async function launch(args) {
 }
 
 export async function input(args) {
+  // **告诉推流「在操作」**：胶囊显示「AI 点按」，用户才知道 AI 在干活
+  try { stream.setState('acting'); stream.touch(); } catch { /* 推流没开就算了 */ }
   const kind = String(args?.kind || '').trim();
   if (!['tap', 'swipe', 'text', 'key', 'paste'].includes(kind)) return { text: 'kind 只能是 tap / swipe / text / key / paste。' };
   const r = await vd.input(kind, args || {});
@@ -96,6 +99,7 @@ export async function input(args) {
 }
 
 export async function shot(args) {
+  try { stream.setState('looking'); } catch { /* ignore */ }
   const frames = Number(args?.frames) || 1;
 
   // frames=1 → 单张截图（读字用）
@@ -230,6 +234,7 @@ export async function streamStart(args) {
   // 传真实的 focusedApp：以前这里写死空串，导致胶囊永远只显示"操作中 12s"。
   const focus = await vd.focusedApp();
   const r = await stream.start({ sfId: s.sfId, displayId: s.displayId, fps, width, focusedApp: focus });
+  try { stream.setState('looking'); } catch { /* ignore */ }
   if (!r.ok) return { text: `推流启动失败：${r.hint}` };
   return {
     text: `推流已开启：127.0.0.1:${r.port}，${fps} fps，宽度 ${width}\n`
@@ -254,6 +259,7 @@ export async function closeAll() {
 }
 
 export async function text(args) {
+  try { stream.setState('looking'); } catch { /* ignore */ }
   const st = await vd.status();
   if (!st.running) return { text: '虚拟屏没在运行。先 vdisplay_start 建屏、vdisplay_launch 投 App。' };
 

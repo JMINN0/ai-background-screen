@@ -31,6 +31,12 @@ const st = {
   fps: 2,
   width: 360,
   sfId: null,
+  // **看门狗相关**
+  lastFrameFetchAt: 0,   // 上一次有人来取帧（/frame.jpg）
+  lastActivityAt: 0,     // 上一次有工具调用（外部调 touch()）
+  state: 'idle',         // idle | thinking | looking | acting | done | error
+  aspect: 0,             // 真实画面比例 W/H，从 PNG 头读
+  doneAt: 0,             // 进入 done 的时刻，用来做「done 后保留 N 秒」
   displayId: null,
   focusedApp: '',
   frames: 0,
@@ -77,11 +83,57 @@ function pngToJpeg(png, width, q = 7) {
 // base64 占 4/3，还要留 JSON 开销，所以 JPEG 必须 ≤ 22000 字节（与胶囊端 FRAME_MAX 保持一致，否则落在中间区间会出现 stream 认为合格、胶囊每帧丢弃的黑屏）
 const JPEG_BUDGET = 22000;
 
+/**
+ * 刷新 SurfaceFlinger id。
+ *
+ * **为什么必须做**：虚拟屏一旦被重建（App 强制横屏就会），SurfaceFlinger 会分配
+ * 一个**新的** sfId。还拿旧的去 `screencap -d`，每次都失败，画面冻在最后一帧 ——
+ * 用户看到的就是「胶囊一直不动」。
+ *
+ * 原来 start() 只在开头取一次 sfId，之后永不刷新。这是审代码时发现的真 bug。
+ */
+async function refreshSfId() {
+  try {
+    const target = await adbTarget();
+    const r = await runCollect(ADB, ['-s', target, 'shell', 'dumpsys SurfaceFlinger --display-id']);
+    const txt = String(r.out || '');
+    const ids = [...txt.matchAll(/Display\s+(\d{15,})\s*\(\s*Virtual display\)/g)].map(m => m[1]);
+    if (!ids.length) return false;
+    const next = ids[ids.length - 1];
+    if (next === st.sfId) return false;
+    st.sfId = next;
+    return true;
+  } catch { return false; }
+}
+
+/** 从 PNG 头读真实宽高（IHDR 在偏移 16/20）。用来算 aspect，不依赖 dumpsys。 */
+function pngSize(buf) {
+  try {
+    if (buf.length < 24) return null;
+    // PNG 签名 8 字节 + 长度 4 + "IHDR" 4 = 16，之后是 width/height 各 4 字节
+    const w = buf.readUInt32BE(16);
+    const h = buf.readUInt32BE(20);
+    if (w > 0 && h > 0 && w < 10000 && h < 10000) return { w, h };
+  } catch { /* 读不出来就算了 */ }
+  return null;
+}
+
 async function captureAndConvert() {
   // 目标地址现取：adb 插件的 adbd 端口会变，硬编码 5555 会静默抓不到帧。
   const target = await adbTarget();
-  const r = await runCollect(ADB, ['-s', target, 'exec-out', 'screencap', '-p', '-d', st.sfId]);
+  const grab = () => runCollect(ADB, ['-s', target, 'exec-out', 'screencap', '-p', '-d', st.sfId]);
+  let r = await grab();
+  // **失败先怀疑 sfId 失效**（横屏重建、屏被换），刷新后重试一次再报错。
+  if (r.code !== 0 || r.out.length === 0) {
+    if (await refreshSfId()) r = await grab();
+  }
   if (r.code !== 0 || r.out.length === 0) { st.errors += 1; return null; }
+  // 读真实尺寸算比例（横竖屏自适应要用）
+  const sz = pngSize(r.out);
+  if (sz) {
+    const a = sz.w / sz.h;
+    if (Math.abs(a - st.aspect) > 0.01) { st.aspect = a; writeState(); }
+  }
 
   // 自适应：ffmpeg 的 -q:v 是**数字越大质量越差、文件越小**（2 最好 31 最差）。
   // 之前按 7→4→2 写反了，越调越大，帧反而超标 —— 这里往大的方向调。
@@ -99,8 +151,59 @@ async function captureAndConvert() {
   return last;
 }
 
+/**
+ * 看门狗参数。
+ *
+ * 之前 tick() 无条件每帧 screencap，不管有没有人看 —— 面板关掉后照样烧 0.3 核。
+ * 现在分三档：
+ *   - 有人在看（30s 内取过帧）或有工具活动 → 正常抓
+ *   - 都没了 → **暂停抓帧**（省 CPU），但保留服务，一有人看立刻恢复
+ *   - 长时间（IDLE_SHUTDOWN_MS）彻底没动静 → 自动 shutdown，胶囊消失
+ */
+const WATCH_MS = 30_000;          // 30s 内取过帧算「有人在看」
+const IDLE_PAUSE_MS = 15_000;     // 15s 无活动/无取帧 → 暂停抓帧
+const IDLE_SHUTDOWN_MS = 120_000; // 120s 彻底没动静 → 自动关闭
+const DONE_KEEP_MS = 30_000;      // done 状态保留 30s 再关（用户要看「完成」）
+
+/** 外部（工具层）在每次操作时调一下，告诉推流「还在干活」。 */
+export function touch() {
+  st.lastActivityAt = Date.now();
+  if (st.state === 'idle' || st.state === 'done') { st.state = 'acting'; st.doneAt = 0; }
+  writeState();
+}
+
+/** 设置状态：thinking / looking / acting / done / error / idle */
+export function setState(state) {
+  const next = String(state || 'idle');
+  if (next === st.state) return;
+  st.state = next;
+  st.lastActivityAt = Date.now();
+  if (next === 'done') st.doneAt = Date.now();
+  else if (next !== 'idle') st.doneAt = 0;
+  writeState();
+}
+
 async function tick() {
   if (!st.running || st.busy) return;
+  const now = Date.now();
+  const watching = (now - st.lastFrameFetchAt) < WATCH_MS;
+  const active = (now - st.lastActivityAt) < WATCH_MS;
+
+  // ① done 状态保留一段时间后自动关（用户提的「操作完了就不该一直显示」）
+  if (st.state === 'done' && st.doneAt && (now - st.doneAt) > DONE_KEEP_MS) {
+    await shutdown();
+    return;
+  }
+  // ② 长时间彻底没动静 → 自动关
+  if (!watching && !active && (now - Math.max(st.lastFrameFetchAt, st.lastActivityAt, st.startedAt)) > IDLE_SHUTDOWN_MS) {
+    await shutdown();
+    return;
+  }
+  // ③ 暂时没人看 → 暂停抓帧，省 CPU
+  if (!watching && !active && (now - Math.max(st.lastFrameFetchAt, st.lastActivityAt, st.startedAt)) > IDLE_PAUSE_MS) {
+    return;
+  }
+
   st.busy = true;
   try {
     const jpg = await captureAndConvert();
@@ -120,6 +223,8 @@ async function writeState() {
       port: st.port, running: st.running, startedAt: st.startedAt,
       fps: st.fps, width: st.width, displayId: st.displayId,
       focusedApp: st.focusedApp || '',   // 胶囊靠这个显示"AI 在操作 XX"，以前压根没写
+      state: st.state,                   // idle/thinking/looking/acting/done/error
+      aspect: st.aspect || 0,            // 真实画面比例，横竖屏自适应用
     }));
   } catch { /* 写不进去不影响推帧 */ }
 }
@@ -133,10 +238,14 @@ function startServer() {
         res.end(JSON.stringify({
           running: st.running, displayId: st.displayId, fps: st.fps, width: st.width,
           frames: st.frames, errors: st.errors, focusedApp: st.focusedApp,
+          // 新增：状态、真实比例、空闲秒数 —— 胶囊靠这些显示「AI 在干什么」
+          state: st.state, aspect: st.aspect || 0,
+          idleSec: Math.round((Date.now() - Math.max(st.lastFrameFetchAt, st.lastActivityAt, st.startedAt)) / 1000),
         }));
         return;
       }
       if (url.pathname === '/frame.jpg') {
+        st.lastFrameFetchAt = Date.now();   // 有人来看 = 有人在看，恢复抓帧
         if (!st.latest) { res.writeHead(503); res.end('no frame yet'); return; }
         res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store' });
         res.end(st.latest);
@@ -172,6 +281,11 @@ export async function start({ sfId, displayId, fps = 2, width = 360, focusedApp 
   st.latest = null;
   st.frames = 0;
   st.errors = 0;
+  st.lastFrameFetchAt = 0;
+  st.lastActivityAt = Date.now();
+  st.state = 'looking';   // 一开推流就算「在看屏幕」
+  st.aspect = 0;
+  st.doneAt = 0;
 
   if (!st.server) await startServer();
   st.running = true;
