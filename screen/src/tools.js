@@ -74,6 +74,13 @@ export async function launch(args) {
 export async function input(args) {
   // **告诉推流「在操作」**：胶囊显示「AI 点按」，用户才知道 AI 在干活
   try { stream.setState('acting'); stream.touch(); } catch { /* 推流没开就算了 */ }
+  // **记下坐标**：推流帧上会画出十字，用户能直接看到 AI 点在哪
+  try {
+    const a0 = args || {};
+    const mx = Number.isFinite(Number(a0.nx)) ? Number(a0.nx) : (Number.isFinite(Number(a0.x)) ? Number(a0.x) / 100000 : NaN);
+    const my = Number.isFinite(Number(a0.ny)) ? Number(a0.ny) : (Number.isFinite(Number(a0.y)) ? Number(a0.y) / 100000 : NaN);
+    if (Number.isFinite(mx) && Number.isFinite(my)) stream.markTap(mx, my, String(a0.kind || 'tap'));
+  } catch { /* 没坐标就算了（滑动这类） */ }
   const kind = String(args?.kind || '').trim();
   if (!['tap', 'swipe', 'text', 'key', 'paste'].includes(kind)) return { text: 'kind 只能是 tap / swipe / text / key / paste。' };
   const r = await vd.input(kind, args || {});

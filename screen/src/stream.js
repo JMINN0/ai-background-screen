@@ -37,6 +37,8 @@ const st = {
   state: 'idle',         // idle | thinking | looking | acting | done | error
   aspect: 0,             // 真实画面比例 W/H，从 PNG 头读
   doneAt: 0,             // 进入 done 的时刻，用来做「done 后保留 N 秒」
+  // **点击标记**：在推流帧上画出「AI 点在哪」，用户能直接看到操作位置
+  marks: [],             // [{ nx, ny, at, kind }]，最多留 3 个
   displayId: null,
   focusedApp: '',
   frames: 0,
@@ -64,11 +66,16 @@ function runCollect(cmd, args) {
  * 所以调用方要按体积自适应降 q 或缩宽度。
  */
 function pngToJpeg(png, width, q = 7) {
+  // **点击标记画在缩放之后**，这样坐标直接是输出空间的，不用反算原图尺寸。
+  const marks = marksToFilters();
+  const vf = marks
+    ? `scale=${width}:-1:flags=bilinear,${marks}`
+    : `scale=${width}:-1:flags=bilinear`;
   return new Promise((resolve) => {
     const p = spawn('ffmpeg', [
       '-hide_banner', '-loglevel', 'error',
       '-f', 'png_pipe', '-i', 'pipe:0',
-      '-vf', `scale=${width}:-1:flags=bilinear`,
+      '-vf', vf,
       '-f', 'mjpeg', '-q:v', String(q), 'pipe:1',
     ]);
     const out = [];
@@ -173,6 +180,50 @@ export function touch() {
 }
 
 /** 设置状态：thinking / looking / acting / done / error / idle */
+/**
+ * 记一次点击位置，推流帧上会画出来。
+ *
+ * 用户提的需求：实时看到 AI 点在哪、有没有点偏。
+ * 成本很低 —— 只是往数组里塞一个归一化坐标，画图由 ffmpeg 的 drawbox 顺手做，
+ * 不额外解码、不额外传数据。
+ */
+export function markTap(nx, ny, kind = 'tap') {
+  const x = Number(nx), y = Number(ny);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return;
+  st.marks.push({ nx: x, ny: y, at: Date.now(), kind: String(kind).slice(0, 8) });
+  if (st.marks.length > 3) st.marks.shift();
+  st.lastActivityAt = Date.now();
+}
+
+/** 把 marks 变成 ffmpeg 滤镜串（画在缩放之后的坐标系里）。 */
+function marksToFilters() {
+  const now = Date.now();
+  // 只画 5 秒内的，太老的淡出（否则画面上一堆历史点看不清）
+  const live = st.marks.filter(m => (now - m.at) < 5000);
+  if (!live.length) return '';
+  const W = st.width || 360;
+  const parts = [];
+  for (const m of live) {
+    const age = (now - m.at) / 5000;              // 0 = 刚点，1 = 5 秒前
+    const alpha = Math.max(0.25, 1 - age).toFixed(2);
+    const cx = Math.round(m.nx * W);
+    // 高度按 aspect 推（不知道输出高度时用宽度/aspect 估；aspect 没有就按 9:19.5 估）
+    const a = (st.aspect > 0.1 && st.aspect < 10) ? st.aspect : 0.5;
+    const H = Math.round(W / a);
+    const cy = Math.round(m.ny * H);
+    const arm = Math.max(6, Math.round(W * 0.022));   // 十字臂长
+    const t = Math.max(2, Math.round(W * 0.005));     // 线宽
+    // 横线 + 竖线 = 十字
+    parts.push(`drawbox=x=${cx - arm}:y=${cy - t}:w=${arm * 2}:h=${t * 2}:color=red@${alpha}:t=fill`);
+    parts.push(`drawbox=x=${cx - t}:y=${cy - arm}:w=${t * 2}:h=${arm * 2}:color=red@${alpha}:t=fill`);
+    // 外圈空心方块，更容易看见
+    const box = arm * 2;
+    parts.push(`drawbox=x=${cx - box}:y=${cy - box}:w=${box * 2}:h=${box * 2}:color=red@${alpha}:t=${t}`);
+  }
+  return parts.join(',');
+}
+
 export function setState(state) {
   const next = String(state || 'idle');
   if (next === st.state) return;
@@ -286,6 +337,7 @@ export async function start({ sfId, displayId, fps = 2, width = 360, focusedApp 
   st.state = 'looking';   // 一开推流就算「在看屏幕」
   st.aspect = 0;
   st.doneAt = 0;
+  st.marks = [];
 
   if (!st.server) await startServer();
   st.running = true;
