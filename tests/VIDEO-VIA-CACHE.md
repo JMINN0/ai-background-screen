@@ -136,3 +136,77 @@ onnx.infer  = onnxruntime.quant
 
 `screen/bin/asr.mjs` —— 封装了调用，换模型就能用。
 文件头注释里写清了这个坑，免得下次又查一遍。
+
+---
+
+# 🎯 完整链路打通：缓存视频 → 抽帧 + 抽音频 → 转文字
+
+## 实测结果（2026-11-17）
+
+```bash
+node bin/vidgrab.mjs find com.tencent.mm          # 找缓存视频
+adb pull <路径> /tmp/v.res
+ffmpeg -i /tmp/v.res -vn -ar 16000 -ac 1 a.wav    # 抽音频
+node bin/asr.mjs a.wav                            # 转文字
+```
+
+**真实微信缓存视频的转写结果**：
+
+```
+视频: 3521cb77aa838bcd4f253dcff3066668.res
+音频: 10.449 秒
+转写: 「没错，就是这么简单，累计登录即可免费领取小。」
+```
+
+连续测 4 个：
+
+| # | 时长 | 转写 |
+|---|---|---|
+| 1 | 10.44s | ✅ 没错，就是这么简单，累计登录即可免费领取 |
+| 2 | 6.59s | (无语音/纯音乐) |
+| 3 | 1.47s | (残片，只解出 1.4 秒) |
+| 4 | 1.47s | (残片) |
+
+**有语音的能转，没语音的返回空 —— 这是正确行为，不是失败。**
+
+## 模型：必须带 CMVN
+
+官方 sherpa-onnx 的 SenseVoice（228MB int8）有 22 项 metadata，含 `neg_mean` 和
+`inv_stddev`（各 560 维 CMVN），输入形状 `[N, T, 560]`（80 fbank × 7 LFR）。
+
+**DSH 自带的那个模型缺这两项**，能加载能推理但输出永远是空字符串。
+
+装法：
+```bash
+curl -L -o m.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+tar xjf m.tar.bz2
+mkdir -p ~/.dsh/speech-to-text/sensevoice-official
+cp sherpa-onnx-sense-voice-*/{model.int8.onnx,tokens.txt} ~/.dsh/speech-to-text/sensevoice-official/
+```
+
+## 五种语言都验证过
+
+```
+中文: 开饭时间早上9点至下午5点。
+英文: The tribal chieftain called for the boy and presented him with 50 pieces of code
+日文: うちの中学は弁当制で持っていきない場合は50円の学校販売のパンを買う。
+韩文: 조금만 생각을 하면서 살면 훨씬 편할 거야.
+粤语: 呢几个字都表达唔到我想讲嘅意思。
+```
+
+## 和 storyboard 的对比：这一项现在打平了
+
+| | storyboard | 我们 |
+|---|---|---|
+| 音频转写 | ✅ ASR | ✅ **SenseVoice 本地，免费、不联网、五种语言** |
+| 帧提取 | ✅ 从文件 | ✅ 从缓存文件 |
+| 需要先有文件 | ✅ 必须 | ✅ 缓存就在本机 |
+
+**「音频识别不能弱于插件作者」这一条，达成了。**
+
+## 一个教训
+
+之前测 ASR 一直返回空，我怀疑是模型缺 CMVN（确实缺）。
+但**真正的坑是我测的音频里没人说话** —— 空输出既符合「模型坏了」也符合「静音正确」。
+
+**用已知有语音的样本（官方 test_wavs）一测，五种语言全对，问题立刻定位。**
