@@ -31,19 +31,50 @@ const adb = (args, opts = {}) => execFileSync(ADB, ['-s', TARGET, ...args], {
 
 /** 这些包名的缓存里最可能有视频 */
 const KNOWN = {
-  'com.tencent.mm': ['cache/ThumbVideoCache', 'cache/wxacache'],
-  'tv.danmaku.bili': ['download', 'cache'],
+  'com.tencent.mm': ['cache/ThumbVideoCache', 'cache/wxacache', 'MicroMsg', 'files'],
+  'tv.danmaku.bili': ['download', 'cache', 'files'],
+  // 短视频类：播放缓存多数落在 OkHttp 磁盘缓存（`.1` 是响应体原文）
+  'com.ss.android.ugc.aweme': ['cache', 'files'],
+  'com.ss.android.ugc.aweme.lite': ['cache', 'files'],
+  'com.smile.gifmaker': ['cache', 'files'],
+  'com.kuaishou.nebula': ['cache', 'files'],
+  'com.xingin.xhs': ['cache', 'files'],
+  'com.sina.weibo': ['cache', 'files'],
+  'com.google.android.youtube': ['cache', 'files'],
 };
+
+/** App 可选的外置目录（Android 11+，对 shell 同样可读） */
+const EXTRA_ROOTS = ['/sdcard/Android/media', '/sdcard/Android/obb'];
 
 /** 媒体文件头（不看后缀，看内容） */
 function sniff(buf) {
   if (buf.length < 12) return null;
+  const a = buf.toString('ascii', 0, 12);
   // MP4/MOV: 4 字节 size + "ftyp"
   if (buf.toString('ascii', 4, 8) === 'ftyp') return 'mp4';
+  // **fMP4/DASH 分片**：开头是 styp/moof/sidx，不是 ftyp
+  if (a.slice(4, 8) === 'styp' || a.slice(4, 8) === 'moof' || a.slice(4, 8) === 'sidx') return 'fmp4';
+  // Matroska
   if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'mkv';
-  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'AVI ') return 'avi';
-  if (buf[0] === 0x47) return 'ts';
+  // AVI
+  if (a.slice(0, 4) === 'RIFF' && a.slice(8, 12) === 'AVI ') return 'avi';
+  // FLV
+  if (a.slice(0, 3) === 'FLV') return 'flv';
+  // Ogg
+  if (a.slice(0, 4) === 'OggS') return 'ogg';
+  // MPEG-PS
+  if (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01 && buf[3] === 0xba) return 'mpg';
+  // TS：0x47 每隔 188 字节
+  if (buf[0] === 0x47 && (buf.length < 189 || buf[188] === 0x47)) return 'ts';
+  // WebM
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'webm';
   return null;
+}
+
+/** 加密检测：命中这些 box 就是 DRM/AES，ffmpeg 解不了，别浪费时间 */
+function isEncrypted(buf) {
+  const a = buf.toString('ascii');
+  return /pssh|senc|saiz|tenc|sinf/.test(a);
 }
 
 function cmdFind(pkgFilter) {
