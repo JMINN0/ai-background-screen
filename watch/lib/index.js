@@ -93,14 +93,27 @@ export function apply(ctx) {
           return
         }
         const sec = Math.max(0, Math.round((Date.now() - (info.startedAt || Date.now())) / 1000))
-        // 带上正在操作的 App 名：用户看到"AI 正在操作 设置"就知道
-        // 为什么这段时间键盘/焦点不听话（虚拟屏抢 IME 时会这样）。
         const apply = appLabel(info.focusedApp)
-        const text = apply ? `AI 在操作 ${apply} ${sec}s` : `操作中 ${sec}s`
-        emit({ text: text.slice(0, 24), icon: 'image', tone: 'info' })
+        // **按状态给不同文案**：以前只显示「在操作 XX」，用户看不出 AI 到底在干嘛
+        // （实测被问过「后台屏一直在设置页面不动，是不是没在操作」）。
+        const state = String(info.state || 'looking')
+        const map = {
+          thinking: { t: 'AI 思考中', tone: 'muted', icon: 'sparkles' },
+          looking:  { t: apply ? `AI 看屏幕 · ${apply}` : 'AI 看屏幕', tone: 'info', icon: 'eye' },
+          acting:   { t: apply ? `AI 操作 · ${apply}` : 'AI 操作中', tone: 'good', icon: 'pointer' },
+          done:     { t: 'AI 已完成', tone: 'good', icon: 'check' },
+          error:    { t: 'AI 出错了', tone: 'bad', icon: 'alert' },
+          idle:     { t: 'AI 待机', tone: 'muted', icon: 'image' },
+        }
+        const m = map[state] || map.looking
+        // done 状态带上步数感（用秒数近似），让用户知道这轮花了多久
+        const tail = state === 'done' ? ` · ${sec}s` : ''
+        emit({ text: (m.t + tail).slice(0, 24), icon: m.icon, tone: m.tone })
       }
       tick()
-      const timer = setInterval(tick, 2000)
+      // 轮询间隔 2000ms → 400ms：状态切换要跟得上「思考→操作→完成」的节奏。
+      // 桥接的 data 推送上限是 4Hz，400ms 正好在限内。
+      const timer = setInterval(tick, 400)
       return () => { stopped = true; clearInterval(timer) }
     })
 
@@ -114,7 +127,9 @@ export function apply(ctx) {
           type: 'stack',
           title: en ? 'AI screen' : 'AI 正在操作',
           children: [
-            { type: 'image', src: { $: 'data.frame' }, alt: 'live', aspect: 0.667 },
+            // **aspect 改成绑定**：以前写死 0.667，横屏游戏（1592×720）会被压成竖条。
+            // 现在按 PNG 头读到的真实比例走，横屏自动变扁 letterbox。
+            { type: 'image', src: { $: 'data.frame' }, alt: 'live', aspect: { $: 'data.aspect' } },
             { type: 'keyValue', items: [
               [en ? 'Status' : '状态', { $: 'data.status' }],
               [en ? 'Display' : '虚拟屏', { $: 'data.display' }],
@@ -134,16 +149,20 @@ export function apply(ctx) {
           try {
             const info = await streamInfo()
             if (!info || !info.running) {
-              emit({ frame: '', status: 'AI 未操作', display: '—' })
+              emit({ frame: '', status: 'AI 未操作', display: '—', aspect: 0.667 })
               return
             }
             const [buf, st] = await Promise.all([grabFrame(info), grabStatus(info)])
+            const stateName = { thinking:'思考中', looking:'看屏幕', acting:'操作中', done:'已完成', error:'出错', idle:'待机' }[String(st?.state||'looking')] || '看屏幕'
+            const appName = st?.focusedApp ? (appLabel(st.focusedApp) || '运行中') : '取帧中'
             emit({
               frame: buf ? `data:image/jpeg;base64,${buf.toString('base64')}` : '',
               // 用 appLabel 转成人话，别把原始窗口串甩给用户
               // （以前直接 slice，用户看到 mCurrentFocus=Window{ae9eb4a u0 com.android.settings/com.and）
-              status: st?.focusedApp ? (appLabel(st.focusedApp) || '运行中') : '取帧中',
+              status: `${stateName} · ${appName}`,
               display: st?.displayId ? `display ${st.displayId}` : '—',
+              // **真实比例**：横屏游戏要让容器跟着变扁，不然画面被压
+              aspect: (st && st.aspect > 0.1 && st.aspect < 10) ? st.aspect : 0.667,
             })
           } finally { busy = false }
         }
