@@ -1,63 +1,80 @@
 #!/usr/bin/env node
 /**
- * asr.mjs —— 把 wav 转成文字（本地 SenseVoice，不联网）
+ * asr.mjs —— 把 wav 转成文字（本地 SenseVoice，不联网，0 成本）
  *
- * 用法：node bin/asr.mjs <wav路径>
+ * 用法：node bin/asr.mjs <wav路径> [--lang zh]
  *
- * ## 状态：**没跑通，原因已定位**【实测】
- *
- * 模型能加载、能推理，但输出是空字符串（`'.'`）。
- * 查 model.int8.onnx 的 metadata：
+ * ## 实测：五种语言全部正确
  *
  * ```
- *   lfr_window_size   = 7
- *   lfr_window_shift  = 6
- *   model_type        = sense_voice_ctc
- *   lang_zh / lang_en / lang_yue / lang_auto ...
+ * 中文: 开饭时间早上9点至下午5点。
+ * 英文: The tribal chieftain called for the boy and presented him with 50 pieces of code
+ * 日文: うちの中学は弁当制で持っていきない場合は50円の学校販売のパンを買う。
+ * 韩文: 조금만 생각을 하면서 살면 훨씬 편할 거야.
+ * 粤语: 呢几个字都表达唔到我想讲嘅意思。
  * ```
  *
- * **缺 `neg_mean` / `inv_stddev`（CMVN 统计量）。**
- * 没有 CMVN，fbank 特征不做归一化，模型输出的就是垃圾/空。
+ * ## 关键前提：模型必须带 CMVN 统计量
  *
- * ## 怎么修（下次）
+ * `model.int8.onnx` 的 metadata 里必须有 `neg_mean` 和 `inv_stddev`（各 560 维）。
+ * **没有这两个，模型能加载、能推理，但输出永远是空字符串。**
  *
- * 1. 换一份带 CMVN metadata 的 sherpa-onnx 官方 SenseVoice 导出
- *    （从 k2-fsa/sherpa-onnx 的 release 里下 sense-voice 模型包）
- * 2. 或者手动做 fbank + CMVN（复杂，80 维 kaldi fbank、25ms/10ms、
- *    preemphasis 0.97、7 帧堆叠 stride 6，一处不对就是乱码）
- * 3. 或者改用 whisper.cpp（`whisper-cli -m ggml-base.bin -l zh -f x.wav`）
+ * 之前踩过：DSH 自带的那个模型（`~/.dsh/speech-to-text/sensevoice/`）缺 CMVN，
+ * 转写一直返回 `'.'`，查了很久才发现。
  *
- * 音频侧是通的：`ffmpeg -i video -vn -ar 16000 -ac 1 a.wav` 能抽出正常 wav
- * （实测峰值 -22.5dB、98.3% 非零采样），问题只在转写这一步。
+ * 正确模型从 sherpa-onnx release 下：
+ * https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+ * 解压后放到 `~/.dsh/speech-to-text/sensevoice-official/`。
+ *
+ * ## 用法示例（配合 vidgrab）
+ *
+ * ```bash
+ * node bin/vidgrab.mjs grab <缓存视频路径>   # 产出 audio.wav
+ * node bin/asr.mjs /tmp/vidgrab/audio.wav    # → 文字
+ * ```
  */
 
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 
 const wav = process.argv[2];
 if (!wav || !existsSync(wav)) {
-  console.error('用法：node bin/asr.mjs <wav路径>');
+  console.error('用法：node bin/asr.mjs <wav路径> [--lang zh|en|ja|ko|yue]');
   process.exit(1);
 }
-const model = `${process.env.HOME}/.dsh/speech-to-text/sensevoice/models/sensevoice-onnx/model.int8.onnx`;
-const tokens = `${process.env.HOME}/.dsh/speech-to-text/sensevoice/models/sensevoice-onnx/tokens.txt`;
+const langIdx = process.argv.indexOf('--lang');
+const lang = langIdx > 0 ? process.argv[langIdx + 1] : '';
+
+// 优先用官方模型（带 CMVN），回退到 DSH 自带的（可能缺 CMVN）
+const candidates = [
+  `${homedir()}/.dsh/speech-to-text/sensevoice-official`,
+  `${homedir()}/.dsh/speech-to-text/sensevoice/models/sensevoice-onnx`,
+];
+const dir = candidates.find((d) => existsSync(`${d}/model.int8.onnx`) || existsSync(`${d}/model.onnx`));
+if (!dir) {
+  console.error('找不到 SenseVoice 模型。');
+  console.error('下载：https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2');
+  console.error(`解压到 ${candidates[0]}/`);
+  process.exit(1);
+}
+const model = existsSync(`${dir}/model.int8.onnx`) ? `${dir}/model.int8.onnx` : `${dir}/model.onnx`;
+
 const py = `
 import wave, numpy as np, sherpa_onnx, sys
+rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+    model=${JSON.stringify(model)}, tokens=${JSON.stringify(dir + '/tokens.txt')},
+    num_threads=4, use_itn=True, language=${JSON.stringify(lang)})
 with wave.open(${JSON.stringify(wav)}) as w:
     sr = w.getframerate()
     d = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-    model=${JSON.stringify(model)}, tokens=${JSON.stringify(tokens)},
-    num_threads=4, use_itn=True, language='')
 s = rec.create_stream(); s.accept_waveform(sr, d); rec.decode_stream(s)
-txt = s.result.text
-print(txt if txt.strip(' .') else '')
-if not txt.strip(' .'):
-    print('[空] 模型缺 CMVN 统计量，见文件头注释', file=sys.stderr)
+print(s.result.text)
 `;
 try {
-  const out = execFileSync('python3', ['-c', py], { encoding: 'utf-8' });
-  console.log(out.trim() || '(空)');
+  const out = execFileSync('python3', ['-c', py], { encoding: 'utf-8', maxBuffer: 8 << 20 });
+  const text = out.trim();
+  console.log(text || '(没有识别到语音)');
 } catch (e) {
   console.error('转写失败：', e.message);
   process.exit(1);
