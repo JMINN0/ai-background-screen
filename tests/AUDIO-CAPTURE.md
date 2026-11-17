@@ -91,3 +91,47 @@ open('cap.pcm','wb').write(d[:n])
 ffmpeg -f s16le -ar 48000 -ac 2 -i cap.pcm -ar 16000 -ac 1 cap.wav
 node bin/asr.mjs cap.wav
 ```
+
+---
+
+# 简化：加 `raw_stream=true` 就没有任何头部
+
+## 多一个参数，少一段解析
+
+```
+audio=true audio_source=playback audio_dup=true audio_codec=raw raw_stream=true
+```
+
+`raw_stream=true` 是 **server 专用选项**（不出现在 client 的帮助里），它关掉：
+
+- device meta（64 字节设备名）
+- codec id（4 字节）
+- 12 字节帧头
+- dummy byte
+
+**音频 socket 连上之后直接就是裸 PCM**：48kHz / 2ch / s16le。
+
+## 实测
+
+```
+收到 942,080 字节 / 5 秒 = 184 KB/s（理论 192 KB/s，对得上）
+前 16 字节 = 00000000000000000000000000000000（纯静音，不是设备名）
+非零 75.3% → 真实音频
+```
+
+对比不加 `raw_stream` 时：头 32 字节是 `00 4e 58 38 30 39 4a...`（`\0NX809J`），
+要自己跳过 64 字节才能拿到 PCM。
+
+## 建议
+
+**统一用 `raw_stream=true`**，代码少一半，也不会踩「偏移算错当成静音」的坑。
+
+## 附带纠正（子代理核实）
+
+我之前说「30 分钟用官方 scrcpy client 验证」—— **这条路在 aarch64 上不存在**：
+
+- Ubuntu 24.04 仓库的 scrcpy 是 **1.25**，没有音频功能
+- GitHub v5.0.1 的 release 只发 `linux-x86_64`，**没有 linux-aarch64**
+- 本机也没装 scrcpy
+
+**所以只能自己写 socket 客户端** —— 这也是我们实际做的，已经跑通。
