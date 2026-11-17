@@ -232,7 +232,7 @@ export function setActive(ctx) {
 export function newContext() { return makeState(); }
 
 /** 建一块私有虚拟屏。返回 {ok, displayId, sfId} */
-export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto', maxFps = 60 } = {}) {
+export async function start({ width = 0, height = 0, dpi = 320, systemDecorations = false, orientation, hwc = 'auto', maxFps = 60, imePolicy = 'hide' } = {}) {
   // **尺寸自动探测**：不传 width/height 时按物理屏比例生成同比例的虚拟屏。
   // 虚拟屏是合成的（scrcpy new_display），跟物理屏大小无关，但比例会影响 App 的
   // 布局判断（平板/手机模式、横竖屏）。写死 720x1280 在 9:19.4 的屏上窄 25%，
@@ -363,13 +363,18 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   await adb(['forward', `tcp:${port}`, `localabstract:scrcpy_${scid}`]);
 
   const cmd = `CLASSPATH=${REMOTE_JAR} app_process / com.genymobile.scrcpy.Server ${SERVER_VER} `
-    // display_ime_policy=hide 是必须的：不加这个，虚拟屏上的输入框会把系统输入法焦点
+    // display_ime_policy 三个取值（从 scrcpy-server dex 挖出来的）：
+    //   hide             默认，虚拟屏上没有输入法，打字打不进去
+    //   local            输入法渲染到这块虚拟屏上，打字能用
+    //   fallback_display 回退到默认屏
+    //
+    // 默认 hide 是必须的：不加这个，虚拟屏上的输入框会把系统输入法焦点
     // 抢过去（实测 mDisplayIdToShowIme 会变成虚拟屏的 id），用户在主屏打字时键盘就没了。
     // 代价：虚拟屏上也打不了字（没有输入法连接），所以文字要么用深链带参数进去，要么用坐标点选。
     // vd_system_decorations=false（scrcpy ≥3.1）：不加这个，虚拟屏上会自带
     // 二级桌面 launcher、导航栏和权限弹窗——AI 截图会把这些系统 UI 一起截进去，
     // 以为是自己要操作的界面。实测关掉后屏上窗口数=0，画面干净。
-    + `log_level=info tunnel_forward=true display_ime_policy=hide vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${finalWidth}x${finalHeight}/${dpi} `
+    + `log_level=info tunnel_forward=true display_ime_policy=${imePolicy} vd_system_decorations=${systemDecorations ? 'true' : 'false'} new_display=${finalWidth}x${finalHeight}/${dpi} `
     + `control=true audio=false scid=${scid}`
     // **max_fps 以前从来没传过 —— 等于无限帧率。**
     // 实测 MC 跑起来视频流 145fps（远超 60），CPU 和带宽都白烧。
