@@ -40,6 +40,70 @@ const SERVER_VER = '5.0.1';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+
+/**
+ * watchFrames —— 高密度采样视频流帧计数，返回「变化时间线」
+ *
+ * ## 为什么需要它
+ *
+ * 现在 input() 里的 waitChanged 只回答「有没有变」，回答不了：
+ *   - **什么时候变的**（点击后 50ms 就变，还是 800ms 才变）
+ *   - **变了多久**（瞬时弹窗 300ms，还是一直保持）
+ *   - **变化了几次**（弹出来又消失 = 两次变化）
+ *
+ * 「弹出又消失」这类瞬时状态，用首尾截图对比永远看不见。
+ * 帧计数是 **0 成本、约 30ms 分辨率**（34fps 流），采样它就能还原时间线。
+ *
+ * ## 返回
+ *
+ * ```
+ * {
+ *   totalFrames: 期间新增总帧数,
+ *   samples: [{ t, frames, delta }],   // 时间线
+ *   bursts: [{ startMs, endMs, frames }],  // 连续重绘段
+ *   firstChangeMs: 第一次重绘的时间点（相对开始）,
+ *   changed: bool
+ * }
+ * ```
+ */
+export async function watchFrames(ms = 2000, intervalMs = 40) {
+  // **用 state.videoReader.frames（单调递增），不是 packets.length。**
+  // packets 数组有 PACKET_KEEP=400 上限，跑久了会饱和，饱和后 delta 恒为 0，
+  // 看起来像「画面不动」—— 这个坑之前踩过。
+  const rd = () => (state.videoReader ? state.videoReader.frames : 0);
+  const t0 = Date.now();
+  const samples = [];
+  let prev = rd();
+  while (Date.now() - t0 < ms) {
+    await sleep(intervalMs);
+    const cur = rd();
+    samples.push({ t: Date.now() - t0, frames: cur, delta: cur - prev });
+    prev = cur;
+  }
+  // 把连续有增量的采样合并成「重绘段」
+  const bursts = [];
+  let curBurst = null;
+  for (const sm of samples) {
+    if (sm.delta > 0) {
+      if (!curBurst) curBurst = { startMs: sm.t, endMs: sm.t, frames: 0 };
+      curBurst.endMs = sm.t;
+      curBurst.frames += sm.delta;
+    } else if (curBurst) {
+      // 允许 200ms 的空档，超过才算一段结束
+      if (sm.t - curBurst.endMs > 200) { bursts.push(curBurst); curBurst = null; }
+    }
+  }
+  if (curBurst) bursts.push(curBurst);
+  const totalFrames = samples.reduce((a, b) => a + b.delta, 0);
+  return {
+    totalFrames,
+    samples,
+    bursts,
+    firstChangeMs: bursts.length ? bursts[0].startMs : null,
+    changed: totalFrames > 0,
+  };
+}
+
 export async function adb(args, timeout = 30000) {
   try {
     // 目标地址每次现取：adb 插件会把 adbd 迁到别的端口并写在 state.json 里。
