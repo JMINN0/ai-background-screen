@@ -275,7 +275,8 @@ function makeState() {
   // hwcPrev 记的是开启前的原值，hwcChanged 表示这次是不是我们改的——只恢复自己改过的。
   hwcPrev: null,
   hwcChanged: false,
-  };
+    lastSizeCheckAt: 0,
+};
 }
 
 /** 当前活动的屏幕上下文。pool 通过 setActive() 切换它。 */
@@ -703,8 +704,23 @@ async function refreshSfId() {
  * `dumpsys window displays` 里的 `cur=1592x720` 才是当前真实尺寸。
  * 实测代价约 50ms，比多截一张图（133-240ms）便宜。
  */
-async function refreshRealSize() {
+/**
+ * 刷新虚拟屏真实尺寸。
+ *
+ * **带 2 秒 TTL。** 原来每次 input() 都调它，等于每步多一次 `dumpsys window displays`
+ * （150-300ms）。连续操作时尺寸根本不会变，重复查纯属浪费。
+ *
+ * 实测账：一次 input 里有 5 次 adb 往返（alive 两次 + dumpsys display + getprop +
+ * refreshRealSize），150-300ms/次 → 0.75-1.5s。真正注入只要 20-50ms。
+ * 加 TTL 后连续操作可以省掉绝大部分。
+ */
+async function refreshRealSize(force = false) {
   if (!state.displayId) return false;
+  const now = Date.now();
+  if (!force && state.lastSizeCheckAt && (now - state.lastSizeCheckAt) < 2000) {
+    return false;   // 2 秒内查过了，直接用缓存值
+  }
+  state.lastSizeCheckAt = now;
   try {
     const out = await shell(`dumpsys window displays 2>/dev/null | grep -A2 "mDisplayId=${state.displayId} " | head -3`);
     const m = String(out || '').match(/cur=(\d+)x(\d+)/);
