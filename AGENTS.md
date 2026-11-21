@@ -63,8 +63,11 @@ bash framesrv/build.sh         # 取帧 dex
    设置、文件管理器、微信都是 `singleTask`。想投它们到后台屏，做不到。
    测试时用闲鱼、B站、浏览器、mpv、游戏这类非 singleTask 的。
 
-3. **`SET_CLIPBOARD` + `KEYCODE_PASTE` 打不进中文。**
-   要长按输入框 → 点「粘贴」。`adb shell input text` 对中文会失败。
+3. **中文输入必须走「写剪贴板 + `KEYCODE_PASTE`」，`adb shell input text` 对中文必抛 NPE。**
+   插件侧：`vdisplay_input { kind: "paste", text: "…" }`（实测能粘进 `abc中文测试abc`）。
+   人在手机上：双击或长按输入框 → 点「粘贴」。
+   ~~曾经写过「SET_CLIPBOARD + KEYCODE_PASTE 打不进中文」——那是早期版本的问题，已修复，别再用旧说法。~~
+   详见本文末尾「打字不要抢用户键盘」一节。
 
 4. **绝对不要用 `monkey` 启动 App。**
    实测 4/4 次会把系统的自动旋转打开。
@@ -76,7 +79,7 @@ bash framesrv/build.sh         # 取帧 dex
 
 ```bash
 # 建一块后台屏（MCP 工具，推荐）
-mcp__phone__vdisplay_start  {orientation: "portrait"}
+vdisplay_start  {orientation: "portrait"}
 
 # 投 App 到后台屏（用 --display，且 App 不能是 singleTask）
 adb shell am start --display <displayId> -n <pkg>/<activity>

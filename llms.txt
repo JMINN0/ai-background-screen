@@ -42,7 +42,8 @@ SurfaceFlinger 图层、独立的窗口栈、独立的输入焦点。物理屏�
 - **不能操作 `FLAG_SECURE` 的窗口**（银行、支付、部分视频 App）—— 截图全黑，这是 Android 硬边界
 - **不能给同一个 App 开两个实例**（`singleTask` 的限制），要开两个微信只能多用户
 - **不能完全拟人化**（`adb input` 注入的事件没有 MOVE、压力恒定），有风控的 App 需要真实输入
-- **不是 MCP server**，是 DSH Go 手机 App 的插件
+- **既是 DSH Go 手机 App 的插件，也是独立 MCP server**（`screen/bin/mcp-server.mjs`，stdio 协议，
+  可直接给 Claude Desktop / Cursor 这类宿主用，不依赖 DSH Go）
 
 ## 快速开始
 
