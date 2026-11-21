@@ -1,15 +1,18 @@
 {
-  "name": "dsh-go-plugin-screen",
-  "version": "2026.1105.1908",
-  "description": "Headless virtual display for the phone: run an app on a private display the user cannot see, screenshot it and inject taps/text without stealing focus.",
+  "name": "offscreen-android",
+  "version": "0.1.1",
+  "description": "Give an AI agent its own invisible Android screen. VirtualDisplay + scrcpy over adb, no root. MCP server and CLI included.",
   "keywords": [
-    "dsh",
-    "dsh-plugin",
-    "dsh-go",
     "android",
     "virtual-display",
+    "ai-agent",
+    "mcp",
     "scrcpy",
-    "automation"
+    "adb",
+    "computer-use",
+    "no-root",
+    "automation",
+    "headless"
   ],
   "license": "MIT",
   "author": "JMINNO",
@@ -19,14 +22,11 @@
     ".": "./src/index.js"
   },
   "files": [
-    "src",
-    "assets",
-    "cordis.patch.yml",
-    "dsh.plugin.json",
+    "src/",
+    "bin/",
+    "assets/",
     "README.md",
-    "LICENSE",
-    "bin",
-    "framesrv"
+    "LICENSE"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -45,7 +45,13 @@
     }
   },
   "bin": {
-    "vdisplay": "./bin/vdisplay.mjs",
-    "vdisplayd": "./bin/vdisplayd.mjs"
+    "offscreen-android": "./bin/vdisplay.mjs",
+    "offscreen-androidd": "./bin/vdisplayd.mjs",
+    "offscreen-android-mcp": "./bin/mcp-server.mjs"
+  },
+  "homepage": "https://github.com/JMINN0/offscreen-android#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JMINN0/offscreen-android.git"
   }
 }
