@@ -381,7 +381,27 @@ async function overlayStart(port) {
     // 拉起并把端口传进去
     await run('adb', ['-s', target, 'shell',
       `am start -n ${OVERLAY_PKG}/.MainActivity --ei port ${port}`], { timeout: 8000 });
-    return { ok: true, autoInstalled: inst.already === false };
+
+    /* **必须验证窗口真的出现了。**
+     *
+     * 2026-11-21 对抗审查抓到：原来这里 `am start` 退出码 0 就直接返回 ok，
+     * streamStart 随即打印「悬浮窗已浮起」—— 而 am start 成功**不等于**窗口存在。
+     * 隔壁「热成像助手」对话就是被这句假成功骗了：它以为浮窗起来了，
+     * 实际没有，用户看不到，它又没有任何工具能自检，最后写下「悬浮窗不可用」。
+     *
+     * 现在最多等 3 秒，用 dumpsys 确认窗口真的挂上了；确认不到就返回失败，
+     * 让调用方（和 AI）看到真话。
+     */
+    for (let i = 0; i < 6; i++) {
+      const r = await run('adb', ['-s', target, 'shell',
+        `dumpsys window windows 2>/dev/null | grep -c 'u0 ${OVERLAY_PKG}'`],
+        { timeout: 6000 }).catch(() => ({ stdout: '0' }));
+      if (Number(String(r.stdout).trim()) > 0) {
+        return { ok: true, autoInstalled: inst.already === false };
+      }
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    return { ok: false, why: 'am start 成功但窗口没出现（可能缺悬浮窗权限，或服务被系统拦了）' };
   } catch (e) {
     return { ok: false, why: String(e?.message || e).slice(0, 60) };
   }
