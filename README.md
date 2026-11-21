@@ -237,7 +237,7 @@ ADDVIEW_ERR IllegalStateException: Unknown pid=19074 uid=2000
 
 | 装什么 | `dsh plugin add` 能装吗 | 会激活插件吗 |
 |---|---|---|
-| 仓库根 `dsh-go-second-screen` | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
+| 仓库根 `offscreen-android` | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
 | `screen/` 子目录 | ✅ 能装 | ✅ **会激活**，工具真正出现 |
 | `web/` 子目录 | ✅ 能装 | ✅ 会激活 |
 | `watch/` 子目录 | ✅ 能装 | ✅ 会激活（但要先拷到 `$DSH_HOME/dsh-go/plugins/`）|
@@ -327,8 +327,8 @@ adb -s 127.0.0.1:5555 shell getprop vendor.display.vds_allow_hwc
 
 ```bash
 cd /root/workspace
-git clone https://github.com/JMINN0/dsh-go-second-screen.git
-cd dsh-go-second-screen
+git clone https://github.com/JMINN0/offscreen-android.git
+cd offscreen-android
 
 # Node（插件跑在 Node 里）
 node --version          # 需要 ^22.19 或 >=24
@@ -343,14 +343,14 @@ pip install opencv-python-headless      # 视觉，模板匹配/颜色/指纹/�
 **形态 A：只装后台屏（最省事，推荐第一次装）**
 
 ```bash
-cd /root/workspace/dsh-go-second-screen
+cd /root/workspace/offscreen-android
 dsh plugin --profile web add ./screen
 ```
 
 **形态 B：后台屏 + 浏览器 CDP**
 
 ```bash
-cd /root/workspace/dsh-go-second-screen
+cd /root/workspace/offscreen-android
 dsh plugin --profile web add ./screen
 dsh plugin --profile web add ./web
 ```
@@ -361,7 +361,7 @@ dsh plugin --profile web add ./web
 # 这个组合包的依赖用 link: 指向两个路径，所以两个仓库要并排放
 cd /root/workspace
 git clone https://github.com/JMINN0/dsh-go-plugin-adb.git
-cd dsh-go-second-screen
+cd offscreen-android
 dsh plugin --profile web add ./plugin
 ```
 
@@ -375,7 +375,7 @@ dsh plugin --profile web add ./plugin
 
 ```bash
 mkdir -p "$HOME/.dsh/dsh-go/plugins"
-cp -r /root/workspace/dsh-go-second-screen/watch "$HOME/.dsh/dsh-go/plugins/local-screen-watch"
+cp -r /root/workspace/offscreen-android/watch "$HOME/.dsh/dsh-go/plugins/local-screen-watch"
 dsh plugin --profile web add "$HOME/.dsh/dsh-go/plugins/local-screen-watch"
 ```
 
@@ -414,7 +414,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md" 2>/dev/null \
 **不装 DSH 也能用**（Claude Code、opencode、Codex、Cursor，只要能跑 bash）：
 
 ```bash
-cd /root/workspace/dsh-go-second-screen
+cd /root/workspace/offscreen-android
 node screen/bin/vdisplay.mjs start            # → displayId=81 之类
 node screen/bin/vdisplay.mjs launch com.tencent.mm
 node screen/bin/vdisplay.mjs shot --out /tmp/wx.jpg
@@ -426,7 +426,7 @@ node screen/bin/vdisplay.mjs stop
 `package.json` 的 `bin` 字段应该可行，我没在本机验证过），或者用别名：
 
 ```bash
-alias vdisplay="node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mjs"
+alias vdisplay="node /root/workspace/offscreen-android/screen/bin/vdisplay.mjs"
 ```
 
 **给别的 agent 宿主（MCP）**：
@@ -436,7 +436,7 @@ alias vdisplay="node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mj
   "mcpServers": {
     "background-screen": {
       "command": "node",
-      "args": ["/root/workspace/dsh-go-second-screen/screen/bin/mcp-server.mjs"]
+      "args": ["/root/workspace/offscreen-android/screen/bin/mcp-server.mjs"]
     }
   }
 }
@@ -446,7 +446,7 @@ alias vdisplay="node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mj
 
 ```bash
 # 1. 停掉常驻进程与屏
-node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mjs daemon stop   # CLI 形态
+node /root/workspace/offscreen-android/screen/bin/vdisplay.mjs daemon stop   # CLI 形态
 #   （插件形态会随引擎停止自动释放；也可以直接调用 vdisplay_stop 工具）
 
 # 2. 卸载插件（按装的时候的包名）
@@ -723,7 +723,7 @@ MediaProjection 替代 screencap、多 AI broker 完整版、跨进程租约。
 
 ```bash
 # 任何能跑 bash 的 agent
-node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mjs --json status
+node /root/workspace/offscreen-android/screen/bin/vdisplay.mjs --json status
 ```
 
 或者按 4.5 的 MCP 配置接到 Claude Desktop / Cursor 里。**它不依赖 DSH。**
@@ -913,7 +913,7 @@ adb -s 127.0.0.1:5555 shell 'dumpsys window displays | grep -A3 "Display: mDispl
 
 # 虚拟屏凭空消失
 # → 建它的进程退了。插件形态挂在引擎上，引擎重启屏就没了；CLI 形态看 daemon 还在不在
-node /root/workspace/dsh-go-second-screen/screen/bin/vdisplay.mjs daemon
+node /root/workspace/offscreen-android/screen/bin/vdisplay.mjs daemon
 
 # 中文打不进去
 # → 用 kind:"paste"（写剪贴板 + KEYCODE_PASTE）。input text 对中文必抛 NPE
@@ -1133,7 +1133,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 虚拟屏能跑 3D 游戏的那个修复只进了一边。合并后一处改一处生效。
 
 **名字的由来**：项目叫「后台屏」，因为实质是「一块用户看不见的屏」，
-不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `dsh-go-second-screen` 和包名
+不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `offscreen-android` 和包名
 `dsh-go-plugin-screen` **故意没改** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
 
 **配套的 adb 插件**（`dsh-go-plugin-adb`，单独仓库）：`screen/` 需要一个能连上的 adb。

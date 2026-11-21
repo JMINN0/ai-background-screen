@@ -1,4 +1,4 @@
-# dsh-go-second-screen
+# offscreen-android
 
 Let an AI **operate the phone in the background without taking your screen**.
 
@@ -84,8 +84,8 @@ Packages are split by **which subsystem they run in**:
 ### Install `screen/`
 
 ```bash
-git clone https://github.com/JMINN0/dsh-go-second-screen.git
-cd dsh-go-second-screen
+git clone https://github.com/JMINN0/offscreen-android.git
+cd offscreen-android
 dsh plugin --profile web add ./screen
 ```
 

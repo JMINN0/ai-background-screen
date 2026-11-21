@@ -14,7 +14,7 @@
  *   "mcpServers": {
  *     "background-screen": {
  *       "command": "node",
- *       "args": ["/root/workspace/dsh-go-second-screen/screen/bin/mcp-server.mjs"]
+ *       "args": ["/root/workspace/offscreen-android/screen/bin/mcp-server.mjs"]
  *     }
  *   }
  * }

@@ -1,5 +1,5 @@
 {
-  "name": "dsh-go-second-screen",
+  "name": "offscreen-android",
   "version": "0.1.0",
   "private": true,
   "description": "安卓「后台屏」：用虚拟屏让 AI 在后台操作手机，完全不抢用户主屏和键盘。无 root，基于 scrcpy + app_process。",
@@ -17,10 +17,10 @@
     "虚拟屏"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/JMINN0/dsh-go-second-screen#readme",
+  "homepage": "https://github.com/JMINN0/offscreen-android#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JMINN0/dsh-go-second-screen.git"
+    "url": "https://github.com/JMINN0/offscreen-android.git"
   },
   "workspaces": [
     "screen",
