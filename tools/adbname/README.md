@@ -1,62 +1,72 @@
-# adb 配对名：把 `root@localhost` 改成 `dsh@dsh-go`
+# adb 配对名：`root@localhost` → `dsh-go@go`
 
-## 为什么要这个
+## 为什么要改
 
-手机「设置 → 开发者选项 → 无线调试 → 已配对的设备」里，我们的 adb 显示成
-**`root@localhost`**。这个名字有两个问题：
+手机上「设置 → 开发者选项 → 无线调试 → 已配对的设备」里，我们的 adb 显示成
+**`root@localhost`**：
 
-1. **`root@` 前缀在风控眼里等于自报 root**（实际只是 proot 容器里的假 root）
-2. **认不出是谁的**，别人看到容易误删
+1. `root@` 前缀看着像自报 root（实际只是 proot 容器里的假 root）
+2. **认不出是谁的**，别人看到容易误删 —— 这是用户真实的诉求
 
-## 名字是怎么来的
+## 名字怎么来的（AOSP 源码）
 
-adb 配对时上报的客户端名 = `<用户名>@<主机名>`。
+`packages/modules/adb/crypto/rsa_2048_key.cpp` → `CalculatePublicKey()`：
 
-我们跑在 proot Ubuntu 容器里：`whoami` = root，`hostname` = localhost
-→ 拼成 `root@localhost`。
-
-`adb pair` **没有 `--name` 参数**，proot 里也改不了 hostname
-（`hostname dsh-go` 静默失败，需要 CAP_SYS_ADMIN）。
-
-## 解法：LD_PRELOAD 拦 gethostname / getpwuid
-
-`shim.c` 编译成一个 .so，在 adb 进程里把 `gethostname()` 和 `getpwuid(0)` 的返回值改掉：
-
-| 函数 | 原值 | 拦后 |
-|---|---|---|
-| `gethostname()` | localhost | **dsh-go** |
-| `getpwuid(0).pw_name` | root | **dsh** |
-
-实测（2026-11-21）：
-- `hostname` → dsh-go ✅
-- `whoami` → dsh ✅
-- Python `socket.gethostname()` → dsh-go ✅（说明是系统调用级拦截）
-- **adb 加载后功能完全正常**（`id -u` 仍返回 2000）✅
-
-## 怎么用
-
-**关键：名字只在「配对」那一刻生成**，配对完就存在手机里了。
-所以**只在重新配对时**需要 shim，平时跑 adb 不用带。
-
-```bash
-# 1. 手机上：设置 → 开发者选项 → 无线调试 → 点 root@localhost → 取消配对
-# 2. 手机上：无线调试 → 使用配对码配对设备 → 拿到 6 位码和端口
-# 3. 在 proot 里（注意带 LD_PRELOAD）：
-LD_PRELOAD=/root/workspace/dsh-go-second-screen/tools/adbname/libhname.so \
-  adb pair 127.0.0.1:<配对端口>
-# 输入 6 位码
-# 4. 配对完成后，手机上那条记录应该显示 dsh@dsh-go
+```cpp
+out->append(" ");
+out->append(sysdeps::GetLoginNameUTF8());
+out->append("@");
+out->append(sysdeps::GetHostNameUTF8());
 ```
 
-## 重新编译
+`packages/modules/adb/sysdeps/env.cpp`：
 
-```bash
-gcc -shared -fPIC -O2 -o libhname.so shim.c
+```cpp
+kHostNameEnvVar[] = "HOSTNAME";    // 先读环境变量
+kUserNameEnvVar[] = "LOGNAME";     // 非空就用，否则回退 gethostname/getlogin
 ```
 
-## 注意
+所以名字 = **`$LOGNAME@$HOSTNAME`**，两个环境变量都能直接覆盖。
 
-- 重新配对会生成**新的 adb key**（`~/.android/adbkey` 会被覆盖），
-  **之前的授权会失效**，需要重新 `adb connect` 一次并确认授权弹窗
-- 配对端口每次都会变（无线调试的随机端口），不是固定的 5555
-- 我们用的是 `adb tcpip 5555` 之后的回环连接，pair 只是首次授权用
+名字**藏在公钥串尾部**，随公钥一起发给手机，手机存进 `/data/misc/adb/adb_keys` 的第二列，
+Settings 只是原样显示那一列。
+
+## 怎么改（一行命令）
+
+```bash
+# 手机上：无线调试 → 使用配对码配对设备 → 记下 IP:端口 和 6 位码
+LOGNAME=dsh-go HOSTNAME=go adb pair 127.0.0.1:<配对端口> <6位码>
+```
+
+结果：`dsh-go@go`
+
+**实测验证**（2026-11-21，用 `adb keygen` 生成到临时目录，不动现有 key）：
+
+| 环境变量 | 生成的名字 |
+|---|---|
+| 不设 | `root@localhost` |
+| `LOGNAME=dsh-go HOSTNAME=go` | **`dsh-go@go`** |
+
+## 注意事项
+
+- **不要 `adb kill-server`**：名字是 client 进程算的，跟 server 无关，kill 反而断你现有连接
+- **不要改 `~/.android/adbkey.pub`**：客户端每次从私钥重算，不读这个文件
+- 旧的 `root@localhost` 条目要手动 Forget 掉（AOSP 的已配对设备页只有「删除」，没有重命名）
+- 重新配对可能**重新生成 adbkey** → 原有授权失效，需要重新 `adb connect` 并确认授权弹窗
+- 配对端口每次随机，跟连接端口 5555 不是同一个
+
+## 这个改动对风控有用吗
+
+**没有。** 第三方 App（包括 QQ）**读不到**这份列表：
+
+- `AdbManager` 整个类是 `@SystemApi`，相关方法要 `MANAGE_DEBUGGING` 权限
+- `MANAGE_DEBUGGING` 是 `signature|privileged`，只有系统签名 App 拿得到
+- `/data/misc/adb` 是 `adb_keys_file` 标签，`untrusted_app` 域连目录都进不去
+- 走 `dumpsys` 也要 `android.permission.DUMP`
+
+**所以这是「给人看」的问题，不是「给 App 识别」的问题。** 缓解的是误删风险，不是风控。
+
+## 旧方案（LD_PRELOAD，已不需要但保留）
+
+`shim.c` + `libhname.so` 用 LD_PRELOAD 拦 `gethostname`/`getpwuid`，也能达到同样效果。
+**但环境变量方案更简单，优先用环境变量。** LD_PRELOAD 留作万一环境变量被某些 adb 版本忽略时的兜底。
