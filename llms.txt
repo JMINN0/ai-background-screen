@@ -1,4 +1,7 @@
-# 安卓「后台屏」— 让 AI 在后台操作手机，不抢你的屏幕
+# 屏外 · Offscreen — 让 AI 用另一块屏，你的手机还是你的
+
+> 仓库：https://github.com/JMINN0/ai-background-screen
+> npm 包名是历史名 `offscreen-android`，安装 id 是 `dsh-go-plugin-screen`。
 
 > 一块用户看不见的 Android 虚拟屏（VirtualDisplay）。AI 在这块屏上运行任意 App、点击、输入、截图，
 > 用户的物理主屏（Display 0）完全不受影响 —— 不抢前台、不抢键盘、不弹窗口。
