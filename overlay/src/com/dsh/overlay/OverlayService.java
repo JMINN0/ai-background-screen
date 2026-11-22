@@ -892,6 +892,17 @@ public class OverlayService extends Service {
                     android.graphics.PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.START;
 
+            /* **给窗口一个带端口号的 title，让外部能按端口识别它。**
+             *
+             * 2026-11-22 独立复核抓到：所有窗口在 dumpsys 里长得一模一样
+             * （`Window{hash u0 com.dsh.overlay}`），于是外部只能数「有几个 dsh.overlay 窗口」，
+             * 分不清哪个窗口属于哪块屏。后果很严重：
+             *   · 旧窗口还挂在屏幕上时，新建屏的「浮窗可见」检查直接通过（假成功）；
+             *   · 用户看到的其实是上一块屏的画面，但自检一路 ✅。
+             * 加 title 之后外部可以精确匹配 `dsh-overlay:<port>`，一个端口对一个窗口。
+             */
+            try { lp.setTitle("dsh-overlay:" + port); } catch (Throwable t) { /* 老 API 忽略 */ }
+
             // 先给个临时位置，等第一帧拿到尺寸后 relayoutAuto() 会重排
             lp.x = EDGE_GUARD;   // 避开返回手势边缘区，见 clampPos
             lp.y = dp(120) + wins.size() * dp(60);

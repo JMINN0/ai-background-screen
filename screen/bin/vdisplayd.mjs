@@ -390,6 +390,59 @@ function startIdleWatch() {
       } catch { /* 对账失败不能拖垮守护进程 */ }
     }, 10_000).unref?.();
 
+    /*
+     * **推流看门狗：framesrv 死了自己拉起来。**
+     *
+     * 用户要求「尽可能自动」。原来 framesrv 崩掉之后，只有浮窗在无限重试等它，
+     * 没有任何角色负责把它拉起来 —— 浮窗等的是一个永远不回来的服务。
+     * 屏还活着的话，推流死了就是纯粹的可自愈故障，不该等用户发现。
+     *
+     * 每 15 秒查一次：屏在跑、但端口连不上 → 说明 framesrv 没了 → 重起它。
+     * 连续失败 3 次就停手并报错，避免在「屏本身有问题」时无限空转烧 CPU。
+     */
+    let streamFailStreak = 0;
+    setInterval(async () => {
+      try {
+        const st = await vd.status().catch(() => null);
+        if (!st?.running || !st.displayId) { streamFailStreak = 0; return; }
+
+        /* **先确认屏真的还在，再谈重起推流。**
+         *
+         * 2026-11-22 实机：屏（scrcpy server）已经死了，这里只重起 framesrv，
+         * 结果 framesrv 起来也没屏可镜像，白忙一场，日志只留一句「第 1 次重起」。
+         * status() 的 running 来自内部状态，不能当系统真值 —— 必须问系统。
+         */
+        const dispAlive = await vd.displayExists(st.displayId).catch(() => true);
+        if (!dispAlive) {
+          console.error('[vdisplayd] 看门狗：屏 ' + st.displayId + ' 已经没了，先修正状态（推流无处可挂）');
+          try { await vd.markLost(); } catch { /* 尽力而为 */ }
+          streamFailStreak = 0;
+          return;
+        }
+
+        const n = Number(st.displayId) || 0;
+        const port = 38820 + (((n % 20) + 20) % 20);
+        let up = false;
+        try {
+          const r = await fetch('http://127.0.0.1:' + port + '/status', { signal: AbortSignal.timeout(3000) });
+          up = r.ok;
+        } catch { up = false; }
+        if (up) { streamFailStreak = 0; return; }
+        if (streamFailStreak >= 3) {
+          console.error('[vdisplayd] 推流连续 3 次拉不起来（port ' + port + '），停止重试');
+          return;
+        }
+        streamFailStreak++;
+        console.error('[vdisplayd] 推流没在听（port ' + port + '），第 ' + streamFailStreak + ' 次重起');
+        try {
+          const T = await import('../src/tools.js');
+          await T.streamStart({ displayId: st.displayId, fps: 2, width: 360 });
+        } catch (e) {
+          console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
+        }
+      } catch { /* 看门狗自己不能崩 */ }
+    }, 15_000).unref?.();
+
 }
 
 /**

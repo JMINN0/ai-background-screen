@@ -62,11 +62,21 @@ export async function start(args) {
     try {
       const auto = await streamStart({ fps: 10, width: 480 });
       const t = String(auto?.text || '');
+      /* **只有浮窗真的浮起来才算 streamOk。**
+       *
+       * 2026-11-22 独立复核抓到：原来这里有 `else if (/ImageReader/.test(t))` 分支，
+       * 只要快路径（ImageReader 取帧）起来了就把 streamOk 设成 true ——
+       * 哪怕 streamStart 明确报了「悬浮窗没起来（原因）」。而且它只取 t 的第一行打印，
+       * 把失败原因整行丢掉。结果是打「已创建 AI 虚拟屏并开始创建悬浮窗 ✅」，
+       * 而屏幕上根本没有窗口。这是最典型的假成功。
+       */
       streamOk = /悬浮窗已浮起/.test(t);
       streamDetail = t.split('\n')[0] || '';
+      const overlayFailed = /悬浮窗没起来|窗口没出现/.test(t);
       if (streamOk) parts.push('✅ 推流已自动开启，悬浮窗浮起（能看到这块屏的画面）');
-      else if (/ImageReader/.test(t)) { parts.push('✅ 推流已自动开启（' + streamDetail + '）'); streamOk = true; }
-      else parts.push('⚠️ 推流没起来：' + t.split('\n').slice(0,2).join(' '));
+      else if (overlayFailed) parts.push('⚠️ 推流起来了但**悬浮窗没浮起来**：' + t.split('\n').slice(0, 3).join(' '));
+      else if (/ImageReader/.test(t)) parts.push('⚠️ 推流起来了，但没确认到浮窗：' + t.split('\n').slice(0, 3).join(' '));
+      else parts.push('⚠️ 推流没起来：' + t.split('\n').slice(0, 3).join(' '));
     } catch (e) {
       streamDetail = String(e?.message || e).slice(0, 60);
       parts.push('⚠️ 自动推流失败：' + streamDetail);
@@ -105,12 +115,50 @@ export async function start(args) {
       parts.push('⚠️ 没找到可投的桌面 App，屏是空的（自检会报画面帧可取失败）');
     }
 
-    // **快速自检**：逐项给证据，不靠「命令返回成功」判断
+    /* **快速自检 + 自动修复。**
+     *
+     * 用户要求「尽可能自动」。所以自检失败不是打印 ❌ 就结束，而是：
+     * 只修失败的那几项 → 等一会 → 复检一次 → 还是不过才报告。
+     * 全自动可用 autoRepair:false 关掉，也可以用 repairOnly 只修指定项。
+     */
     parts.push('正在快速自检…');
+    let sc = null;
     try {
-      const sc = await selfCheck({ displayId: r.displayId, expectPkg: castPkg || undefined });
+      sc = await selfCheck({ displayId: r.displayId, expectPkg: castPkg || undefined });
       for (const c of sc.checks) parts.push((c.ok ? '  ✅ ' : '  ❌ ') + c.name + '：' + c.evidence);
-      parts.push(sc.ok ? '创建完成并自检通过 ✅' : '⚠️ 自检没全过，标 ❌ 的那几项要修');
+
+      if (!sc.ok && args?.autoRepair !== false) {
+        const bad = sc.checks.filter((c) => !c.ok);
+        parts.push('自动修复中（' + bad.map((c) => c.name).join('、') + '）…');
+        const repairCtx = {
+          displayId: r.displayId, port: sc.port, castPkg,
+          autoRepair: args?.autoRepair, repairOnly: args?.repairOnly,
+        };
+        const rep = await autoRepair(bad, repairCtx);
+        for (const x of rep.repaired) parts.push('  🔧 ' + x);
+        for (const x of rep.skipped) parts.push('  ⏭ 跳过 ' + x);
+
+        /* **复检必须用修复后的 displayId。**
+         * 2026-11-22 复核抓到：原来这里仍传旧的 r.displayId，
+         * 而「虚拟屏存在」这项的修复会重建一块新屏、拿到新 id ——
+         * 于是复检用新屏的 running 判旧 id「存在」（假通过），
+         * 又按旧 id 的端口查推流（真失败），结果自相矛盾。 */
+        const recheckId = repairCtx.newDisplayId || r.displayId;
+        parts.push('复检（displayId=' + recheckId + '）…');
+        sc = await selfCheck({ displayId: recheckId, expectPkg: castPkg || undefined });
+        for (const c of sc.checks) {
+          const mark = c.ok ? '  ✅ ' : (c.unmeasured ? '  ⚠️ ' : '  ❌ ');
+          parts.push(mark + c.name + '：' + c.evidence);
+        }
+      }
+      /* 总评必须把「未测」说出来，不能把没量到的当成通过。 */
+      const unm = sc.unmeasured || 0;
+      if (sc.ok) {
+        parts.push(unm ? ('创建完成并自检通过 ✅（但有 ' + unm + ' 项没量到，见 ⚠️）')
+                       : '创建完成并自检通过 ✅');
+      } else {
+        parts.push('⚠️ 自检没全过（已自动修复一次仍未通过，标 ❌ 的项需要人工看）');
+      }
     } catch (e) {
       parts.push('⚠️ 自检本身出错：' + String(e?.message || e).slice(0, 60));
     }
@@ -130,6 +178,65 @@ export async function start(args) {
  *
  * 五项检查，每项给证据，不做主观判断：
  */
+/**
+ * **自检失败时自动修复一次。**
+ *
+ * 用户 2026-11-22：「还是得做到尽可能的自动，除非 AI 自己觉得要手动只开启一些功能」。
+ * 所以默认全自动，但留开关给调用方按需关掉。
+ *
+ * 每个检查项对应一个修复动作，只修失败的那些项，不盲目重来全套 ——
+ * 全套重来会把已经正常的部分也拆掉，反而更慢更不稳。
+ *
+ * @param {object} checks   失败的检查项列表
+ * @param {object} ctx      { displayId, port, castPkg, autoRepair, repairOnly }
+ * @returns {Promise<{repaired: string[], skipped: string[]}>}
+ */
+export async function autoRepair(checks, ctx = {}) {
+  const repaired = [];
+  const skipped = [];
+  if (ctx.autoRepair === false) return { repaired, skipped: checks.map(c => c.name) };
+  const only = Array.isArray(ctx.repairOnly) && ctx.repairOnly.length ? new Set(ctx.repairOnly) : null;
+
+  for (const c of checks) {
+    if (only && !only.has(c.name)) { skipped.push(c.name); continue; }
+    try {
+      if (c.name === '虚拟屏存在') {
+        const r = await vd.start({});
+        if (r?.ok) {
+          /* **重建后 displayId 变了，必须把新的带回去。**
+           * 2026-11-22 复核抓到：原来自检复检仍用调用方传进来的旧 displayId，
+           * 于是 ① 拿新屏的 running 判「虚拟屏存在」通过并打印旧 id（假通过），
+           * ②③ 按旧 id 的端口查（必然失败），⑥ 按旧 mDisplayId 查前台（空）。
+           * 修完还是错的 —— 比不修更误导。
+           */
+          ctx.newDisplayId = r.displayId;
+          repaired.push(c.name + '（已重建屏 displayId=' + r.displayId + '）');
+        }
+      } else if (c.name === '推流在监听' || c.name === '画面帧可取') {
+        await streamStart({ displayId: ctx.displayId, fps: 2, width: 360 });
+        await new Promise((res) => setTimeout(res, 2000));
+        repaired.push(c.name + '（已重起推流）');
+      } else if (c.name === '画面非全黑' || c.name === '画面是预期的 App') {
+        if (ctx.castPkg) {
+          await launch({ pkg: ctx.castPkg });
+          await new Promise((res) => setTimeout(res, 1500));
+          repaired.push(c.name + '（已重投 ' + ctx.castPkg + '）');
+        } else skipped.push(c.name);
+      } else if (c.name === '悬浮窗可见') {
+        const p = ctx.port || 0;
+        await overlayStop(p || undefined).catch(() => {});
+        await new Promise((res) => setTimeout(res, 500));
+        await overlayStart(p || 0);
+        await new Promise((res) => setTimeout(res, 800));
+        repaired.push(c.name + '（已重启浮窗）');
+      } else skipped.push(c.name);
+    } catch (e) {
+      skipped.push(c.name + '（修复失败：' + String(e?.message || e).slice(0, 40) + '）');
+    }
+  }
+  return { repaired, skipped };
+}
+
 /**
  * 找一个「投上去一定有画面」的 App —— 优先桌面（launcher）。
  *
@@ -160,6 +267,9 @@ async function pickHomeLike() {
 export async function selfCheck(args = {}) {
   const checks = [];
   const push = (name, ok, evidence) => checks.push({ name, ok: !!ok, evidence: String(evidence || '') });
+  /* 「量不了」既不是通过也不是失败，必须单独一类。
+   * 混进 ok 里就是假成功，混进 fail 里就是假失败（会触发不必要的自动修复）。 */
+  const pushUnmeasured = (name, why) => checks.push({ name, ok: false, unmeasured: true, evidence: String(why || '') });
   const displayId = args.displayId != null ? String(args.displayId) : null;
 
   // ① 屏在不在
@@ -169,13 +279,16 @@ export async function selfCheck(args = {}) {
   push('虚拟屏存在', !!(st?.running && wantId), wantId ? ('displayId=' + wantId) : '拿不到 displayId');
 
   // ② 推流在听
+  /* **端口优先问账本，问不到才用公式。**
+   *
+   * 2026-11-22 复核抓到：这里原来 `import { getScreenPort } from './stream.js'`，
+   * 而那个函数全库不存在 —— 永远静默走公式兜底。进程里明明有 screenPorts 这个
+   * 真账本（streamStart 成功时写入），自检却不读它。
+   * 后果：端口被别的屏占用时实际端口 ≠ 公式端口，自检要么假失败，要么量到别人的帧。
+   */
   let port = 0;
-  try {
-    const { getScreenPort } = await import('./stream.js');
-    port = getScreenPort ? (getScreenPort(wantId) || 0) : 0;
-  } catch { /* 没这个接口就走下面兜底 */ }
+  try { port = screenPorts.get(Number(wantId)) || 0; } catch { /* 账本没有就走公式 */ }
   if (!port) {
-    // 兜底：按确定性公式算（和 framesrv.js 的 allocPort 一致）
     const n = Number(wantId) || 0;
     port = 38820 + (((n % 20) + 20) % 20);
   }
@@ -213,8 +326,15 @@ export async function selfCheck(args = {}) {
       bright = Number(String(out.stdout).trim());
     } catch { /* 算不出来就跳过这一项，不误判 */ }
   }
+  /* **量不了就说量不了，不能算通过。**
+   *
+   * 2026-11-22 复核抓到：原来解码失败时 `push(..., true, '跳过')` ——
+   * PIL 缺失 / curl 超时 / 文件写不进，任何一种都变成一行 ✅，
+   * 和「真的量了亮度」在输出上完全无法区分。全黑的屏 + 解码失败 = 用户看到 ✅。
+   * 现在单独记 skipped，总评里必须出现「有 N 项未测」。
+   */
   if (bright >= 0) push('画面非全黑', bright > 8, '平均亮度=' + bright);
-  else push('画面非全黑', true, '跳过（无法解码，不当作失败）');
+  else { pushUnmeasured('画面非全黑', '无法解码这一帧（PIL/curl 失败或超时）'); }
 
   /* ⑤ 浮窗窗口在不在 —— 而且**真的在屏幕上看得见的地方**。
    *
@@ -230,10 +350,27 @@ export async function selfCheck(args = {}) {
     const { promisify } = await import('node:util');
     const run = promisify(execFile);
     const target = await adbTarget();
+    /* **按端口精确匹配窗口。**
+     * 2026-11-22 复核抓到：原来数的是全局 `u0 com.dsh.overlay` 窗口，
+     * 旧窗口还在就判新屏 ok —— 用户看到的其实是上一块屏。
+     * 现在 OverlayService 给每个窗口设了 title `dsh-overlay:<port>`，按它精确数。
+     */
+    /* 注意字符串拼接位置：`'dsh-overlay:' + port` 写成全引号形式会被当成字面量，
+     * grep 收到的是 `'dsh-overlay:' + port` 这串字符，永远匹配不到。
+     * 2026-11-22 踩到：窗口 title 明明存在（dsh-overlay:38827），自检却报「窗口数=0」。 */
     const r = await run('adb', ['-s', target, 'shell',
-      "dumpsys window windows 2>/dev/null | grep -A3 'u0 com.dsh.overlay'"], { timeout: 8000 }).catch(() => ({ stdout: '' }));
+      "dumpsys window windows 2>/dev/null | grep -B1 -A6 'dsh-overlay:" + port + "'"],
+      { timeout: 8000 }).catch(() => ({ stdout: '' }));
     const txt = String(r.stdout || '');
-    winCount = (txt.match(/Window\{/g) || []).length;
+    /* **数 Window{ 条目，不数字符串出现次数。**
+     * 2026-11-22 踩到：一个窗口里 `dsh-overlay:38829` 这串会出现 5 次
+     * （title、mAttrs、mFrame 等多处引用），按字符串计数会把 1 个窗口数成 5 个。
+     * 证据数字错了比没有证据更糟 —— 它看起来精确，实际是假的。
+     */
+    const winMatches = txt.match(/Window\{[a-f0-9]+ u0 dsh-overlay:\d+\}/g) || [];
+    const mine = winMatches.length;
+    const legacy = !/dsh-overlay:/.test(txt);
+    winCount = legacy ? (txt.match(/Window\{/g) || []).length : mine;
     // 屏幕尺寸
     const sz = await run('adb', ['-s', target, 'shell', 'wm size'], { timeout: 6000 }).catch(() => ({ stdout: '' }));
     const m = String(sz.stdout || '').match(/(\d+)x(\d+)/);
@@ -282,8 +419,9 @@ export async function selfCheck(args = {}) {
       '前台=' + (focus || '(空)') + ' 期望=' + args.expectPkg);
   }
 
+  const unmeasured = checks.filter(c => c.unmeasured).length;
   const allOk = checks.every(c => c.ok);
-  return { ok: allOk, checks, port, displayId: wantId };
+  return { ok: allOk, checks, port, displayId: wantId, unmeasured };
 }
 
 export async function launch(args) {
@@ -608,13 +746,13 @@ async function overlayStart(port) {
      * 现在最多等 3 秒，用 dumpsys 确认窗口真的挂上了；确认不到就返回失败，
      * 让调用方（和 AI）看到真话。
      */
+    /* 按端口验证，不是按包名数 —— 否则旧窗口会让新调用直接 ok。 */
     for (let i = 0; i < 6; i++) {
       const r = await run('adb', ['-s', target, 'shell',
-        `dumpsys window windows 2>/dev/null | grep -c 'u0 ${OVERLAY_PKG}'`],
+        `dumpsys window windows 2>/dev/null | grep -c 'dsh-overlay:${port}'`],
         { timeout: 6000 }).catch(() => ({ stdout: '0' }));
-      if (Number(String(r.stdout).trim()) > 0) {
-        return { ok: true, autoInstalled: inst.already === false };
-      }
+      const cnt = Number(String(r.stdout).trim());
+      if (cnt > 0) return { ok: true, autoInstalled: inst.already === false, wins: cnt };
       await new Promise((res) => setTimeout(res, 500));
     }
     return { ok: false, why: 'am start 成功但窗口没出现（可能缺悬浮窗权限，或服务被系统拦了）' };
