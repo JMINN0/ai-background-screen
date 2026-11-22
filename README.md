@@ -614,6 +614,52 @@ MediaProjection 替代 screencap、多 AI broker 完整版、跨进程租约。
 | `vdisplay_stream` | 把画面以 1–15fps（默认 2）JPEG 推给胶囊/悬浮窗，实测约 0.30 核、29KB/s |
 | `vdisplay_stream_stop` | 停止推流 |
 
+### 6.8.1 把 AI 的状态画在**浮窗边框**上（1）
+
+| 工具 | 一句话 |
+|---|---|
+| `vdisplay_edge` | 让用户一眼看出 AI 现在什么状态。**这是浮窗的边，不是手机主屏的边** |
+
+**大部分情况你不用调它。** 插件自己会设：
+
+```
+你调 input / launch / tap_text / tap_image / tap_color  → 自动青色环绕（working）
+建屏并自检通过                                          → 自动绿色横扫（done）
+一次连续操作停下来 8 秒                                  → 自动闪 4 秒绿再收回
+```
+
+**只有三种情况要你调**，因为系统不知道：
+
+| 何时 | `state` | 用户看到 |
+|---|---|---|
+| 遇到阻碍但不致命：验证码、按钮找不到、页面超时 | `warning` | 黄色慢呼吸 |
+| 明确失败，需要用户介入 | `error` | 红色双拍脉冲 |
+| **可能已出大事**：风控迹象、账号异常、支付前最后确认 | `critical` | 粗红边、低频闪 |
+
+```js
+vdisplay_edge { state: "warning", reason: "出现滑块验证码，等 30 秒再试" }
+vdisplay_edge { state: "critical", reason: "检测到账号异常，停止操作" }
+vdisplay_edge { state: "idle" }   // 问题解决了，清掉
+```
+
+**你手动设的 warning/error/critical 有闩锁**：在它过期前，自动的 working/done
+不会把它盖掉。所以报了就有效，不会闪一下变回青色。
+
+三条使用原则：
+
+1. **宁可少报** —— 用户会认真对待这个颜色，什么小事都报 critical，真出事时他就不看了
+2. **报完要收** —— 解决了记得 `idle`，或等 TTL（warning 15 秒 / error 20 秒 / critical 60 秒）
+3. **critical 当刹车** —— 亮起来就停手等用户看，不要继续试
+
+**颜色和运动是双编码**（红绿色盲占男性约 8%，所以每种状态的运动方式也不同）：
+
+```
+working   匀速环绕流动      done      沿边双向合拢
+warning   不对称慢呼吸      error     双拍「咚-咚」
+critical  粗边低频闪（1.43Hz，低于 WCAG 的 3Hz 上限）
+```
+
+
 ### 6.9 多屏池（5）
 
 | 工具 | 一句话 |
