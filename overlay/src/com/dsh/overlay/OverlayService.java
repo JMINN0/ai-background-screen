@@ -678,6 +678,8 @@ public class OverlayService extends Service {
         final int port;
         volatile boolean alive = true;
         volatile boolean looping = false;
+        /** MJPEG 长连接连续失败次数。到 3 次改用单帧轮询兜底。 */
+        int mjpegFails = 0;
 
         View root;
         ImageView img;
@@ -1283,13 +1285,67 @@ int dx = (int)(e.getRawX() - downX);
                 @Override public void run() {
                     while (alive && running) {
                         try {
-                            if (readMjpeg()) { sleep(600); continue; }
-                        } catch (Throwable t) { /* 流断了，重连 */ }
+                            /* **MJPEG 断了就退回单帧轮询。**
+                             *
+                             * 2026-11-22 复核抓到：stream.js 里写着「悬浮窗会走进回退轮询」，
+                             * 而浮窗只连 /stream.mjpg，根本没有 /frame.jpg 兜底 —— 注释描述的东西不存在。
+                             *
+                             * 长连接在某些网络栈/省电策略下会莫名断掉，而单帧 GET 只要服务活着就成功。
+                             * 连续失败 3 次以上改用轮询，轮询几次成功一次就回长连接（长连接延迟更低）。
+                             */
+                            if (mjpegFails >= 3) {
+                                if (readOneFrame()) {
+                                    mjpegFails = 0;      // 能取到帧就回长连接
+                                    sleep(400);
+                                    continue;
+                                }
+                                sleep(800);
+                                continue;
+                            }
+                            if (readMjpeg()) { mjpegFails = 0; sleep(600); continue; }
+                            mjpegFails++;
+                        } catch (Throwable t) { mjpegFails++; }
                         sleep(600);
                     }
                 }
             }, "overlay-" + port).start();
         }
+
+        /**
+         * **单帧兜底：GET /frame.jpg 取一张。**
+         *
+         * MJPEG 长连接断了的时候用它 —— 只要服务活着，单次 GET 就能拿到当前帧。
+         * 比长连接多花一次连接开销，但比「什么都没显示」强太多。
+         *
+         * @return true = 取到并显示了
+         */
+        boolean readOneFrame() {
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/frame.jpg").openConnection();
+                c.setConnectTimeout(2000);
+                c.setReadTimeout(4000);
+                c.setUseCaches(false);
+                if (c.getResponseCode() != 200) return false;
+                java.io.InputStream in = c.getInputStream();
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(64 * 1024);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                byte[] jpg = bo.toByteArray();
+                if (jpg.length < 200) return false;
+                // JPEG 头校验：0xFF 0xD8
+                if ((jpg[0] & 0xFF) != 0xFF || (jpg[1] & 0xFF) != 0xD8) return false;
+                lastOk = System.currentTimeMillis();
+                showJpeg(jpg);
+                return true;
+            } catch (Throwable t) {
+                return false;
+            } finally {
+                try { if (c != null) c.disconnect(); } catch (Throwable t) { /* ignore */ }
+            }
+        }
+
 
         /** MJPEG 长连接：一有新帧立刻显示。返回 true 表示「连上过但断了」。 */
         boolean readMjpeg() {
