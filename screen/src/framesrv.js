@@ -58,7 +58,12 @@ function pkgRoot() {
 /** 找编译好的 dex。没有就返回 null（调用方降级）。 */
 function findDex() {
   const root = pkgRoot();
-  for (const rel of ['../framesrv/build/classes.dex', '../framesrv/classes.dex']) {
+  /* **npm 包里没有 framesrv/ 源码目录**，所以优先找打进 assets 的预编译 dex。
+   * 2026-11-22 发现：0.1.0/0.1.1 发到 npm 后，陌生人装下来走不到建屏这一步 —— 
+   * framesrv.js 只找 ../framesrv/build/*.dex，而包的 files 里没有 framesrv/。
+   * 现在 assets/framesrv.dex 是随包发布的构建产物，源码目录仍然保留给本地开发。
+   */
+  for (const rel of ['../assets/framesrv.dex', '../framesrv/build/classes.dex', '../framesrv/classes.dex']) {
     const p = join(root, rel);
     if (existsSync(p)) return p;
   }

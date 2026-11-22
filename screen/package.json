@@ -1,6 +1,6 @@
 {
   "name": "offscreen-android",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Give an AI agent its own invisible Android screen. VirtualDisplay + scrcpy over adb, no root. MCP server and CLI included.",
   "keywords": [
     "android",
@@ -46,7 +46,7 @@
   },
   "bin": {
     "offscreen-android": "./bin/vdisplay.mjs",
-    "offscreen-androidd": "./bin/vdisplayd.mjs",
+    "offscreen-android-daemon": "./bin/vdisplayd.mjs",
     "offscreen-android-mcp": "./bin/mcp-server.mjs"
   },
   "homepage": "https://github.com/JMINN0/offscreen-android#readme",
