@@ -55,8 +55,6 @@ class EdgeView extends View {
     /** 缓存路径长度：尺寸不变时不重算（原来每帧都算）。 */
     private float cachedPer = 0;
     private int cachedW = -1, cachedH = -1;
-    /** 上一帧的绘制时刻，用来限帧。 */
-    private long lastDrawAt = 0;
 
     EdgeView(Context c) {
         super(c);
@@ -70,8 +68,8 @@ class EdgeView extends View {
          *
          * 2026-11-22 对抗审查指出：蒙版模糊每帧都要真算一遍，
          * 而且这个动画是压在**正在播放的视频**上面的 —— 掉帧风险真实存在。
-         * 改成「三层描边」模拟光晕：外宽内窄、透明度递减。
-         * 视觉上几乎一样，成本从「每帧一次模糊」降到「多画三个圆角矩形」。
+         * 改成「两层描边」模拟光晕：内层细且亮、外层宽且淡。
+         * 视觉上几乎一样，成本从「每帧一次高斯模糊」降到「多画一个圆角矩形」。
          */
         halo.setStyle(Paint.Style.STROKE);
         halo.setStrokeWidth(dp(8f));
@@ -165,10 +163,14 @@ class EdgeView extends View {
          * 边框光效的位移量很小，30fps 已经够顺；60fps 在视频上白烧一倍。
          * 用 postInvalidateDelayed 估算下一帧时间，而不是立刻 invalidate。
          */
-        long now2 = SystemClock.uptimeMillis();
-        long wait = 33 - (now2 - lastDrawAt);
-        if (wait < 1) wait = 1;
-        postInvalidateDelayed(wait);
+        /* **固定 33ms 延时 = 约 30fps。**
+         *
+         * wait 恒被钳到 1 → postInvalidateDelayed(1) 等于每个 vsync 都画，
+         * 限帧完全没生效，跟改之前一样 60fps。
+         *
+         * 改成固定 33ms：不依赖任何状态，行为确定。
+         */
+        postInvalidateDelayed(33);
     }
 
     /** working：一段光沿边框匀速跑圈 + 很淡的底边（让人知道 AI 在干活）。 */
