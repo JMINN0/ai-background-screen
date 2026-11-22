@@ -613,7 +613,25 @@ function startIdleWatch() {
        * 为什么不是 1 次：刚建屏、刚投 App 的那几秒 mHasContent 也可能是 false，
        * 单次误判会把好好的屏拆掉重建，比黑屏更糟。
        */
-      const hc = await vd.displayHasContent(st.displayId).catch(() => null);
+        /* **建屏/自检进行中时，绝不能判「屏空了要重建」。**
+         *
+         * 2026-11-22 对抗审查抓到的 P0，也是用户「浮窗没了但说已创建」的真根因：
+         * 这段（③）原来**完全没有 opBusy 保护** —— opBusy 只挡住了 ④ 推流看门狗。
+         *
+         * 致命链条：
+         *   · 一次 start 要 60-120 秒（代码自己在 :668 写着）
+         *   · 建屏期间 mHasContent=false 是**正常状态**（注释 :614 自己写了）
+         *   · 连续 3 个 tick（30 秒）就判空 → 关窗口 + 停推流 + T.start 重建
+         *   · 而那个 T.start 要抢全局互斥锁，锁还在正在跑的 start 手里
+         *     → 等 90 秒 → 503
+         *   · 最终：屏被拆了、窗口关了、新的没建起来，用户看到窗凭空消失
+         *
+         * 所以这里必须先看 opBusy：只要有写操作在跑，这一轮直接跳过。
+         */
+        if (opBusy > 0) {
+          return;   // 建屏进行中，mHasContent=false 是正常的
+        }
+        const hc = await vd.displayHasContent(st.displayId).catch(() => null);
       if (hc === false) {
         emptyStreak++;
         if (emptyStreak >= 3) {
@@ -628,6 +646,14 @@ function startIdleWatch() {
               const fsrv = await import('../src/framesrv.js');
               await fsrv.stop(Number(st.displayId));
             } catch { /* ignore */ }
+            /* **必须先 markLost，否则 T.start 会复用那块死屏。**
+             *
+             * 2026-11-22 对抗审查指出：`alive()` 只检查 displayId 和 SF id 存在，
+             * **不看内容** —— 一块 mHasContent=false 的屏，在 alive() 眼里是「活着」的。
+             * 所以直接 T.start() 会走「复用」分支，返回 ok 而且什么都不做，
+             * 下一轮 tick 又判空、又重建，无限循环。
+             */
+            try { await vd.markLost(); } catch { /* 尽力而为 */ }
             await T.start({});
           } catch (e) {
             console.error('[vdisplayd] 重建失败：' + String(e?.message || e).slice(0, 80));

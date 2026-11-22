@@ -57,6 +57,24 @@
 - [ ] F2. README / README.en / llms.txt 补 `vdisplay_edge` 说明
 - [ ] F3. npm 发布（**用户要求全部优化完再发**）
 
+## I. 第六轮对抗审查（23:55）—— 找到用户 bug 的真根因
+
+- [x] I1. 🔴 **③ 内容检测没有 opBusy 保护**（真根因）
+      建屏期间 mHasContent=false 是正常的，3 个 tick（30 秒）就判空 → 拆屏 + 关窗
+      → T.start 抢锁等 90 秒 → 503 → 用户看到窗凭空消失
+      → 已加 opBusy 保护和醒目注释
+- [x] I2. 重建前没 markLost → T.start 走复用分支复用死屏 → 无限循环
+      → 已加 vd.markLost()
+- [x] I3. tool-spec 说「操作开始→working」，和 AGENTS.md 的「不要手动调」矛盾
+      而且 AI 调 working 会解除 critical 保护 → 两处都修了
+- [x] I4. done 自动触发只有「建屏成功」一处 → 用户发完消息没有绿边
+      → settleIfIdle 现在先亮 4 秒绿色 done 再回 idle
+- [x] I5. done TTL 2500ms + 3 秒轮询 → 17% 概率一次都不亮 → TTL 改 4000ms（500ms 轮询下能看 8 次）
+- [ ] I6. multitouch 标记画不出来（取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
+- [ ] I7. 两套标记系统（framesrv 8 个/15 秒 vs stream.js 3 个/60 秒）
+      stream.js 那套可能污染 AI 自己的截图 —— **要实测确认**
+- [ ] I8. framesrv 的 displayAlive() 反射失败时 return true → 反射失效的机型上永不退出
+
 ## H. 第五轮复核发现的（23:40）
 
 - [x] H1. ✅ **settleIfIdle 在 proot 里永远读不到设备文件**（readFileSync → ENOENT 被吞）

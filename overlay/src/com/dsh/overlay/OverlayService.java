@@ -1847,7 +1847,7 @@ int dx = (int)(e.getRawX() - downX);
 
           void refreshLabel() {
               if (label == null) return;
-              refreshEdge();
+                // refreshEdge 由独立的 500ms 定时器驱动（startEdgeTimer），此处不再重复调
                 /* **重连中就别用正常内容覆盖它。**
                  *
                  * 2026-11-22 对抗审查抓到：setReconnecting(true) 只在连续第 3 次失败时

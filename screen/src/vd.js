@@ -1843,10 +1843,18 @@ export function noteManualEdge(mode, ttlMs) {
     if (mode === 'critical') ms = Math.max(60_000, ttl > 0 ? ttl : 0);
     else ms = Math.max(5_000, ttl > 0 ? ttl : 20_000);
     _manualUntil = Date.now() + ms;
-  } else {
+  } else if (mode === 'idle') {
+    /* 只有明确 idle 才清除保护。 */
     _manualMode = '';
     _manualUntil = 0;
   }
+  /* **收到 working/done 时既不清除、也不建立保护。**
+   *
+   * 2026-11-22 对抗审查抓到：原来这里是 `else { _manualMode='' }`，
+   * 于是 AI 只要调一次 `vdisplay_edge working`（tool-spec 里还写着该这么调），
+   * 就会立刻把 critical 的保护解除 —— 然后下一次自动 working 覆盖掉那条红边。
+   * 用户刚看到的「可能出事了」一闪就没。
+   */
 }
 
 /** AI 手动设的严重状态现在还在生效吗？ */
@@ -1888,7 +1896,7 @@ export async function flushAutoEdge(phase) {
   } catch { /* 读不到就当没有，往下走 */ }
   const now = Date.now();
   const color = phase === 'done' ? '#34D399' : '#7FD9FF';
-  const ttl = phase === 'done' ? 2500 : 0;
+  const ttl = phase === 'done' ? 4000 : 0;
   let edgePort2 = 0;
   try {
     const p1 = state.port;
@@ -1954,8 +1962,22 @@ async function settleIfIdleByFile(idleMs) {
   const at = Number(parts[3]) || 0;
   if (!at) return { skipped: 'no-timestamp' };
   if (Date.now() - at < idleMs) return { skipped: 'still-active' };
-  adb(['shell', 'rm -f /data/local/tmp/dshframe/edge']).catch(() => {});
-  return { ok: true, phase: 'idle' };
+  /* **收尾时先亮一下绿色「完成了」再回 idle。**
+   *
+   * 2026-11-22 对抗审查指出：用户要的「任务完成来个提示完成了」，
+   * 而自动 done 原来只挂在「建屏成功」一处 —— 让 AI 发完一条消息、
+   * 点完一串按钮，结束之后没有任何绿色提示。
+   *
+   * 这里补上：一次连续操作停下来（8 秒无新操作）= 这一轮干完了 → 亮绿。
+   * TTL 给 4 秒，浮窗已经改成 500ms 轮询，够看清。
+   */
+  const now2 = Date.now();
+  const green = 'done|#34D399|1|' + now2 + '|4000|' + (line.split('|')[5] || '0');
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+    + 'printf "%s" "' + green + '" > /data/local/tmp/dshframe/edge.tmp && '
+    + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
+    .catch(() => {});
+  return { ok: true, phase: 'done-then-idle' };
 }
 
 /**
