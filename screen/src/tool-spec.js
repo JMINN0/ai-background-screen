@@ -58,7 +58,7 @@ export function startSpec() {
       dpi: { type: 'integer', description: '密度，默认 320。' },
       orientation: { type: 'string', description: '方向，默认 "auto"（按物理屏比例，最接近真机，推荐）。"auto" 不要改；"landscape"/"portrait" 只交换宽高；"square" 正方形（慎用：16:9 的游戏会按高度算出更宽的画布，右边被裁）'  },
       systemDecorations: { type: 'boolean', description: '默认 false。false 时虚拟屏上不含二级桌面、导航栏和权限弹窗，AI 截图更干净（scrcpy ≥3.1）。改这个值会重建屏。' },
-      ime: { type: 'string', description: '虚拟屏的输入法策略。默认 "hide"：不占用系统输入法，你在主屏打字完全不受影响，但**虚拟屏上也打不进中文**（剪贴板粘贴依赖 IME 的 InputConnection，IME 被隐藏就没有这个连接）。传 "local"：把输入法渲染到虚拟屏上，中文能正常输入和粘贴，代价是虚拟屏上有输入框聚焦时可能短暂抢走系统输入法焦点。需要往 App 里输中文时用 "local"。' },
+      ime: { type: 'string', description: '虚拟屏的输入法策略。**默认 "hide"，不要随意改。** hide：不占用系统输入法，用户在主屏打字完全不受影响；代价是虚拟屏上打不进中文（剪贴板粘贴依赖 IME 的 InputConnection）。 local：中文能输进去，但**会把系统输入法焦点抢到虚拟屏上** —— 2026-11-22 实测确认：用户正在主屏打字时被打断，键盘跑到了虚拟屏那边。 只有确实需要往虚拟屏的 App 里输中文时才用 local，**用完立刻 stop 重建成 hide**，不要长时间挂着。 更安全的替代：能不让用户看到就不输字，或者先问用户「我要在你的虚拟屏里输中文，可能打断你打字，现在方便吗」。' },
       hwc: { type: 'string', description: '是否让硬件合成器（HWC）参与虚拟屏合成。"auto"（默认）：仅当本机 vendor.display.vds_allow_hwc=1 时自动开启；"on"：强制尝试；"off"：不碰。开启后 3D 游戏（SurfaceView 渲染）能正常出画面，否则全黑。这是全局 SurfaceFlinger 属性，stop 时会恢复原值。' },
     },
     output: out('一段逐项播报：建屏结果、推流和悬浮窗状态、投了哪个 App、五项自检的每项证据、'

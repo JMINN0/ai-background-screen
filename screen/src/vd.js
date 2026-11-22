@@ -1814,9 +1814,18 @@ export async function syncRiskLevel() {
  */
 export function setEdge(mode, o = {}) {
   const M = String(mode || '').trim().toLowerCase();
+  /* **颜色按语义固定，不由 AI 随便传。**
+   *
+   * 2026-11-22 动效复核的两条修正：
+   *   · working 从 #00C8FF 降到 #7FD9FF —— 原来的蓝通道顶格，
+   *     叠上辉光后会变成白条，L* 83 在深色背景上比标签还抢注意力，
+   *     「AI 在干活」这种常态提示不该比内容更显眼。
+   *   · done 从 #34C759 改 #34D399 —— 和状态标签里风控 L0 的绿统一，
+   *     一个产品只能有一个「成功的绿」，否则用户会以为是两种不同的好事。
+   */
   const DEFAULT_COLOR = {
-    working: '#00C8FF',
-    done: '#34C759',
+    working: '#7FD9FF',
+    done: '#34D399',
     warning: '#FFCC00',
     error: '#FF3B30',
     critical: '#D70015',

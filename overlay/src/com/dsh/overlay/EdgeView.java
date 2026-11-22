@@ -77,11 +77,28 @@ class EdgeView extends View {
 
     void setMode(int m, int col, float inten, long durationMs) {
         boolean wasIdle = (mode == MODE_IDLE);
-        mode = m;
+        boolean sameMode = (mode == m);
+
+        /* **同一个状态重复设置时，绝对不重置动画起点。**
+         *
+         * 2026-11-22 独立复核抓到：这里原来无条件 `startedAt = now()`，
+         * 而 refreshEdge() 挂在 3 秒定时器上 —— 于是 working 的光斑每 3 秒
+         * 跳回起点重跑一圈，done 会重播两三次，看起来像卡帧。
+         * 用户要的是「持续状态」，不是「每 3 秒重播一次」。
+         *
+         * 只有真的换了状态才重置相位；同状态只更新剩余时长和颜色。
+         */
+        if (!sameMode) {
+            mode = m;
+            startedAt = SystemClock.uptimeMillis();
+            endsAt = durationMs > 0 ? startedAt + durationMs : 0;
+        } else if (durationMs > 0) {
+            // 同状态：按这次给的时长续期，但保持原有相位
+            endsAt = startedAt + durationMs;
+        }
         color = col;
         intensity = Math.max(0f, Math.min(1f, inten));
-        startedAt = SystemClock.uptimeMillis();
-        endsAt = durationMs > 0 ? startedAt + durationMs : 0;
+
         boolean nowIdle = (m == MODE_IDLE);
         if (wasIdle == nowIdle) { if (!nowIdle) invalidate(); return; }
         setWillNotDraw(nowIdle);
@@ -120,8 +137,8 @@ class EdgeView extends View {
         switch (mode) {
             case MODE_WORKING:  drawWorking(cv, t, alpha, r, per);  break;
             case MODE_DONE:     drawDone(cv, t, alpha, r);          break;
-            case MODE_WARNING:  drawBreath(cv, t, alpha, r, 1.6f, 0.35f, 0.45f); break;
-            case MODE_ERROR:    drawBreath(cv, t, alpha, r, 0.62f, 0.45f, 0.50f); break;
+            case MODE_WARNING:  drawWarning(cv, t, alpha, r); break;
+            case MODE_ERROR:    drawError(cv, t, alpha, r);   break;
             case MODE_CRITICAL: drawCritical(cv, t, alpha, r);      break;
             default: return;
         }
@@ -155,26 +172,64 @@ class EdgeView extends View {
         }
     }
 
-    /** done：绿色从左扫到右，然后整框留一会儿再淡出。 */
+    /**
+     * done：**两束光从底边中点出发，沿左右两侧上行，在顶边中点合拢。**
+     *
+     * 2026-11-22 复核抓到：原来这里用 `cv.drawLine(sweep, top, sweep, bottom)`
+     * 画一条从上到下贯穿的竖线 —— 那是横穿用户正在看的内容，
+     * 直接违背本文件开头写的「只画边缘不遮内容」。而且一条竖线扫过
+     * 也看不出「完成」这个语义。
+     *
+     * 改成沿边框的双向合拢：光是贴着边走的，一个字都不挡；
+     * 两束在顶边会合，这个动作本身就读作「收尾/完成」，
+     * 不依赖颜色也能懂。
+     */
     private void drawDone(Canvas cv, float t, int alpha, float r) {
-        float k = Math.min(1f, t / 0.5f);                  // 0.5 秒扫完
-        float sweep = rect.left + rect.width() * ease(k);
+        final float DUR = 0.9f;                       // 合拢用时
+        float k = Math.min(1f, t / DUR);
+        float e = ease(k);
 
-        // 已经扫过的部分常亮
+        // 整框淡底，让「完成」这件事有整体感
         stroke.setColor(color);
-        stroke.setAlpha(Math.round(alpha * 0.5f));
+        stroke.setAlpha(Math.round(alpha * 0.20f));
         cv.drawRoundRect(rect, r, r, stroke);
 
-        // 扫掠头：一小段更亮
-        if (k < 1f) {
-            halo.setColor(color);
-            halo.setAlpha(Math.round(alpha * 0.85f));
-            cv.drawLine(sweep, rect.top + dp(1f), sweep, rect.bottom - dp(1f), halo);
+        float per = measure.getLength();
+        // 半周长：从底边中点沿一侧走到顶边中点
+        float half = per * 0.5f;
+        float startD = per * 0.5f;                    // 底边中点（周长 50% 处）
+
+        final int N = 12;
+        for (int i = 0; i < N; i++) {
+            float f = i / (float) N;
+            int al = Math.round(alpha * (1f - f * 0.5f) * 0.9f);
+            if (al <= 4) continue;
+            float len = Math.max(per * 0.008f, per * 0.03f);
+            // 左行：底边中点 → 逆时针
+            float s1 = startD - half * e - f * len;
+            float e1 = s1 + len;
+            if (s1 >= 0) {
+                segPath.reset();
+                measure.getSegment(Math.max(0, s1), Math.min(per, e1), segPath, true);
+                tail.setColor(color); tail.setAlpha(al);
+                cv.drawPath(segPath, tail);
+            }
+            // 右行：底边中点 → 顺时针
+            float s2 = startD + half * e + f * len;
+            float e2 = s2 - len;
+            if (s2 <= per) {
+                segPath.reset();
+                measure.getSegment(Math.max(0, e2), Math.min(per, s2), segPath, true);
+                tail.setColor(color); tail.setAlpha(al);
+                cv.drawPath(segPath, tail);
+            }
         }
-        // 扫完之后整体缓慢淡出
-        if (t > 0.5f) {
-            float f2 = Math.max(0f, 1f - (t - 0.5f) / 1.6f);
-            stroke.setAlpha(Math.round(alpha * 0.5f * f2));
+
+        // 合拢之后：整框亮一下再淡出
+        if (k >= 1f) {
+            float f2 = Math.max(0f, 1f - (t - DUR) / 1.4f);
+            stroke.setColor(color);
+            stroke.setAlpha(Math.round(alpha * 0.62f * f2));
             cv.drawRoundRect(rect, r, r, stroke);
         }
     }
@@ -192,9 +247,63 @@ class EdgeView extends View {
         cv.drawRoundRect(rect, r, r, halo);
     }
 
-    /** critical：粗红边高频闪。这是有意的刺眼 —— 它表示「可能已经出事」。 */
+    /**
+     * warning：**不对称慢呼吸** —— 吸气快、呼气慢，像深吸一口气。
+     *
+     * 2026-11-22 复核抓到：原来 warning 和 error 都调 drawBreath，
+     * 只是周期不同（1.6s vs 0.62s）。对红绿色盲来说这两个状态
+     * **在运动上也无法区分** —— 都是一条正弦，只是快慢。
+     * 而「注意」和「失败」是完全不同的意思，必须靠节奏分开：
+     *   warning = 不对称呼吸（快起慢落，人放松时就是这种节奏）
+     *   error   = 双拍「咚-咚」（机械、警急、不像呼吸）
+     */
+    private void drawWarning(Canvas cv, float t, int alpha, float r) {
+        final float PERIOD = 2.6f;
+        float phase = (t % PERIOD) / PERIOD;          // 0..1
+        // 快升（0→0.28）慢降（0.28→1）
+        float k;
+        if (phase < 0.28f) k = phase / 0.28f;
+        else k = 1f - (phase - 0.28f) / 0.72f;
+        float lvl = 0.28f + 0.52f * k;
+        stroke.setColor(color);
+        stroke.setAlpha(Math.round(alpha * lvl));
+        cv.drawRoundRect(rect, r, r, stroke);
+        halo.setColor(color);
+        halo.setAlpha(Math.round(alpha * 0.30f * k));
+        cv.drawRoundRect(rect, r, r, halo);
+    }
+
+    /**
+     * error：**双拍「咚-咚」** —— 在一个周期里突然亮两次，然后停一下。
+     * 机械、急促、不像呼吸，和 warning 的节奏形态完全不同。
+     */
+    private void drawError(Canvas cv, float t, int alpha, float r) {
+        final float PERIOD = 1.36f;
+        float phase = (t % PERIOD) / PERIOD;
+        // 两拍：0.00-0.22 亮，0.22-0.34 暗，0.34-0.56 亮，0.56-1.0 暗
+        float k = 0.0f;
+        if (phase < 0.22f) k = 1f - (phase / 0.22f) * 0.35f;
+        else if (phase < 0.34f) k = 0.12f;
+        else if (phase < 0.56f) k = 1f - ((phase - 0.34f) / 0.22f) * 0.45f;
+        else k = 0.10f;
+        stroke.setColor(color);
+        stroke.setAlpha(Math.round(alpha * (0.25f + 0.70f * k)));
+        cv.drawRoundRect(rect, r, r, stroke);
+        halo.setColor(color);
+        halo.setAlpha(Math.round(alpha * 0.55f * k));
+        cv.drawRoundRect(rect, r, r, halo);
+    }
+
+    /** critical：粗红边低频闪（低于 3Hz）。这是有意的刺眼 —— 它表示「可能已经出事」。 */
     private void drawCritical(Canvas cv, float t, int alpha, float r) {
-        float s = (float) (0.5 + 0.5 * Math.sin(t * 2 * Math.PI / 0.26f));
+        /* **闪烁频率必须低于 3Hz。**
+         *
+         * 2026-11-22 复核指出：原来是 0.26 秒一周期 = 3.85Hz，
+         * 超过 WCAG 2.3.1 规定的 3Hz 上限 —— 那是光敏性癫痫的触发区间。
+         * 提示「可能出事」不该以让人真出事为代价。
+         * 改成 0.7 秒（1.43Hz），要更凶就加粗描边和角标，不加频率。
+         */
+        float s = (float) (0.5 + 0.5 * Math.sin(t * 2 * Math.PI / 0.7f));
         stroke.setStrokeWidth(dp(5.5f));
         stroke.setColor(color);
         stroke.setAlpha(Math.round(alpha * (0.55f + 0.45f * s)));
