@@ -59,9 +59,13 @@ bash framesrv/build.sh         # 取帧 dex
 1. **虚拟屏会随创建它的进程一起死。**
    如果你用 `node -e "..."` 建屏，进程一退屏就没了。要用长驻进程，或者用 MCP 工具（引擎持有的）。
 
-2. **`am start --display N` 对 `singleTask` App 会把主屏任务搬走。**
-   设置、文件管理器、微信都是 `singleTask`。想投它们到 AI 虚拟屏，做不到。
-   测试时用闲鱼、B站、浏览器、mpv、游戏这类非 singleTask 的。
+2. **`am start --display N` 对 `singleTask` App 会把主屏任务搬走，投不过去。**
+   但**「哪些 App 是 singleTask」不能凭印象**。2026-11-22 实测：`com.android.settings`
+   的主入口 `com.android.settings.Settings` 是个 activity-alias（targetActivity 指向
+   SettingsHomepageActivity），**没有 launchMode 属性，不是 singleTask** —— 这一条以前写错了。
+   判断办法：`aapt dump xmltree <apk> AndroidManifest.xml | grep -A6 'android:name.*Settings'`，
+   看有没有 `android:launchMode`。0x1 = singleTop，0x2 = singleTask，没有属性 = standard。
+   投屏前先查这一个 App，别拿整类猜测。
 
 3. **中文输入必须走「写剪贴板 + `KEYCODE_PASTE`」，`adb shell input text` 对中文必抛 NPE。**
    插件侧：`vdisplay_input { kind: "paste", text: "…" }`（实测能粘进 `abc中文测试abc`）。
