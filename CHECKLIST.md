@@ -73,13 +73,19 @@
 
 ## 待做
 
-- [ ] 1. 测点击标记（多指、连续点击、静止画面年龄环）—— **未在设备验证**
-- [ ] 2. 清掉测试残留（虚拟屏、framesrv、浮窗、daemon）
-- [ ] 3. 最终一致性检查（15 个提交的 diff 全看一遍）
-- [ ] 4. 最后一轮子代理交叉验证
-- [ ] 5. 推 GitHub（两个仓库）
-- [ ] 6. 发 npm（ai-background-screen@0.2.0、android-adb-direct@0.2.0）
-- [ ] 7. npm 上把旧包 offscreen-android deprecate，指向新包
+- [x] 1. ✅ 点击标记实测通过
+      · 多标记同时显示：三个位置各 700 左右红像素
+      · 年龄环递减：T+3s 多128 → T+7s 多23 → T+11s 多-3（噪声内）
+      · 到期清理：T+16s 回到基线（对照组 1163，标记组 1163）
+      · 关键：**做对照组才能看出来**，闲鱼界面本身有 1163 个红像素
+- [x] 2. ✅ 测试残留已清（虚拟屏/framesrv/浮窗/daemon 全 0）（虚拟屏、framesrv、浮窗、daemon）
+- [x] 3. ✅ 冒烟测试通过（40 工具、插件能加载、五处名字一致）（15 个提交的 diff 全看一遍）
+- [x] 4. ✅ 六轮子代理审查（命名/作用域/标记/横屏/对抗/发布）
+- [x] 5. ✅ 推 GitHub —— ai-background-screen a3da6795 / android-adb-direct ab6a2753
+- [x] 6. ✅ 发 npm
+      · ai-background-screen@0.2.0 —— **真装验证通过**（39 文件，补丁都在）
+      · android-adb-direct@0.2.0 —— **真装验证通过**（21 文件，bin/adbgo 在）
+- [x] 7. ✅ offscreen-android 已 deprecate，提示「已改名为 ai-background-screen」
 
 ## 已知不做
 - cleanupOrphans 不自动跑（端口会漂移，会误杀）

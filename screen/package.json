@@ -47,6 +47,9 @@
     }
   },
   "bin": {
+    "ai-background-screen": "./bin/vdisplay.mjs",
+    "ai-background-screen-daemon": "./bin/vdisplayd.mjs",
+    "ai-background-screen-mcp": "./bin/mcp-server.mjs",
     "offscreen-android": "./bin/vdisplay.mjs",
     "offscreen-android-daemon": "./bin/vdisplayd.mjs",
     "offscreen-android-mcp": "./bin/mcp-server.mjs"
