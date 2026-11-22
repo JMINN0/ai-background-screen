@@ -27,12 +27,49 @@
  */
 export const name = 'dsh-go-plugin-mobile';
 
-/** 子插件清单。用动态 import 的模块名，加载失败不影响其它。 */
+/**
+ * **子插件清单：每个子插件给多个候选 import 路径。**
+ *
+ * 2026-11-23 发布质量审查抓到一个致命问题：
+ * package.json 里这三个依赖写的是 `link:`，而 pnpm 的 `link:` **只建软链、
+ * 不装被链包自己的依赖**。所以用户按 README「一条装全部」装完之后，
+ * 插件显示已启用，但 vdisplay_/adb_/web_ 一个工具都没有 —— 而且不报错，
+ * 因为下面的 try/catch 把 import 失败吞进一个状态文件里。
+ *
+ * 修法：每个子插件按顺序试多个路径。
+ *   ① 包名 —— 从 npm 正常安装时可用
+ *   ② 相对路径 —— 两个仓库并排克隆时可用（README 就是这么要求的）
+ * 这样两种部署方式都能加载。
+ */
+/**
+ * **算出子插件模块的候选路径。**
+ *
+ * 2026-11-23 实测：静态的相对路径（`../screen/src/index.js`）在宿主里解析不到，
+ * 因为宿主可能用 bundle 方式加载插件，`import.meta.url` 不指向仓库位置。
+ * 但**绝对路径**是好的（实测三个子包用 /root/.../src/index.js 全部加载成功）。
+ *
+ * 所以这里优先从 import.meta.url 推出绝对路径，推不出来再退回包名。
+ */
+function moduleCandidates(relFromRepoRoot, pkgName) {
+  const out = [];
+  out.push(pkgName);   // ① 正常安装的包名
+  try {
+    // 本文件在 <repo>/plugin/src/index.js，repo 根 = 上两级
+    const here = import.meta.url;              // file:///.../plugin/src/index.js
+    const repoRoot = new URL('../../', here);  // file:///.../
+    out.push(new URL(relFromRepoRoot, repoRoot).href);
+  } catch { /* import.meta.url 不可用（bundle 加载） */ }
+  // ② 兜底：常见的并排克隆位置
+  out.push('/root/workspace/' + relFromRepoRoot);
+  out.push(new URL('../../' + relFromRepoRoot, 'file:///root/workspace/offscreen-android/plugin/src/index.js').href);
+  return out;
+}
+
 const MODULES = [
-  ['adb', 'dsh-go-plugin-adb'],
-  ['screen', 'ai-background-screen'],
-  ['web', 'dsh-go-plugin-web'],
-  ['watch', './watch.js'],
+  ['adb', moduleCandidates('../dsh-go-plugin-adb/src/index.js', 'dsh-go-plugin-adb')],
+  ['screen', moduleCandidates('screen/src/index.js', 'ai-background-screen')],
+  ['web', moduleCandidates('web/src/index.js', 'dsh-go-plugin-web')],
+  ['watch', ['./watch.js']],
 ];
 
 export async function apply(ctx) {
@@ -40,13 +77,16 @@ export async function apply(ctx) {
   const failed = [];
   const loaded = [];
 
-  for (const [label, spec] of MODULES) {
+  for (const [label, specs] of MODULES) {
     let mod = null;
-    // **动态 import**：单个模块顶层报错不会拖垮整个插件
-    try {
-      mod = await import(spec);
-    } catch (e) {
-      failed.push(`${label}: import 失败 ${String(e?.message || e).slice(0, 100)}`);
+    const errs = [];
+    // **按候选顺序试**：包名优先（npm 装），其次相对路径（仓库并排）
+    for (const spec of specs) {
+      try { mod = await import(spec); break; }
+      catch (e) { errs.push(`${spec}: ${String(e?.message || e).slice(0, 60)}`); }
+    }
+    if (!mod) {
+      failed.push(`${label}: 全部路径都加载失败 —— ${errs.join(' | ')}`);
       continue;
     }
     const fn = mod?.apply || mod?.default?.apply;

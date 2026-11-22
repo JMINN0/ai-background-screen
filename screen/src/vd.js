@@ -1735,7 +1735,7 @@ async function riskLevelOf(pkg) {
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
-    for (const rel of ['../docs/risk.json', '../../docs/risk.json']) {
+    for (const rel of ['../assets/risk.json', '../docs/risk.json', '../../docs/risk.json']) {
       try {
         const d = JSON.parse(await readFile(join(here, rel), 'utf8'));
         const apps = d.apps || d;
@@ -1799,6 +1799,20 @@ export async function syncRiskLevel() {
     _riskCache = { at: Date.now(), pkg, lv, op: _op };
     return lv;
   } catch { return ''; }
+}
+
+/**
+ * **记下这块屏的 framesrv 端口。**
+ *
+ * 边缘状态文件里要写这个端口，浮窗才能判断「这条状态是不是我这块屏的」。
+ * 不能写 `state.port` —— 那是 scrcpy 的 forward 隧道端口，和浮窗的端口不是一个东西。
+ *
+ * @param {number} p framesrv 监听的端口
+ */
+export function setFramesrvPort(p) {
+  const n = Number(p) || 0;
+  if (n > 0) state.framesrvPort = n;
+  return n;
 }
 
 /**
@@ -1911,11 +1925,13 @@ export async function flushAutoEdge(phase) {
   const ttl = phase === 'done' ? 4000 : 0;
   let edgePort2 = 0;
   try {
-    const p1 = state.port;
-    if (p1) edgePort2 = Number(p1) || 0;
+    const fsP2 = Number(state.framesrvPort) || 0;
+    if (fsP2) edgePort2 = fsP2;
     else if (state.displayId != null) {
       const n1 = Number(state.displayId) || 0;
       edgePort2 = 38820 + (((n1 % 20) + 20) % 20);
+    } else if (state.port) {
+      edgePort2 = Number(state.port) || 0;
     }
   } catch { /* ignore */ }
   const line = phase + '|' + color + '|1|' + now + '|' + ttl + '|' + edgePort2;
@@ -2053,13 +2069,26 @@ export function setEdge(mode, o = {}) {
    * 用户根本分不清是哪块屏出事了。 */
   /* **写端口而不是 displayId** —— 浮窗知道自己连的是哪个端口，
    * 但不知道 displayId。按端口路由最直接。0 = 不限屏（所有屏都亮）。 */
+  /* **必须写 framesrv 端口，不是 scrcpy 的 forward 端口。**
+   *
+   * 2026-11-23 对抗审查抓到的致命 bug（整个边缘光效因此全灭）：
+   * `state.port` 是 scrcpy 的 adb forward 隧道端口（28000 + random(900)），
+   * 而浮窗用来比较的是 framesrv 端口（38820 + displayId%20）。
+   * 两者永远不相等 → OverlayService 每轮都判「不是这块屏的状态」→ MODE_IDLE
+   * → 六档光效、双编码、WCAG 频率、线宽缩放全都到不了屏幕。
+   *
+   * 所以这里优先用 framesrvPort（streamStart 时记下的），
+   * 没有才用公式兜底，最后才用 scrcpy 端口（基本用不到）。
+   */
   let edgePort = 0;
   try {
-    const p0 = state.port;
-    if (p0) edgePort = Number(p0) || 0;
+    const fsP = Number(state.framesrvPort) || 0;
+    if (fsP) edgePort = fsP;
     else if (state.displayId != null) {
       const n0 = Number(state.displayId) || 0;
-      edgePort = 38820 + (((n0 % 20) + 20) % 20);   // 和 framesrv 的端口公式一致
+      edgePort = 38820 + (((n0 % 20) + 20) % 20);
+    } else if (state.port) {
+      edgePort = Number(state.port) || 0;
     }
   } catch { /* ignore */ }
   const line = M + '|' + color + '|' + Math.max(0, Math.min(1, inten)) + '|' + at + '|'

@@ -1244,6 +1244,8 @@ export async function streamStart(args) {
     // 对抗审查发现：这个 Map 只有 get/delete、从没 set，
     // 于是 stop() 取到 0 → overlayStop(undefined) → `--ez stop true` → **关掉所有窗口**。
     try { screenPorts.set(Number(s.displayId), fast.port); } catch { /* ignore */ }
+    /* 边缘状态文件要用 framesrv 端口，不能用 scrcpy 的 forward 端口 —— 见 vd.setFramesrvPort 注释 */
+    try { vd.setFramesrvPort(fast.port); } catch { /* ignore */ }
     // **快路径在跑 → 把 stream.json 指向 framesrv**，让胶囊读快的这一路。
     // 胶囊读 stream.json 的 port 去取 /frame.jpg 和 /status，
     // framesrv 的这两个端点返回的字段是兼容的（running/frames/fps/aspect）。
@@ -2430,7 +2432,14 @@ export async function userState() {
 
 /** 查某个包的风控等级（读 docs/risk.json）。 */
 export async function riskCheck(pkg) {
-  const name = String(pkg || '').trim();
+  /* **同时接受字符串和 {pkg} 对象。**
+   *
+   * 2026-11-23 对抗审查抓到：插件路径传的是 `a?.pkg`（字符串），
+   * 但 daemon/MCP 的 runTool 把整个 args 对象传进来 —— 于是 name 变成
+   * "[object Object]"，任何 App 都查成「未知」，风控闸门等于失效。
+   */
+  const raw = (pkg && typeof pkg === 'object') ? (pkg.pkg ?? pkg.name ?? '') : pkg;
+  const name = String(raw || '').trim();
   if (!name) return { text: '要给包名，比如 com.tencent.mm' };
   let data = null;
   try {
@@ -2438,7 +2447,7 @@ export async function riskCheck(pkg) {
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
     const here = dirname(fileURLToPath(import.meta.url));
-    for (const rel of ['../docs/risk.json', '../../docs/risk.json']) {
+    for (const rel of ['../assets/risk.json', '../docs/risk.json', '../../docs/risk.json']) {
       try {
         const raw = await readFile(join(here, rel), 'utf8');
         data = JSON.parse(raw);
@@ -2452,8 +2461,8 @@ export async function riskCheck(pkg) {
   const info = apps[name];
   if (!info) {
     return {
-      text: `未知 App（${name}）→ 按默认 L${data.unknown_level ?? 3} 处理：先只读观察，写操作前问用户。`,
-      level: data.unknown_level ?? 3,
+      text: `未知 App（${name}）→ 按默认 L${data.rules?.unknown_level ?? 3} 处理：先只读观察，写操作前问用户。`,
+      level: data.rules?.unknown_level ?? 3,
       name: '',
     };
   }

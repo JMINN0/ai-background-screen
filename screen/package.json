@@ -52,7 +52,11 @@
     "ai-background-screen-mcp": "./bin/mcp-server.mjs",
     "offscreen-android": "./bin/vdisplay.mjs",
     "offscreen-android-daemon": "./bin/vdisplayd.mjs",
-    "offscreen-android-mcp": "./bin/mcp-server.mjs"
+    "offscreen-android-mcp": "./bin/mcp-server.mjs",
+    "vdisplay": "./bin/vdisplay.mjs",
+    "vdisplay-daemon": "./bin/vdisplayd.mjs",
+    "vdisplay-mcp": "./bin/mcp-server.mjs",
+    "vdisplay-start": "./bin/vdisplay.mjs"
   },
   "homepage": "https://github.com/JMINN0/ai-background-screen#readme",
   "repository": {
