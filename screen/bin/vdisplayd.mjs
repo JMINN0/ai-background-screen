@@ -59,6 +59,11 @@ async function clearState() {
 /** 命令分发。每个 action 都是 vd.js 里的一个函数。 */
 let mutexTail = Promise.resolve();   // 全局互斥链，串行化有副作用的命令
 
+/** **有写操作正在跑。** tick 的看门狗阶段要跳过 —— 一次 start 要跑 60 秒，
+ *  期间 framesrv 还没监听是正常的，不能判死（否则重复 spawn 出两个 framesrv）。
+ *  必须是模块作用域的：ACTIONS 里的 start 要用它。 */
+let opBusy = 0;
+
 const ACTIONS = {
   async start(args) {
     /*
@@ -72,8 +77,11 @@ const ACTIONS = {
      * 现在直接调 T.start()：建屏、自动推流、投屏、逐项自检全在里面，
      * 三个入口拿到的是同一份结果、同一段文案。
      */
-    const T = await import('../src/tools.js');
+    const T = await import("../src/tools.js");
+    opBusy++;
     const r = await T.start(args || {});
+    opBusy--;
+    try { if (r && (r.ok || r.text)) lastStreamStartAt = Date.now(); } catch { /* ignore */ }
     return r;
   },
   async stop(args) {
@@ -182,6 +190,7 @@ const ACTIONS = {
     try {
       const T = await import('../src/tools.js');
       const auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
+      try { lastStreamStartAt = Date.now(); } catch { /* ignore */ }
       const txt = String(auto?.text || '');
 
       /* **池屏也要投个 App，否则浮窗里是黑的。**
@@ -409,6 +418,7 @@ async function handle(req, res) {
      */
     const prev = mutexTail;
     let release;
+    let acquired = false;
     mutexTail = new Promise((r) => { release = r; });
     try {
       const LOCK_WAIT_MS = 90_000;
@@ -420,15 +430,27 @@ async function handle(req, res) {
       const got = await Promise.race([prev.then(() => 'ok'), timeoutP]);
       if (timer) clearTimeout(timer);
       if (got === 'timeout') {
+        /* **超时不能 release —— 那会让互斥锁在 90 秒后失效。**
+         *
+         * 2026-11-22 审计抓到：原来超时分支会走到 finally 里的 release()，
+         * 于是 mutexTail 立刻 resolve，后面的请求不再等前一个、直接并发 ——
+         * 等于「锁超过 90 秒就自动失效」。两个 start 并发建两块屏，
+         * 正是这段代码注释里最怕的场景（多屏时 SF id 分不清、截图全废）。
+         *
+         * 正确做法：把 release 挂到前一个 tail 上，链条按原顺序继续，
+         * 后面的请求仍然排在 A 后面，只是**这一次**放弃等待。
+         */
+        Promise.resolve(prev).finally(release);
         return send(res, 503, {
           ok: false,
-          error: '前面还有操作在执行（可能在建屏/自检），' + Math.round(LOCK_WAIT_MS / 1000)
+          error: '前面还有操作在执行（可能正在建屏/自检），' + Math.round(LOCK_WAIT_MS / 1000)
             + ' 秒内没轮到。稍后重试；长时间这样用 status 看是不是卡在建屏。',
         });
       }
+      acquired = true;
       return await run();
     } finally {
-      release();
+      if (acquired) release();   // 只有真拿到锁才在这里放
     }
 }
 
@@ -500,6 +522,21 @@ function startIdleWatch() {
    *
    * adb 调用从约 1.2 次/秒 降到约 0.2 次/秒。
    */
+  /* **这两个 streak 变量原来用了但从来没声明过 —— ESM 严格模式下第一次赋值
+   * 就抛 ReferenceError，被 tick 末尾的 `catch {}` 静默吞掉。
+   *
+   * 后果（2026-11-22 独立审计抓到，我核实属实）：
+   *   · mHasContent 检测一次都没执行过
+   *   · 推流看门狗一次都没执行过
+   *   · tick 后面的风控同步也从来没到过
+   * 也就是说「改了没效果」，而且没有任何日志 —— 因为异常被空 catch 吃了。
+   */
+  let emptyStreak = 0;        // 连续几次检测到 mHasContent=false
+  let streamFailStreak = 0;   // 推流连续几次没在听
+  /** 上次起推流成功的时刻。用来给启动留宽限期，避免 tick 抢在 framesrv 监听前判死。 */
+  let lastStreamStartAt = 0;
+  /** **有写操作正在跑**。tick 在看门狗阶段要跳过 ——
+   *  一次 start 里 framesrv 还没监听是正常的，不能判死。 */
   let tickNo = 0;
   setInterval(async () => {
     tickNo++;
@@ -594,10 +631,46 @@ function startIdleWatch() {
       } else if (streamFailStreak >= 3) {
         console.error('[vdisplayd] 推流连续 3 次拉不起来（port ' + port + '），停止重试');
       } else {
+        /* **启动宽限期：刚起过推流就别急着判死。**
+         *
+         * 2026-11-22 实测：tick 在 daemon 起来 6 秒后就跑，那时
+         * T.start 里的 framesrv 可能还没开始监听 —— tick 判「没在听」
+         * → 停旧的（进程刚起停不掉）→ 再起一个用了下一个空端口
+         * → 同一块屏两个 framesrv（实测 38829 + 38830 并存）。
+         * 60 秒宽限足够覆盖「推 jar + spawn + 等端口」。
+         */
+        /* **有写操作在跑时跳过看门狗。**
+         *
+         * 2026-11-22 实测：一次 start 要 60 秒（推 jar、spawn、等端口、投 App、
+         * 六项自检），tick 每 10 秒跑一次 —— 会在 framesrv 还没监听时判「没在听」，
+         * 于是重复 spawn，同一块屏两个 framesrv（实测 38833 + 38834 并存）。
+         * 宽限期设在 T.start 之后没用，因为问题就发生在 T.start 期间。
+         */
+        if (opBusy > 0) {
+          return;   // 建屏/自检正在进行，别插嘴
+        }
+        if (lastStreamStartAt && Date.now() - lastStreamStartAt < 60_000) {
+          return;   // 刚起过，再等等
+        }
         streamFailStreak++;
         console.error('[vdisplayd] 推流没在听（port ' + port + '），第 ' + streamFailStreak + ' 次重起');
         try {
           const T = await import('../src/tools.js');
+            /* **重起前先杀掉这块屏的旧 framesrv。**
+             *
+             * 2026-11-22 实测踩到：看门狗判断「推流没在听」就直接 streamStart，
+             * 但旧进程可能还活着占着端口 —— 新起的拿不到 38820+id%20，
+             * 于是漂移到下一个空端口，结果**同一块屏跑两个 framesrv**
+             * （实测 PID 1999 @38825 和 2022 @38826 并存）。
+             * 两个进程抢同一块 Surface，浪费内存还可能导致帧错乱。
+             *
+             * 所以要按 displayId 精确停掉旧的，再起新的。fsrv.stop(id) 只停这一块。
+             */
+            try {
+              const fsrv = await import('../src/framesrv.js');
+              await fsrv.stop(Number(st.displayId));
+            } catch { /* 本来就没起就算了 */ }
+
           await T.streamStart({ displayId: st.displayId, fps: 2, width: 360 });
         } catch (e) {
           console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
@@ -608,7 +681,16 @@ function startIdleWatch() {
       if (tickNo % 2 === 0) {
         try { await vd.syncRiskLevel(); } catch { /* 同步失败不影响守护进程 */ }
       }
-    } catch { /* 定时器自己不能崩 */ }
+    } catch (e) {
+      /* **不能空吞异常。**
+       *
+       * 2026-11-22：就是这里的 `catch {}` 让「变量没声明」这个致命错误
+       * 藏了一整天 —— tick 每次都抛 ReferenceError，每次都被吃掉，
+       * 表现得像「代码改了但没生效」，没有任何日志可查。
+       * 定时器确实不该崩，但**必须把错误说出来**。
+       */
+      console.error('[vdisplayd] tick 出错（看门狗可能没在跑）:', e?.message || String(e));
+    }
   }, 10_000).unref?.();
 }
 

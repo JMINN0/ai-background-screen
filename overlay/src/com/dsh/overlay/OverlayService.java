@@ -90,9 +90,28 @@ public class OverlayService extends Service {
         if (w <= 0 || h <= 0) return;
         if (w == lastScreenW && h == lastScreenH) return;
         boolean first = (lastScreenW == 0);
+        // 真的转屏了？（宽高关系翻转）
+        boolean rotated = (w > h) != (lastScreenW > lastScreenH);
+        // 尺寸变化够大？（超过 96dp 或 20%）—— 全屏进出只差状态栏/导航栏，不该算
+        int bigThreshW = Math.max(dp(96), lastScreenW / 5);
+        int bigThreshH = Math.max(dp(96), lastScreenH / 5);
+        boolean big = Math.abs(w - lastScreenW) > bigThreshW
+                || Math.abs(h - lastScreenH) > bigThreshH;
         lastScreenW = w;
         lastScreenH = h;
         if (first) return;      // 第一次只是初始化，不用重排
+        /* **全屏进出（看视频时隐藏状态栏/导航栏）不该触发重排。**
+         *
+         * 2026-11-22 审计指出：全屏切换会让 getDisplayMetrics 跳 65-173px
+         * （代码自己在 :1041 记录过这个现象），于是「开始看视频」这一下
+         * 会触发 appliedAspect=-1 + 重排 + clamp 三连 —— 用户看到的
+         * 就是浮窗在视频开始播放时自己变了个尺寸/位置。
+         * 这种情况只需要把窗口夹回屏内，不需要重新算尺寸和级联。
+         */
+        if (!rotated && !big) {
+            try { clampAll(); } catch (Throwable t) { /* ignore */ }
+            return;
+        }
         /* 转屏/折叠/分屏：所有窗口按新尺寸重算。
          * 顺序很重要 —— 先重算尺寸（applyAspect 用新的宽高），再级联排位置。 */
         for (Win win : wins.values()) {
@@ -103,6 +122,8 @@ public class OverlayService extends Service {
         /* 重排之后必须再全量夹取 —— relayoutAuto 只管 autoPos 的窗口，
          * 用户拖过的和收起的不在它管辖内，转屏后可能整块在屏外。 */
         try { clampAll(); } catch (Throwable t) { /* 尽力而为 */ }
+        // 转屏后重算「该不该自动收起」（横屏 = 大概率在看视频/全屏内容）
+        try { updateWatchMode(); } catch (Throwable t) { /* ignore */ }
         /* 拖拽中心（hub）和左右投放条是独立窗口，位置是内联算的，
          * 这里按新尺寸重新摆一次 —— 否则转屏后它们会停在旧坐标上，
          * 用户拖动浮窗时找不到那个圆。 */
@@ -156,11 +177,95 @@ public class OverlayService extends Service {
         }
     }
 
+    /**
+     * **横屏时自动把浮窗收到最小。**
+     *
+     * 2026-11-22 动效审计算出：横屏 2688x1216 时单窗是 473x1046，
+     * 占屏 15.1%，而且是一条贴左边的竖带 —— 正好压住视频的画面主体和进度条。
+     * 更糟的是窗口内所有触摸都被浮窗吃掉（FLAG_NOT_TOUCH_MODAL 只放行窗口外的），
+     * 用户想双击暂停、左右滑进度、上下滑亮度，点在浮窗上全无反应。
+     *
+     * 自动收起之后：面积从 15.1% 降到 0.74%（少挡 95%），而且挪到顶部中间
+     * （避开人脸和底部字幕/进度条）。AI 的视觉反馈不丢 —— 收起时仍然解码刷新，
+     * 边缘光效也照常，用户点一下就能展开看细节。
+     *
+     * 为什么用「横屏」当判据而不是识别具体视频 App：
+     *   · 零权限、零额外服务、立刻生效
+     *   · UsageStatsManager 要授权还有延迟；MediaSessionManager 要通知使用权；
+     *     ActivityManager.getRunningTasks 对第三方无效；无障碍太重
+     *   · 误判代价很小：横屏游戏/看图也会收起，但那些场景同样不希望被挡，
+     *     而且用户点一下就能展开，并且这一次不会被再自动收起
+     */
+    private boolean watchMode = false;
+
+    private void updateWatchMode() {
+        boolean landscape;
+        try {
+            landscape = getResources().getConfiguration().orientation
+                    == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        } catch (Throwable t) {
+            landscape = lastScreenW > lastScreenH;
+        }
+        if (landscape == watchMode) return;
+        watchMode = landscape;
+        for (Win w : wins.values()) {
+            if (w.root == null) continue;
+            try {
+                if (watchMode) {
+                    if (!w.collapsed) { w.collapsedByWatch = true; w.toggle(); }
+                } else if (w.collapsedByWatch && !w.expandedInWatch) {
+                    w.collapsedByWatch = false;
+                    w.toggle();     // 恢复展开
+                } else {
+                    w.collapsedByWatch = false;
+                }
+                w.expandedInWatch = false;
+            } catch (Throwable t) { /* 单个失败不影响其它 */ }
+        }
+        if (watchMode) {
+            try { layoutWatchThumbs(); } catch (Throwable t) { /* ignore */ }
+        }
+    }
+
+    /** 横屏收起后，把缩略图排到顶部中间一排，别乱放。 */
+    private void layoutWatchThumbs() {
+        int n = 0, w0 = dp(36), gap = dp(8);
+        for (Win w : wins.values()) if (w.collapsed && w.lp != null) n++;
+        if (n == 0) return;
+        int total = n * w0 + (n - 1) * gap;
+        int x0 = Math.max(EDGE_GUARD, (lastScreenW - total) / 2);
+        int i = 0;
+        for (Win w : wins.values()) {
+            if (!w.collapsed || w.lp == null) continue;
+            int x = x0 + i * (w0 + gap);
+            x = Math.max(EDGE_GUARD, Math.min(x, Math.max(EDGE_GUARD, lastScreenW - w0 - EDGE_GUARD)));
+            w.lp.x = x;
+            w.lp.y = Math.max(dp(8), dp(24));
+            try { if (w.root != null) wm.updateViewLayout(w.root, w.lp); } catch (Throwable t) { }
+            i++;
+        }
+    }
+
+    /** 把一个候选位置夹进屏幕内。放不下时宁可贴边也不越界。 */
+    private int[] clampSlot(int x, int y, int ww, int wh, int sw, int sh) {
+        int cx = Math.max(0, Math.min(x, Math.max(0, sw - ww)));
+        int cy = Math.max(0, Math.min(y, Math.max(0, sh - wh)));
+        return new int[]{ cx, cy };
+    }
+
     @Override
     public void onConfigurationChanged(android.content.res.Configuration c) {
         super.onConfigurationChanged(c);
         // 立即响应（比等 3 秒 tick 快），但不作为唯一依赖
-        try { onScreenSizeChanged(c.screenWidthDp, c.screenHeightDp); } catch (Throwable t) { /* ignore */ }
+        /* **单位必须转 px。** onConfigurationChanged 给的是 dp，而 tick 传的是 px，
+         * 两者共用一个 lastScreenW/H 就会互相判成「尺寸变了」，转一次屏重排两轮。
+         * 2026-11-22 动效审计指出这个单位混用。 */
+        try {
+            float dens = getResources().getDisplayMetrics().density;
+            if (dens <= 0) dens = 1f;
+            onScreenSizeChanged(Math.round(c.screenWidthDp * dens),
+                    Math.round(c.screenHeightDp * dens));
+        } catch (Throwable t) { /* ignore */ }
     }
     private Handler ui;
     private volatile boolean running = true;
@@ -358,9 +463,26 @@ public class OverlayService extends Service {
          * 和每次转屏**时被这里撤销（只有用户手动拖一下再松手才修回来）。
          * 兜底分支同理，宁可放不下也别贴边。
          */
-        int startX = EDGE_GUARD, startY = dp(96), step = dp(16);
+        /* **横屏和竖屏的起排位置不一样，而且返回前必须夹进屏内。**
+         *
+         * 2026-11-22 动效审计推演出：横屏 1216 高、单窗 1046 高时
+         * startY=dp(96)=312 已经大于 limitY=118 —— 循环一次都不扫，
+         * 直接走兜底返回 (96,312)，底边 1358 超出屏幕 142px。
+         * 然后 applyAspect 的 250ms 延迟重排又把它放回同一个位置，clampAll 白做。
+         *
+         * 所以：横屏 startY 用 dp(28)（顶部留一点避开状态栏位置），
+         * 并且所有返回路径都过 clampSlot 夹一次。
+         */
+        boolean landscape = screenW > screenH;
+        int startX = EDGE_GUARD;
+        int startY = landscape ? dp(28) : dp(96);
+        int step = dp(16);
         int limitX = Math.max(startX, screenW - ww - EDGE_GUARD);   // 右边也留手势带
-        int limitY = screenH - wh - dp(16);
+        int limitY = screenH - wh - (landscape ? dp(24) : dp(16));
+        if (limitY < startY) {
+            // 放不下一整窗：直接夹进屏内，不要往屏外放
+            return clampSlot(startX, startY, ww, wh, screenW, screenH);
+        }
         for (int y = startY; y <= limitY; y += step) {
             for (int x = startX; x <= limitX; x += step) {
                 Rect r = new Rect(x, y, x + ww, y + wh);
@@ -368,11 +490,11 @@ public class OverlayService extends Service {
                 for (Rect o : placed) {
                     if (Rect.intersects(r, o)) { hit = true; break; }
                 }
-                if (!hit) return new int[]{x, y};
+                if (!hit) return clampSlot(x, y, ww, wh, screenW, screenH);
             }
         }
         // 放不下：退到左上角（宁可重叠也别跑到屏幕外）
-        return new int[]{EDGE_GUARD, startY};
+        return clampSlot(EDGE_GUARD, startY, ww, wh, screenW, screenH);
     }
 
     @Override
@@ -787,6 +909,10 @@ public class OverlayService extends Service {
         float aspect = 0.5f;
         float appliedAspect = -1f;
         boolean autoPos = true;   // 用户拖过就设 false，重排时不动它
+        /** 这次收起是不是「横屏自动收的」。手动收起时 false，转回竖屏不该替用户展开。 */
+        boolean collapsedByWatch = false;
+        /** 用户在这次横屏里手动展开过。展开后就不再自动收，尊重用户选择。 */
+        boolean expandedInWatch = false;
         float dragFrac = -1f;     // 拖动时在滑轨上的位置（0..1，-1=不在滑轨上）
         boolean resizeMoved = false;   // 缩放手柄是否已越过阈值
         boolean docked = false;        // 已进入删除投放点（此时只判左右方向）
@@ -1219,7 +1345,15 @@ int dx = (int)(e.getRawX() - downX);
                              * 这正是用户说的「我最小化的窗口怎么跑别处去了」的机制之一。
                              */
                             if (moved) autoPos = false;
-                            if (!moved && System.currentTimeMillis() - downAt < 400) toggle();
+                            if (!moved && System.currentTimeMillis() - downAt < 400) {
+                                /* **横屏里用户手动展开了，这一次就别再自动收。**
+                                 * 不然用户点开看细节，3 秒 tick 又把它收回去，
+                                 * 表现就是「点不开」。
+                                 */
+                                if (watchMode && collapsed) expandedInWatch = true;
+                                collapsedByWatch = false;
+                                toggle();
+                            }
 
                         }
                     return false;
@@ -1359,6 +1493,14 @@ int dx = (int)(e.getRawX() - downX);
             applyLabelScaleTo(w);
             if (lp != null) {
                 boolean sizeChanged = (Math.abs(lp.width - w) > 2 || Math.abs(lp.height - h) > 2);
+                /* **设完新尺寸必须夹一次位置。**
+                 *
+                 * 2026-11-22 动效审计指出：窗口比例一变（虚拟屏转屏/App 强制横屏）
+                 * applyAspect 只改 width/height 不动位置 —— 原来在下半屏的窗口，
+                 * 高度变大后底边就被推出屏幕。而且 250ms 后的延迟重排
+                 * 会把它放回候选位置，clampAll 那一次夹取白做。
+                 */
+                try { clampPos(w, h); } catch (Throwable t) { /* ignore */ }
                 lp.width = w;
                 lp.height = h;
                 if (root != null) {
