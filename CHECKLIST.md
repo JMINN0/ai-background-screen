@@ -49,19 +49,19 @@
 ## 待做（本轮目标）
 
 ### 代码
-- [ ] 1. multitouch 标记画不出来（tools.js 取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
-- [ ] 2. 两套标记系统（framesrv 8个/15秒 vs stream.js 3个/60秒）—— 统一或确认不冲突
-- [ ] 3. framesrv displayAlive() 反射失败时 return true → 那类机型上永不退出
-- [ ] 4. 删掉 vdisplayd 99/214 两处无用的 try/catch（只会吞下次的作用域错误）
-- [ ] 5. T.start 没套超时（adbd 卡死时 opBusy 永久 >0 → 看门狗永久失效）
-- [ ] 6. layoutWatchThumbs 不看 autoPos（用户摆好的位置被抢）
-- [ ] 7. expandedInWatch 每次转屏都重置（手动展开只保到下次转屏）
-- [ ] 8. EdgeView 60fps + BlurMaskFilter 压在视频上（性能）
-- [ ] 9. critical 在 36dp 缩略图上糊成一团红
-- [ ] 10. 收起时没有任何提示（标签只剩风控等级）
+- [~] 1. multitouch 标记画不出来（子代理分析中）（tools.js 取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
+- [~] 2. 两套标记系统（子代理分析中）（framesrv 8个/15秒 vs stream.js 3个/60秒）—— 统一或确认不冲突
+- [x] 3. ✅ displayAlive 改三态（活着/死了/不知道），UNKNOWN + 长时间没人看 → 退 → 那类机型上永不退出
+- [x] 4. ✅ 删掉 3 处无用的 try/catch（第 142/257/714 行）（只会吞下次的作用域错误）
+- [x] 5. ✅ T.start 套了 5 分钟超时，opBusy 不会永久卡住（adbd 卡死时 opBusy 永久 >0 → 看门狗永久失效）
+- [x] 6. ✅ layoutWatchThumbs 只排 autoPos 的窗，用户摆好的不搬（用户摆好的位置被抢）
+- [x] 7. ✅ 只在回竖屏时清，横屏期间记住用户的选择（手动展开只保到下次转屏）
+- [x] 8. ✅ 去掉 BlurMaskFilter、缓存路径测量、限帧 30fps 压在视频上（性能）
+- [x] 9. ✅ 线宽按窗口短边缩放（36dp 窗：17.9px → 5.85px）
+- [x] 10. ✅ 自动收起时弹 Toast 解释（手动收起不弹）（标签只剩风控等级）
 
 ### 文档
-- [ ] 11. README / README.en / llms.txt 补 vdisplay_edge 说明
+- [x] 11. ✅ README 加 6.8.1 小节 + llms.txt 加视觉反馈段
 
 ### 验证
 - [ ] 12. 端到端实测：建屏 → 截主屏确认浮窗 → 杀 framesrv 看自愈 → 转横屏看自动收起

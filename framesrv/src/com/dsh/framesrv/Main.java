@@ -747,6 +747,61 @@ public class Main {
         t.start();
     }
 
+    /**
+     * **标记动画线程：静止画面下也要重绘。**
+     *
+     * 2026-11-22 独立审计抓到的核心缺陷：ImageReader 只在画面变化时出帧，
+     * 所以静止屏上：波纹闪 950ms 后冻住、年龄环从头到尾没画过、
+     * 15 秒到期也没人清理 —— 红点永久留在画面上，年龄信息是假的。
+     *
+     * 这条线程在「有活跃标记」时按节奏重绘：
+     *   · 前 1 秒每 60ms 一帧（波纹扩散要顺）
+     *   · 之后每 250ms 一帧（年龄环慢慢缩，不需要那么密）
+     *   · 所有标记过期后，推一张**干净帧**然后自己退出（不能留着红点）
+     *
+     * 注意：这是「有标记时才跑」的线程，不是常驻轮询 —— 没标记时零成本。
+     */
+    static volatile boolean markAnimRunning = false;
+
+    static synchronized void startMarkAnim() {
+        if (markAnimRunning) return;
+        markAnimRunning = true;
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                try {
+                    long started = System.currentTimeMillis();
+                    while (true) {
+                        long now = System.currentTimeMillis();
+                        pruneMarks(now);
+                        boolean any;
+                        synchronized (marks) {
+                            any = false;
+                            for (Mark m : marks) {
+                                if (now - m.at <= MARK_LIVE_MS) { any = true; break; }
+                            }
+                        }
+                        if (!any) {
+                            // **最后推一张干净帧**，别把红点留在画面里
+                            break;
+                        }
+                        reencodeWithMark();
+                        long elapsed = now - started;
+                        long sleep = elapsed < 1000 ? 60 : 250;
+                        try { Thread.sleep(sleep); } catch (InterruptedException e) { return; }
+                    }
+                    // 标记全过期 → 推最后一张（此时列表已空 = 干净帧）
+                    reencodeWithMark();
+                } catch (Throwable t2) {
+                    // 动画失败不影响取帧主流程
+                } finally {
+                    markAnimRunning = false;
+                }
+            }
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
     static void reencodeWithMark() {
         try {
             android.graphics.Bitmap src;
@@ -759,9 +814,26 @@ public class Main {
             android.graphics.Paint pt = new android.graphics.Paint();
             pt.setAntiAlias(true);
             float tw = target.getWidth(), th = target.getHeight();
-            // **水滴波纹**（原来画十字，用户说看不到点击效果）
-            drawRipple(cv, pt, markNx * tw, markNy * th,
-                       System.currentTimeMillis() - markAt, tw, th);
+              /* **画所有还活着的标记，不是只画最新那个。**
+               *
+               * 2026-11-22 独立审计抓到：原来只画 markNx/markNy 这一个点，
+               * 于是连续点击时**后一次会把前一次擦掉** ——
+               * 而且静止屏上永远回不来（没有新帧）。
+               *
+               * 顺带把年龄环也画上：原来 drawAgeRing 只在 encode() 里调，
+               * 静止屏不出帧就等于从来没画过，15 秒到期也没人重绘，
+               * 波纹会永久停在屏幕上，年龄信息变成假话。
+               */
+              long nowMs = System.currentTimeMillis();
+              pruneMarks(nowMs);
+              java.util.List<Mark> snap;
+              synchronized (marks) { snap = new java.util.ArrayList<>(marks); }
+              for (Mark m : snap) {
+                  long age = nowMs - m.at;
+                  if (age < 0 || age > MARK_LIVE_MS) continue;
+                  drawRipple(cv, pt, m.nx * tw, m.ny * th, age, tw, th);
+                  drawAgeRing(cv, pt, m.nx * tw, m.ny * th, age, tw, th);
+              }
             java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
             target.compress(Bitmap.CompressFormat.JPEG, 70, o);
             byte[] jpg = o.toByteArray();
@@ -910,6 +982,7 @@ public class Main {
                         // 静止画面时 ImageReader 不出新帧，不主动重绘就只会看到一张静图。
                         reencodeWithMark();
                         startRippleAnim();
+                        startMarkAnim();   // 静止画面下也能持续重绘（年龄环、到期清理）
                     }
                     out.write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".getBytes());
                 } catch (Throwable t) {

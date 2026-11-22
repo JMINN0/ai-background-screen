@@ -638,26 +638,48 @@ export async function input(args) {
     // **像素坐标要按屏幕尺寸归一化，不是除以 100000。**
     // 原来 x/100000 是拍脑袋的：720 宽的屏上 x=360 会算成 0.0036，
     // 十字画在左上角，跟实际点的地方完全不对。
-    let mx = NaN, my = NaN;
-    if (Number.isFinite(Number(a0.nx)) && Number.isFinite(Number(a0.ny))) {
-      mx = Number(a0.nx); my = Number(a0.ny);
-    } else if (Number.isFinite(Number(a0.x)) && Number.isFinite(Number(a0.y))) {
-      const vst = await vd.status().catch(() => null);
-      const sw = (vst && vst.width) || 720;
-      const sh = (vst && vst.height) || 1592;
-      mx = Number(a0.x) / sw;
-      my = Number(a0.y) / sh;
-    }
-    if (Number.isFinite(mx) && Number.isFinite(my)) {
-      // **两个后端各自独立 try。**
-      // 原来整段共用一个 try/catch：stream.markTap 一抛错，后面的
-      // framesrv.markTap 就被跳过，用户看不到点击位置（实机踩到）。
-      try { stream.markTap(mx, my, String(a0.kind || 'tap')); } catch { /* 慢路径失败不影响快路径 */ }
-      try {
-        const fsrv = await import('./framesrv.js');
-        await fsrv.markTap(mx, my);                        // 快路径（ImageReader）画
-      } catch { /* 快路径失败不影响慢路径 */ }
-    }
+      /* **收集所有触点，不能只取一个。**
+       *
+       * 2026-11-22 独立审计抓到的三个真缺陷：
+       *   ① multitouch 的参数是 p1/p2/p2To，而这里只认 nx/ny 和 x/y
+       *      → 双指操作**一个标记都不画**
+       *   ② swipe 只画起点，看不见「滑到哪」
+       *   ③ 只记一个点，连续点击时后一次覆盖前一次
+       */
+      const pts = [];
+      let verStatus = null;
+      if (a0.x !== undefined || a0.y !== undefined) {
+        verStatus = await vd.status().catch(() => null);
+      }
+      const pushPt = (o) => {
+        if (!o) return;
+        const nx = Number(o.nx), ny = Number(o.ny);
+        if (Number.isFinite(nx) && Number.isFinite(ny)) { pts.push([nx, ny]); return; }
+        const px = Number(o.x), py = Number(o.y);
+        if (Number.isFinite(px) && Number.isFinite(py)) {
+          const sw = (verStatus && verStatus.width) || 720;
+          const sh = (verStatus && verStatus.height) || 1592;
+          pts.push([px / sw, py / sh]);
+        }
+      };
+      pushPt(a0);                                               // tap / hold
+      pushPt({ nx: a0.nx1, ny: a0.ny1, x: a0.x1, y: a0.y1 });   // swipe 起点
+      pushPt({ nx: a0.nx2, ny: a0.ny2, x: a0.x2, y: a0.y2 });   // swipe 终点
+      pushPt(a0.p1);                                            // multitouch 第一指
+      pushPt(a0.p2);                                            // multitouch 第二指
+      pushPt(a0.p2To);                                          // multitouch 第二指终点
+      if (pts.length) {
+        // **两个后端各自独立 try。**
+        // 原来整段共用一个 try/catch：stream.markTap 一抛错，后面的
+        // framesrv.markTap 就被跳过，用户看不到点击位置（实机踩到）。
+        try {
+          for (const pt of pts) stream.markTap(pt[0], pt[1], String(a0.kind || 'tap'));
+        } catch { /* 慢路径失败不影响快路径 */ }
+        try {
+          const fsrv = await import('./framesrv.js');
+          for (const pt of pts) await fsrv.markTap(pt[0], pt[1]);
+        } catch { /* 快路径失败不影响慢路径 */ }
+      }
   } catch { /* 没坐标就算了（滑动这类） */ }
   const kind = String(args?.kind || '').trim();
   // **hold 必须在这个白名单里。**
