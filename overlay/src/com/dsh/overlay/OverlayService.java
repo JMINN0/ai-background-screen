@@ -100,6 +100,9 @@ public class OverlayService extends Service {
             try { win.applyAspect(); } catch (Throwable t) { /* 单个失败不影响其它 */ }
         }
         relayoutAuto();
+        /* 重排之后必须再全量夹取 —— relayoutAuto 只管 autoPos 的窗口，
+         * 用户拖过的和收起的不在它管辖内，转屏后可能整块在屏外。 */
+        try { clampAll(); } catch (Throwable t) { /* 尽力而为 */ }
         /* 拖拽中心（hub）和左右投放条是独立窗口，位置是内联算的，
          * 这里按新尺寸重新摆一次 —— 否则转屏后它们会停在旧坐标上，
          * 用户拖动浮窗时找不到那个圆。 */
@@ -117,11 +120,40 @@ public class OverlayService extends Service {
                 wm.updateViewLayout(leftBar, leftLp);
             }
             if (rightBar != null && rightLp != null) {
-                rightLp.x = getResources().getDisplayMetrics().widthPixels - barW();
+                /* **gravity=TOP|END 时 x 是「右边距」，不是左边坐标。**
+                 * 2026-11-22 审计抓到：这里原来写 `widthPixels - barW()`，
+                 * 那是 START 语义 —— 在 END 下等于把「关闭并停后台屏」的红条
+                 * 摆到 x≈0（屏幕左边缘），和蓝色「只关浮窗」条重叠。
+                 * 转屏后用户拖动浮窗，右条消失/错位，连操作都做不出来。
+                 * 正确写法是给它一个左边距（和 layoutDropViews 保持一致）。
+                 */
+                rightLp.x = dp(4);
                 rightLp.y = (int) ((long) getResources().getDisplayMetrics().heightPixels / 2 - dp(18));
                 wm.updateViewLayout(rightBar, rightLp);
             }
         } catch (Throwable t) { /* 投放条可能还没建 */ }
+    }
+
+    /**
+     * **把所有窗口都夹回屏内 —— 不只是自动定位的。**
+     *
+     * 2026-11-22 审计指出：转屏后 `relayoutAuto` 只处理 `autoPos=true` 的窗口，
+     * 用户拖过位置的（autoPos=false）和收起的窗口完全不管 —— 它们在转屏后
+     * 可能整块在屏外，用户既看不到也点不到，只能 force-stop。
+     *
+     * 所以转屏重排之后必须再跑一次全量夹取。
+     */
+    private void clampAll() {
+        for (Win win : wins.values()) {
+            if (win.root == null || win.lp == null) continue;
+            // 收起状态用 lp 里的真实小尺寸；否则用 curW/curH
+            int ww = win.collapsed ? Math.max(dp(20), win.lp.width) : Math.max(dp(40), win.curW);
+            int hh = win.collapsed ? Math.max(dp(20), win.lp.height) : Math.max(dp(40), win.curH);
+            try {
+                win.clampPos(ww, hh);
+                wm.updateViewLayout(win.root, win.lp);
+            } catch (Throwable t) { /* 单个失败不影响其它 */ }
+        }
     }
 
     @Override
@@ -318,8 +350,16 @@ public class OverlayService extends Service {
      * 从左上往下扫，步长 dp(16)（足够细，不会漏掉能放的地方但不至于太慢）。
      */
     private int[] findFreeSlot(List<Rect> placed, int ww, int wh, int screenW, int screenH) {
-        int startX = dp(6), startY = dp(96), step = dp(16);
-        int limitX = screenW - ww - dp(6);
+        /* **必须从 EDGE_GUARD 开始，不能用 dp(6)。**
+         *
+         * 2026-11-22 独立审计抓到：这里原来是 dp(6)≈21px，而 EDGE_GUARD=96px ——
+         * 于是级联排布把所有窗口放在离左边 21px 的地方，正好压在系统侧滑返回手势带上。
+         * 2026-11-21 花了力气修的「B站侧滑返回被悬浮窗抢走」，会在**每次建窗口
+         * 和每次转屏**时被这里撤销（只有用户手动拖一下再松手才修回来）。
+         * 兜底分支同理，宁可放不下也别贴边。
+         */
+        int startX = EDGE_GUARD, startY = dp(96), step = dp(16);
+        int limitX = Math.max(startX, screenW - ww - EDGE_GUARD);   // 右边也留手势带
         int limitY = screenH - wh - dp(16);
         for (int y = startY; y <= limitY; y += step) {
             for (int x = startX; x <= limitX; x += step) {
@@ -332,7 +372,7 @@ public class OverlayService extends Service {
             }
         }
         // 放不下：退到左上角（宁可重叠也别跑到屏幕外）
-        return new int[]{dp(6), startY};
+        return new int[]{EDGE_GUARD, startY};
     }
 
     @Override
@@ -1169,6 +1209,16 @@ int dx = (int)(e.getRawX() - downX);
                              */
                             clampPos(curW, curH);
                             try { wm.updateViewLayout(root, lp); } catch (Throwable t) { }
+                            /* **用户摆过位置之后，就别再自动挪它了。**
+                             *
+                             * 2026-11-22 独立审计抓到：`autoPos` 这个标志
+                             * 声明时是 true，注释写着「用户拖过就设 false，重排时不动它」，
+                             * 但**全文件没有任何一处赋 false** —— 于是 relayoutAuto 的
+                             * 「障碍表」永远是空的，用户辛苦摆好的位置会在
+                             * 建新窗口 / 比例变化 / 转屏时被一律弹回自动槽位。
+                             * 这正是用户说的「我最小化的窗口怎么跑别处去了」的机制之一。
+                             */
+                            if (moved) autoPos = false;
                             if (!moved && System.currentTimeMillis() - downAt < 400) toggle();
 
                         }
@@ -1261,18 +1311,35 @@ int dx = (int)(e.getRawX() - downX);
             if (userW > 0) {
                 w = userW;
                 h = Math.max(dp(60), Math.round(w / a));
+                /* 用户设过宽度也要受高度上限约束 —— 原来这里是裸的，
+                 * 比例一翻（竖屏内容 + 横屏屏）窗口能高过屏幕。 */
+                int maxHu = Math.round(screenH * 0.92f);
+                if (h > maxHu) { h = maxHu; w = Math.max(dp(80), Math.round(h * a)); }
             } else {
-                // **多窗口时默认小一点**：一份 62% 屏宽，三份叠起来就满了。
-                // 按已有窗口数收缩：1 个 62%，2-3 个 46%，4+ 个 38%。
                 int n = Math.max(1, wins.size());
-                // **单窗口默认 40%，不要 62%。**
-                // 用户反馈：默认建悬浮窗时占了屏幕大半，挡着他看主屏。
-                // 40% 宽在 720p 逻辑宽上约 490px，内容仍看得清，但留出 60% 给用户。
-                float frac = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
-                w = Math.round(screenW * frac);
-                h = Math.round(w / a);
-                int maxH = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
-                if (h > maxH) { h = maxH; w = Math.round(h * a); }
+                /* **横屏和竖屏的取宽规则不同。**
+                 *
+                 * 2026-11-22 审计推演出：横屏（2688x1216）+ 竖屏内容（aspect 0.452）时，
+                 * 原来先 w=0.40*2688=1075 再 h=w/a=2378，超过 maxH(0.55*1216=669)
+                 * 回退成 h=669、w=669*0.452=302px（88dp 的细缝），字和图全糊。
+                 *
+                 * 根因是「先按宽度算，再用高度砍」在横屏下是错的：
+                 * 横屏的稀缺资源是高，不是宽。所以横屏改成先看高度，
+                 * 宽高两个方案里取更舒服的那个。
+                 */
+                if (screenW > screenH) {
+                    int maxH = Math.round(screenH * (n <= 1 ? 0.86f : 0.62f));
+                    int fracW = Math.round(screenW * (n <= 1 ? 0.42f : 0.30f));
+                    int hFromW = Math.round(fracW / a);
+                    if (hFromW <= maxH) { w = fracW; h = hFromW; }
+                    else { h = maxH; w = Math.round(h * a); }
+                } else {
+                    float frac = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
+                    w = Math.round(screenW * frac);
+                    h = Math.round(w / a);
+                    int maxH = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
+                    if (h > maxH) { h = maxH; w = Math.round(h * a); }
+                }
             }
             int capW = Math.round(screenW * 0.92f);
             if (w > capW) { w = capW; h = Math.round(w / a); }
