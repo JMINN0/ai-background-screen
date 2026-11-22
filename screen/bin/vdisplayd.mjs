@@ -406,108 +406,70 @@ async function shutdown(reason) {
 }
 
 function startIdleWatch() {
+  /*
+   * **所有周期性检查合并成一个 10 秒 tick。**
+   *
+   * 2026-11-22 对抗审查：原来有 4 个独立定时器（30s 空闲 / 5s 风控 / 10s 对账 /
+   * 15s 看门狗），每一个都自己跑一次 `vd.status()` —— 而 status() 内部是一次
+   * `dumpsys display` + `dumpsys window` + `dumpsys window displays`。
+   * 合计约 1.0–1.3 个 adb shell/秒 常驻空转，和 AI 自己的 input/shot 抢同一条 adb 通路，
+   * 而 daemon 空闲要 10 分钟才退出，等于一直在抢。
+   *
+   * 合并后每个 tick 只查一次 status，其余判断全部复用它的结果：
+   *   · 空闲退出   —— 用 st.running
+   *   · 运行时对账 —— 用 st.allDisplays（**不再额外 dumpsys**）
+   *   · 推流看门狗 —— 一次本地 HTTP，很便宜
+   *   · 风控同步   —— 每两个 tick 做一次（20 秒，比原来 5 秒还宽松）
+   *
+   * adb 调用从约 1.2 次/秒 降到约 0.2 次/秒。
+   */
+  let tickNo = 0;
   setInterval(async () => {
-    const idle = Date.now() - lastActive;
-    if (idle < IDLE_EXIT_MS) return;
-    // 屏还开着就别退——用户可能正等着用
-    const st = await vd.status().catch(() => null);
-    if (st?.running) return;
-    await shutdown('idle');
-  }, 30_000).unref?.();
+    tickNo++;
+    try {
+      const st = await vd.status().catch(() => null);
+      if (!st) return;
 
-    /* 每 5 秒把当前 App 的风控等级同步给浮窗。
-     *
-     * 浮窗每 3 秒重读那个文件并重绘，但文件原来只在 input() 时才写 ——
-     * 用户在那块屏上切了 App 又没点屏幕，底部 L 等级就一直停在旧值。
-     * 等级是用来判断「这一步能不能这么操作」的，过期值比不显示更糟。
-     *
-     * 5 秒是权衡：一次 dumpsys 约 250ms，太快会拖 CPU；
-     * 人切换 App 再看浮窗，5 秒滞后可以接受。没屏在跑就跳过，不空转。
-     */
-    setInterval(async () => {
-      try {
-        const st = await vd.status().catch(() => null);
-        if (!st?.running) return;
-        await vd.syncRiskLevel();
-      } catch { /* 同步失败不影响守护进程 */ }
-    }, 5_000).unref?.();
+      // ① 空闲退出：屏没在跑且确实没人用的时间够长
+      if (!st.running) {
+        if (Date.now() - lastActive >= IDLE_EXIT_MS) {
+          await shutdown('idle');
+          return;
+        }
+        streamFailStreak = 0;
+        return;
+      }
+      if (!st.displayId) return;
 
-    /*
-     * **运行时对账：屏幕是不是真的还在。**
-     *
-     * 2026-11-22 实机抓到：daemon 的 /status 报 running:true / displayId:763 / uptime:309，
-     * 而系统里那块虚拟屏早就没了。状态是假的，于是后续所有操作都对着一个
-     * 不存在的 displayId 发，静默失败，用户只看到「黑屏」。
-     *
-     * 根因：vd.status() 读的是模块内部 state，不是系统真值。
-     * 这里每 10 秒拿一次系统真值（dumpsys 里还有没有这个 displayId），
-     * 对不上就把内部状态改成「已停止」并清掉 displayId ——
-     * 让调用方知道需要重建，而不是继续对着空气操作。
-     *
-     * 为什么不自动重建：重建要重投 App、重起 framesrv，
-     * 用户可能已经不要这块屏了。先如实报告。
-     */
-    setInterval(async () => {
-      try {
-        const st = await vd.status().catch(() => null);
-        if (!st?.running || !st.displayId) return;
-        const alive = await vd.displayExists(st.displayId).catch(() => true);
-        if (alive) return;
+      /* ② 运行时对账 —— **直接用 status 里已有的 allDisplays，不再查一次。**
+       * 这是本次合并省下的最大一笔。 */
+      const ids = Array.isArray(st.allDisplays) ? st.allDisplays.map(String) : null;
+      const dispAlive = ids ? ids.includes(String(st.displayId)) : true;   // 查不到就不敢断言
+      if (!dispAlive) {
         console.error('[vdisplayd] 对账：display ' + st.displayId + ' 已不存在，修正内部状态');
         try { await vd.markLost(); } catch { /* 尽力而为 */ }
-      } catch { /* 对账失败不能拖垮守护进程 */ }
-    }, 10_000).unref?.();
+        streamFailStreak = 0;
+        return;
+      }
 
-    /*
-     * **推流看门狗：framesrv 死了自己拉起来。**
-     *
-     * 用户要求「尽可能自动」。原来 framesrv 崩掉之后，只有浮窗在无限重试等它，
-     * 没有任何角色负责把它拉起来 —— 浮窗等的是一个永远不回来的服务。
-     * 屏还活着的话，推流死了就是纯粹的可自愈故障，不该等用户发现。
-     *
-     * 每 15 秒查一次：屏在跑、但端口连不上 → 说明 framesrv 没了 → 重起它。
-     * 连续失败 3 次就停手并报错，避免在「屏本身有问题」时无限空转烧 CPU。
-     */
-    let streamFailStreak = 0;
-    setInterval(async () => {
+      // ③ 推流看门狗：本地 HTTP，不花 adb
+      const n = Number(st.displayId) || 0;
+      const port = 38820 + (((n % 20) + 20) % 20);
+      let up = false;
       try {
-        const st = await vd.status().catch(() => null);
-        if (!st?.running || !st.displayId) { streamFailStreak = 0; return; }
-
-        /* **先确认屏真的还在，再谈重起推流。**
-         *
-         * 2026-11-22 实机：屏（scrcpy server）已经死了，这里只重起 framesrv，
-         * 结果 framesrv 起来也没屏可镜像，白忙一场，日志只留一句「第 1 次重起」。
-         * status() 的 running 来自内部状态，不能当系统真值 —— 必须问系统。
-         */
-        const dispAlive = await vd.displayExists(st.displayId).catch(() => true);
-        if (!dispAlive) {
-          console.error('[vdisplayd] 看门狗：屏 ' + st.displayId + ' 已经没了，先修正状态（推流无处可挂）');
-          try { await vd.markLost(); } catch { /* 尽力而为 */ }
-          streamFailStreak = 0;
-          return;
+        const r = await fetch('http://127.0.0.1:' + port + '/status', { signal: AbortSignal.timeout(3000) });
+        if (r.ok) {
+          const j = await r.json().catch(() => null);
+          // 端口碰撞时可能连到别人的 server，必须核对 displayId
+          up = !(j && j.displayId != null && String(j.displayId) !== String(st.displayId));
         }
+      } catch { up = false; }
 
-        const n = Number(st.displayId) || 0;
-        const port = 38820 + (((n % 20) + 20) % 20);
-        /* **不能只看 HTTP 200 —— 还要看这个端口是不是本屏的。**
-         * 2026-11-22 对抗审查：端口碰撞时公式算出的端口可能正好是**别人**的，
-         * 探测会返回 ok，看门狗就得出「一切正常」的结论，
-         * 而真实情况是这块屏根本没有 framesrv。
-         */
-        let up = false;
-        try {
-          const r = await fetch('http://127.0.0.1:' + port + '/status', { signal: AbortSignal.timeout(3000) });
-          if (r.ok) {
-            const j = await r.json().catch(() => null);
-            up = !(j && j.displayId != null && String(j.displayId) !== String(st.displayId));
-          }
-        } catch { up = false; }
-        if (up) { streamFailStreak = 0; return; }
-        if (streamFailStreak >= 3) {
-          console.error('[vdisplayd] 推流连续 3 次拉不起来（port ' + port + '），停止重试');
-          return;
-        }
+      if (up) {
+        streamFailStreak = 0;
+      } else if (streamFailStreak >= 3) {
+        console.error('[vdisplayd] 推流连续 3 次拉不起来（port ' + port + '），停止重试');
+      } else {
         streamFailStreak++;
         console.error('[vdisplayd] 推流没在听（port ' + port + '），第 ' + streamFailStreak + ' 次重起');
         try {
@@ -516,9 +478,14 @@ function startIdleWatch() {
         } catch (e) {
           console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
         }
-      } catch { /* 看门狗自己不能崩 */ }
-    }, 15_000).unref?.();
+      }
 
+      // ④ 风控同步：每两个 tick（20 秒）一次就够了，原来 5 秒太频繁
+      if (tickNo % 2 === 0) {
+        try { await vd.syncRiskLevel(); } catch { /* 同步失败不影响守护进程 */ }
+      }
+    } catch { /* 定时器自己不能崩 */ }
+  }, 10_000).unref?.();
 }
 
 /**
