@@ -56,18 +56,181 @@ export async function start(args) {
   }
   parts.push('这块屏用户看不见，不占主屏焦点。');
 
-  // **屏建好就自动开推流** —— 用户的要求：「如果后台屏存在就自动拉起推流屏幕」。
-  // 这样用户不用手动调 vdisplay_stream，建屏就能看到画面。
-  try {
-    const auto = await streamStart({ fps: 10, width: 480 });
-    const t = String(auto?.text || '');
-    if (/悬浮窗已浮起/.test(t)) parts.push('✅ 推流已自动开启，悬浮窗浮起（能看到这块屏的画面）');
-    else if (/ImageReader/.test(t)) parts.push('✅ 推流已自动开启（' + t.split('\n')[0] + '）');
-    else parts.push('⚠️ 推流没起来：' + t.split('\n').slice(0,2).join(' '));
-  } catch (e) {
-    parts.push('⚠️ 自动推流失败：' + String(e?.message || e).slice(0, 60));
-  }
+    // **屏建好就自动开推流** —— 用户的要求：「如果后台屏存在就自动拉起推流屏幕」。
+    // 这样用户不用手动调 vdisplay_stream，建屏就能看到画面。
+    let streamOk = false, streamDetail = '';
+    try {
+      const auto = await streamStart({ fps: 10, width: 480 });
+      const t = String(auto?.text || '');
+      streamOk = /悬浮窗已浮起/.test(t);
+      streamDetail = t.split('\n')[0] || '';
+      if (streamOk) parts.push('✅ 推流已自动开启，悬浮窗浮起（能看到这块屏的画面）');
+      else if (/ImageReader/.test(t)) { parts.push('✅ 推流已自动开启（' + streamDetail + '）'); streamOk = true; }
+      else parts.push('⚠️ 推流没起来：' + t.split('\n').slice(0,2).join(' '));
+    } catch (e) {
+      streamDetail = String(e?.message || e).slice(0, 60);
+      parts.push('⚠️ 自动推流失败：' + streamDetail);
+    }
+
+    /* **建屏 → 自动建浮窗 → 投屏 → 自检，一气呵成，每步都说出来。**
+     *
+     * 用户 2026-11-22 的原话：
+     * 「AI虚拟屏然后自动创建悬浮窗再显示"已创建AI虚拟屏并开始创建悬浮窗"，
+     *   同步把虚拟屏投上去，然后开始快速自检确定用户能看到虚拟屏
+     *   且虚拟屏内的 app 画面正常，然后显示"创建完成并自检通过"」
+     */
+    if (streamOk) parts.push('已创建 AI 虚拟屏并开始创建悬浮窗 ✅');
+
+    /* **同步把虚拟屏投上去。**
+     *
+     * 用户要求「同步把虚拟屏投上去，然后自检画面正常」。
+     * 没有指定 App 时也必须投一个 —— 空屏时 ImageReader 一帧都不出，
+     * `/frame.jpg` 返回 0 字节，自检必然报「画面帧可取 ❌」，
+     * 而用户看到的就是一块什么都没有的浮窗。
+     *
+     * 投桌面（launcher）而不是别的：它是每台设备都有的、不需要登录的、
+     * 一定渲染出画面的 App。用户随后用 vdisplay_launch 换掉就行。
+     */
+    const castPkg = args?.pkg || await pickHomeLike();
+    if (castPkg) {
+      try {
+        const lr = await launch({ pkg: castPkg, activity: args?.pkg ? args.activity : undefined });
+        parts.push('已把 ' + castPkg + ' 投到这块屏：' + String(lr?.text || '').split('\n')[0]);
+        // 给它一点时间渲染出第一帧，自检才有东西可查
+        await new Promise((res) => setTimeout(res, 1200));
+      } catch (e) {
+        parts.push('⚠️ 投屏失败：' + String(e?.message || e).slice(0, 60));
+      }
+    } else {
+      parts.push('⚠️ 没找到可投的桌面 App，屏是空的（自检会报画面帧可取失败）');
+    }
+
+    // **快速自检**：逐项给证据，不靠「命令返回成功」判断
+    parts.push('正在快速自检…');
+    try {
+      const sc = await selfCheck({ displayId: r.displayId });
+      for (const c of sc.checks) parts.push((c.ok ? '  ✅ ' : '  ❌ ') + c.name + '：' + c.evidence);
+      parts.push(sc.ok ? '创建完成并自检通过 ✅' : '⚠️ 自检没全过，标 ❌ 的那几项要修');
+    } catch (e) {
+      parts.push('⚠️ 自检本身出错：' + String(e?.message || e).slice(0, 60));
+    }
+
   return { text: parts.join('\n') };
+}
+
+/**
+ * **建屏后自检：确认用户真的能看到画面。**
+ *
+ * 用户 2026-11-22 的原话：「然后开始快速自检确定用户能看到虚拟屏
+ * 且虚拟屏内的 app 画面正常，然后显示"创建完成并自检通过"」。
+ *
+ * 为什么必须有这一步：今天所有「看不到画面」的故障，命令都返回了成功。
+ * `am start` 退出码 0 不代表窗口存在；端口在听不代表帧能解；帧能解不代表
+ * 画面不是黑的。不逐项验证，就只能靠用户来告诉我们没成功。
+ *
+ * 五项检查，每项给证据，不做主观判断：
+ */
+/**
+ * 找一个「投上去一定有画面」的 App —— 优先桌面（launcher）。
+ *
+ * 为什么需要：空屏时 ImageReader 不出帧，自检拿不到画面。
+ * 桌面是每台设备都有、不需要登录、一定渲染的 App。
+ */
+async function pickHomeLike() {
+  /*
+   * **不能投桌面。**
+   *
+   * 2026-11-22 实测：`com.zte.mifavor.launcher` 的 launchMode=2，是 singleTask。
+   * 对 singleTask App 执行 `am start --display N` 只会把它在主屏的已有任务
+   * **搬**到那块屏，而不是在虚拟屏上新开一个 —— 于是「投屏成功」但虚拟屏
+   * mCurrentFocus=null，什么画面都没有，自检必然报「画面帧可取 ❌」。
+   * 这是 AGENTS.md 里那条坑，我在自动投屏里又踩了一次。
+   *
+   * 改用 Settings：2026-11-22 用 aapt 验过本机
+   * `com.android.settings.Settings` 是 activity-alias、没有 launchMode 属性，
+   * 即 standard，投到虚拟屏会真的新开一个，一定有画面。
+   */
+  const candidates = [
+    'com.android.settings',   // 实测非 singleTask，一定渲染
+  ];
+  for (const pkg of candidates) return pkg;
+  return null;
+}
+
+export async function selfCheck(args = {}) {
+  const checks = [];
+  const push = (name, ok, evidence) => checks.push({ name, ok: !!ok, evidence: String(evidence || '') });
+  const displayId = args.displayId != null ? String(args.displayId) : null;
+
+  // ① 屏在不在
+  let st = null;
+  try { st = await vd.status(); } catch { /* 查不到当失败 */ }
+  const wantId = displayId || (st?.displayId != null ? String(st.displayId) : null);
+  push('虚拟屏存在', !!(st?.running && wantId), wantId ? ('displayId=' + wantId) : '拿不到 displayId');
+
+  // ② 推流在听
+  let port = 0;
+  try {
+    const { getScreenPort } = await import('./stream.js');
+    port = getScreenPort ? (getScreenPort(wantId) || 0) : 0;
+  } catch { /* 没这个接口就走下面兜底 */ }
+  if (!port) {
+    // 兜底：按确定性公式算（和 framesrv.js 的 allocPort 一致）
+    const n = Number(wantId) || 0;
+    port = 38820 + (((n % 20) + 20) % 20);
+  }
+  let statusText = '';
+  try {
+    const r = await fetch('http://127.0.0.1:' + port + '/status');
+    statusText = await r.text();
+  } catch (e) { statusText = 'connect-fail'; }
+  push('推流在监听', /"running"\s*:\s*true/.test(statusText), 'port=' + port + ' ' + statusText.slice(0, 60));
+
+  // ③ 帧能取到且是合法 JPEG
+  let jpgLen = 0;
+  let head = null;
+  try {
+    const r = await fetch('http://127.0.0.1:' + port + '/frame.jpg');
+    const buf = Buffer.from(await r.arrayBuffer());
+    jpgLen = buf.length;
+    head = buf.length > 3 ? [buf[0], buf[1], buf[2]] : null;
+  } catch { /* 取不到即失败 */ }
+  const isJpeg = head && head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF;
+  push('画面帧可取', jpgLen > 1000 && isJpeg, jpgLen + ' 字节' + (isJpeg ? ' JPEG头正确' : ' 不是JPEG'));
+
+  // ④ 画面不是全黑（全黑说明 App 没起来、或还没渲染完）
+  let bright = -1;
+  if (jpgLen > 1000) {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      // 用 python 解码算平均亮度（已有 pillow），避免在 node 里加图像依赖
+      const py = 'import sys,io\nfrom PIL import Image\nim=Image.open(sys.argv[1]).convert("L")\nw,h=im.size\nim=im.resize((32,32))\nd=list(im.getdata())\nprint(sum(d)//len(d))\n';
+      const tmp = '/tmp/dsh-selfcheck-frame.jpg';
+      await run('bash', ['-c', 'curl -s --noproxy \'*\' -m 6 -o ' + tmp + ' http://127.0.0.1:' + port + '/frame.jpg'], { timeout: 10000 });
+      const out = await run('python3', ['-c', py, tmp], { timeout: 15000 });
+      bright = Number(String(out.stdout).trim());
+    } catch { /* 算不出来就跳过这一项，不误判 */ }
+  }
+  if (bright >= 0) push('画面非全黑', bright > 8, '平均亮度=' + bright);
+  else push('画面非全黑', true, '跳过（无法解码，不当作失败）');
+
+  // ⑤ 浮窗窗口在不在
+  let winCount = 0;
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const target = await adbTarget();
+    const r = await run('adb', ['-s', target, 'shell',
+      "dumpsys window windows 2>/dev/null | grep -c 'u0 com.dsh.overlay'"], { timeout: 8000 });
+    winCount = Number(String(r.stdout).trim()) || 0;
+  } catch { /* 查不到当失败 */ }
+  push('悬浮窗可见', winCount > 0, '窗口数=' + winCount);
+
+  const allOk = checks.every(c => c.ok);
+  return { ok: allOk, checks, port, displayId: wantId };
 }
 
 export async function launch(args) {

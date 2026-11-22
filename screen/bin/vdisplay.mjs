@@ -129,17 +129,16 @@ function human(action, r) {
 
   switch (action) {
     case 'start':
+      // daemon 的 start 现在直接转发 T.start()，返回 {text}：整段播报 + 自检都在里面。
+      // 老格式（displayId/sfId/canHost 字段）保留兜底，万一哪条路还没统一。
+      if (typeof r?.text === 'string' && r.text) return r.text;
       if (r.ok === false) return `建屏失败：${r.hint || '未知原因'}`;
       lines.push(`虚拟屏已就绪：displayId=${r.displayId}`);
       lines.push(`SurfaceFlinger id: ${r.sfId || '(未取到)'}`);
       lines.push(`能托管 App：${r.canHost ? '是' : '否'}`);
       lines.push(`硬件合成（HWC）：${r.hwc ? '已开启' : '未开启'}`);
-      /* 建屏现在连带推流和浮窗（见 daemon 的 start），把结果显示出来 ——
-       * 以前从 CLI 建完屏什么都不说，用户以为能看到画面，其实没有浮窗。 */
       if (r.stream) {
-        lines.push(r.stream.ok
-          ? '推流：已开启 ✅ 悬浮窗已浮起'
-          : `推流：没起来 ⚠️ ${r.stream.detail || ''}`);
+        lines.push(r.stream.ok ? '推流：已开启 ✅ 悬浮窗已浮起' : `推流：没起来 ⚠️ ${r.stream.detail || ''}`);
       }
       return lines.join('\n');
 

@@ -111,6 +111,20 @@ export async function destroy(screenId, o = {}) {
   const s = screens.get(screenId);
   if (!s) return { ok: false, hint: `没有这块屏「${screenId}」` };
 
+  /*
+   * **先关这块屏自己的浮窗和推流。**
+   *
+   * 2026-11-22 实机：destroy 只 stop 掉 display，浮窗还开着，
+   * 一直去连一个没人监听的端口 —— 多建几块屏再关就攒一堆僵尸窗口。
+   * 只关这一块的（按 displayId 查端口），不要全关。
+   */
+  try {
+    const T = await import('./tools.js');
+    const dispId = s.ctx?.displayId;
+    const p = dispId != null ? (T.screenPorts?.get?.(Number(dispId)) || 0) : 0;
+    try { await T.overlayStop(p || undefined); } catch { /* 窗口本来就不在 */ }
+  } catch { /* tools 加载失败不阻塞销毁 */ }
+
   vd.setActive(s.ctx);
   try {
     await vd.stop({ forceStopApps: o.forceStopApps === true });

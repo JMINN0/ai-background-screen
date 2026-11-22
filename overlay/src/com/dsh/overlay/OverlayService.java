@@ -229,6 +229,11 @@ public class OverlayService extends Service {
         relayoutAuto();
     }
 
+    /** 延迟重排的句柄：多个窗口同一帧到达时只重排一次，避免互相打架。 */
+    private final Runnable relayoutOnce = new Runnable() {
+        public void run() { relayoutAuto(); }
+    };
+
     private void relayoutAuto() {
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int screenH = getResources().getDisplayMetrics().heightPixels;
@@ -1212,6 +1217,20 @@ int dx = (int)(e.getRawX() - downX);
                     try { wm.updateViewLayout(root, lp); } catch (Throwable t) { /* ignore */ }
                 }
                 if (sizeChanged) ui.post(new Runnable() { public void run() { relayoutAuto(); } });
+
+                /* **真实尺寸确定后要重新排一次所有窗口。**
+                 *
+                 * 2026-11-22 实机抓到两个窗口都在 y=585 重叠：加窗口时还没有帧，
+                 * curW/curH 是 0，findFreeSlot 只能按兜底比例算位置；等第一帧到了、
+                 * 真实尺寸定下来，位置却没人重算，于是一直重叠。
+                 *
+                 * 这里在尺寸变化后延迟一点重排（让同类窗口也走完各自的尺寸计算），
+                 * 一次 post 统一重放，避免每个窗口各排一次互相打架。
+                 */
+                if (sizeChanged) {
+                    ui.removeCallbacks(relayoutOnce);
+                    ui.postDelayed(relayoutOnce, 250);
+                }
             }
         }
 

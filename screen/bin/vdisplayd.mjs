@@ -61,40 +61,20 @@ let mutexTail = Promise.resolve();   // 全局互斥链，串行化有副作用�
 
 const ACTIONS = {
   async start(args) {
-    const r = await vd.start({
-      width: Number(args?.width) || 0,        // 0 = 自动按物理屏比例
-      height: Number(args?.height) || 0,
-      dpi: Number(args?.dpi) || 320,
-      systemDecorations: args?.systemDecorations === true,
-      orientation: args?.orientation,
-      hwc: args?.hwc || 'auto',
-    });
-    if (!r?.ok) return r;
-
     /*
-     * **建屏就是全套：建屏 + 推流 + 浮窗。**
+     * **三条入口走同一个函数。**
      *
-     * 2026-11-22 实机踩到：插件工具 vdisplay_start 会自动推流，但 CLI 和 MCP 走的是
-     * daemon 这条 start，只建屏不推流 —— 用户「建了屏却什么都看不到」。
-     * 三条入口行为不一致，而且不报错，最难排查。
+     * 2026-11-22 的教训：daemon 原来自己拼 vd.start() + streamStart，
+     * 和插件工具的 T.start() 是两份代码 —— 于是插件能自检、CLI 不能；
+     * 插件报「已创建并开始创建悬浮窗」、CLI 只说「已就绪」。
+     * 凡是「同一条产品逻辑写两遍」，迟早会漂移，而且用户会先发现。
      *
-     * 现在把推流收进 daemon 的 start，任何入口建屏都会连带推流和浮窗。
-     * 用动态 import 是为了避免顶层循环依赖（tools.js 会反向依赖 vd）。
-     * 推流失败不影响建屏结果 —— 屏已经建好了，如实告诉调用方为什么没画面。
+     * 现在直接调 T.start()：建屏、自动推流、投屏、逐项自检全在里面，
+     * 三个入口拿到的是同一份结果、同一段文案。
      */
-    let stream = null;
-    try {
-      const T = await import('../src/tools.js');
-      const auto = await T.streamStart({ fps: 2, width: 360 });
-      const txt = String(auto?.text || '');
-      stream = {
-        ok: /悬浮窗已浮起|ImageReader/.test(txt),
-        detail: txt.split('\n')[0] || '',
-      };
-    } catch (e) {
-      stream = { ok: false, detail: String(e?.message || e).slice(0, 120) };
-    }
-    return { ...r, stream };
+    const T = await import('../src/tools.js');
+    const r = await T.start(args || {});
+    return r;
   },
   async stop(args) {
     /*
@@ -184,7 +164,24 @@ const ACTIONS = {
   /* ===== 多屏池（pool.js） ===== */
   async poolCreate(args) {
     const pool = await import('../src/pool.js');
-    return pool.create(args || {});
+    const r = await pool.create(args || {});
+    if (!r?.ok) return r;
+    /*
+     * **多屏必须每屏一套推流和浮窗。**
+     *
+     * 和 start 同一个毛病：插件工具 screen_new 会连带推流，但 daemon 这条只建屏。
+     * 用户要求「开多少个就带多少个悬浮窗起来」，从 CLI/MCP 建池屏时一个窗口都没有。
+     * 窗口位置由 streamStart 自己按池里第几块屏错开（见 newScreen 的注释）。
+     */
+    if (args?.overlay === false) return { ...r, stream: { ok: false, detail: '按参数未起浮窗' } };
+    try {
+      const T = await import('../src/tools.js');
+      const auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
+      const txt = String(auto?.text || '');
+      return { ...r, stream: { ok: /悬浮窗已浮起/.test(txt), detail: txt.split('\n')[0] || '' } };
+    } catch (e) {
+      return { ...r, stream: { ok: false, detail: String(e?.message || e).slice(0, 120) } };
+    }
   },
   async poolList() {
     const pool = await import('../src/pool.js');
