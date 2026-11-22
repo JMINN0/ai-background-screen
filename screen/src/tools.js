@@ -174,6 +174,26 @@ export async function start(args) {
         if (co.ok && co.closed && co.closed.length) {
           parts.push('清理了 ' + co.closed.length + ' 个失效的旧浮窗（端口 ' + co.closed.join(', ') + '）');
         }
+        /* **清理完必须重新确认窗口还在。**
+         * 用户 2026-11-22 的方法论说得很对：不能只看命令返回，要截主屏看。
+         * 这一步就是「关僵尸之后，确认我没把自己关掉」。 */
+        if (co.ok && co.closed && co.closed.length) {
+          await new Promise((res) => setTimeout(res, 400));
+          const still = await verifyOverlayVisible(sc.port);
+          if (!still.ok) {
+            parts.push('⚠️ 清理旧窗口之后当前窗口不见了：' + still.hint
+              + '（这是 bug，不是正常现象，请重试或报告）');
+            // 再拉一次，尽量自愈
+            try {
+              await overlayStart(sc.port);
+              await new Promise((res) => setTimeout(res, 700));
+              const again = await verifyOverlayVisible(sc.port);
+              parts.push(again.ok ? '  🔧 已重新拉起，窗口回来了' : '  ❌ 重新拉起也失败');
+            } catch { /* ignore */ }
+          } else {
+            parts.push('✅ 清理后确认窗口仍在（' + still.evidence + '）');
+          }
+        }
       } catch { /* 清理失败不影响建屏结果 */ }
 
       const unm = sc.unmeasured || 0;
@@ -898,6 +918,125 @@ async function ensureOverlayInstalled(run, target) {
  *
  * @param {number[]} validPorts 当前所有应该在的端口
  */
+/**
+ * **验证浮窗到底在不在 —— 必须截主屏看，不能只信 dumpsys。**
+ *
+ * 用户 2026-11-22 的原话方法论：
+ *   「有时候你要是测试你就要调用截屏截图我主屏看看是不是真的有悬浮窗，
+ *     没有就看看是不是最小化了没看见，还没有就看看后台是不是真的创建了还是有 bug」
+ *
+ * 判断顺序：
+ *   ① dumpsys 里有没有这个端口的窗口 → 没有 = 真的没建
+ *   ② 有的话看宽度 → 36dp 左右 = 最小化了，不是没建
+ *   ③ 截主屏看那个矩形有没有内容 → 空 = 建了但没画出来
+ *
+ * 为什么要截主屏：`dumpsys window` 有记录不代表用户能看到 ——
+ * 窗口可能在屏幕外、可能被完全遮住、可能 ImageView 没拿到帧所以是个透明壳。
+ * 今天所有「说创建了但用户看不到」的故障，都是只信了 dumpsys。
+ */
+export async function verifyOverlayVisible(port) {
+  const p2 = Number(port) || 0;
+  if (!p2) return { ok: false, state: 'no-port', evidence: '', hint: '没有端口，无法验证' };
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const target = await adbTarget();
+
+    // ① 有没有这个端口的窗口
+    const r = await run('adb', ['-s', target, 'shell',
+      "dumpsys window windows 2>/dev/null | grep -A4 'dsh-overlay:" + p2 + "'"],
+      { timeout: 8000 }).catch(() => ({ stdout: '' }));
+    const txt = String(r.stdout || '');
+    const winMatches = txt.match(/Window\{[a-f0-9]+ u0 dsh-overlay:\d+\}/g) || [];
+    if (!winMatches.length) {
+      return {
+        ok: false, state: 'no-window',
+        evidence: 'dumpsys 里没有 dsh-overlay:' + p2 + ' 的窗口',
+        hint: '窗口根本没建出来（不是最小化，是真的没有）',
+      };
+    }
+
+    // 位置与尺寸
+    let posStr = '';
+    let w0 = 0, h0 = 0, x0 = 0, y0 = 0;
+    const am = txt.match(/mAttrs=\{[(-]?(\d+),(-?\d+)\)\((\d+)x(\d+)\)/);
+    const am2 = txt.match(/mAttrs=\{\((-?\d+),(-?\d+)\)\((\d+)x(\d+)\)/);
+    if (am2) {
+      x0 = Number(am2[1]); y0 = Number(am2[2]); w0 = Number(am2[3]); h0 = Number(am2[4]);
+      posStr = '(' + x0 + ',' + y0 + ') ' + w0 + 'x' + h0;
+    }
+
+    // ② 最小化判定：宽度接近 36dp
+    const dpiR = await run('adb', ['-s', target, 'shell', 'wm density'], { timeout: 6000 })
+      .catch(() => ({ stdout: 'Physical density: 480' }));
+    const dm = String(dpiR.stdout || '').match(/(\d+)/);
+    const density = dm ? Number(dm[1]) / 160 : 3.0;
+    const collapsedW = Math.round(36 * density);
+    if (w0 > 0 && w0 <= collapsedW + Math.round(8 * density)) {
+      return {
+        ok: true, state: 'collapsed',
+        evidence: '窗口存在但已收起（' + posStr + '，约 36dp）',
+        hint: '是最小化了，不是没建。点一下它展开。',
+      };
+    }
+
+    // ③ 截主屏看那个矩形有没有内容
+    let bright = -1;
+    try {
+      const tmp = '/tmp/dsh-verify-overlay-' + process.pid + '.png';
+      await run('adb', ['-s', target, 'shell', 'screencap -p /sdcard/dsh-verify.png'],
+        { timeout: 12000 });
+      await run('adb', ['-s', target, 'pull', '/sdcard/dsh-verify.png', tmp],
+        { timeout: 15000 });
+      const py = [
+        'import sys',
+        'from PIL import Image',
+        'im=Image.open(sys.argv[1]).convert("L")',
+        'x,y,w,h=[int(v) for v in sys.argv[2:6]]',
+        'x=max(0,min(x,im.width-1)); y=max(0,min(y,im.height-1))',
+        'w=max(1,min(w,im.width-x)); h=max(1,min(h,im.height-y))',
+        'box=im.crop((x,y,x+w,y+h)).resize((16,16))',
+        'd=list(box.getdata()); n=len(d); m=sum(d)/n',
+        'v=(sum((q-m)**2 for q in d)/n)**0.5',
+        'print(int(m), int(v))',
+      ].join('\n');
+      const out = await run('python3', ['-c', py, tmp,
+        String(x0), String(y0), String(w0), String(h0)], { timeout: 15000 });
+      const pp = String(out.stdout || '').trim().split(/\s+/);
+      if (pp.length >= 1) bright = Number(pp[0]);
+      try { await run('rm', ['-f', tmp], { timeout: 3000 }); } catch { /* ignore */ }
+    } catch { /* 截图失败不当作故障，只在证据里说明 */ }
+
+    if (bright >= 0) {
+      if (bright > 3) {
+        return {
+          ok: true, state: 'visible',
+          evidence: '窗口在 ' + posStr + '，主屏对应区域亮度 ' + bright,
+          hint: '',
+        };
+      }
+      return {
+        ok: false, state: 'blank',
+        evidence: '窗口在 ' + posStr + ' 但主屏那块是空的（亮度 ' + bright + '）',
+        hint: '窗口存在但没画出内容 —— 可能第一帧还没到，或被完全遮挡',
+      };
+    }
+    return {
+      ok: true, state: 'unknown',
+      evidence: '窗口在 ' + posStr + '（截主屏验证不可用，只确认了 dumpsys）',
+      hint: '',
+    };
+  } catch (e) {
+    return {
+      ok: false, state: 'error',
+      evidence: String(e?.message || e).slice(0, 80),
+      hint: '验证过程出错',
+    };
+  }
+}
+
+
 export async function closeOrphanWindows(validPorts) {
   try {
     const { execFile } = await import('node:child_process');
@@ -913,6 +1052,19 @@ export async function closeOrphanWindows(validPorts) {
       .map((x) => Number(String(x).split(':')[1]))
       .filter((n) => n > 0 && !Number.isNaN(n));
     const keep = new Set((validPorts || []).filter((n) => n > 0));
+    /* **任何情况下都不关 keep 里的端口 —— 这是硬保护。**
+     *
+     * 2026-11-22 用户报：「原本有浮窗，你开始控制之后浮窗没了，但工具还说悬浮窗已创建」。
+     * 最可能的原因就是这个函数把刚建好的窗口当成「僵尸」关掉了 ——
+     * 它跑在自检之后，所以工具已经打了「创建完成」，用户却在下一秒看到窗口消失。
+     *
+     * 加的这层保护：即使 validPorts 因为路径变化漏了当前端口，
+     * 也绝不动 —— 宁可留一个多余窗口，也不能关掉正在用的那个。
+     */
+    if (!keep.size) {
+        // 一个有效端口都没拿到 → 不敢判断谁是僵尸，直接不动
+        return { ok: false, skipped: 'no-valid-ports（不敢清，怕关错）' };
+    }
     const orphans = alive.filter((p) => !keep.has(p));
     for (const p of orphans) {
       try { await overlayStop(p); } catch { /* 单个失败不影响其它 */ }
