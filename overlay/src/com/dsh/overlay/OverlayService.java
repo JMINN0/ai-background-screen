@@ -321,6 +321,10 @@ public class OverlayService extends Service {
      *  现在改成：进过圈就锁住，直到松手/取消/离开水平带才清。
      */
     private boolean armedThisGesture = false;
+    /** refreshLabel 上次设置的文字和颜色 —— 用来判断真的变了没有。
+     *  不加这个就会每 3 秒无条件重设视图，触发 requestLayout，用户看到字在抖。 */
+    String labelText = "";
+    int labelColor = 0;
     /** 窗口实际位置与 lp 请求位置的差（px）。
      *
      *  **这是「只有上半部分有反馈」的根因。**
@@ -769,6 +773,9 @@ public class OverlayService extends Service {
             label.setTextColor(Color.WHITE);
             label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
             label.setGravity(Gravity.CENTER);
+            /* 单行显示：折行会让悬浮条高度跳变，看着就是「字在跳」。 */
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             refreshLabel();
             // 标签浮在底部居中，半透明底，不占布局高度
             GradientDrawable lbg = new GradientDrawable();
@@ -1187,6 +1194,14 @@ int dx = (int)(e.getRawX() - downX);
             // 所以窗口永远是「画面尺寸」——一个像素黑边都没有。
             curW = w;
             curH = h;
+            /* **字号跟着布局走，不等定时器。**
+             * 2026-11-22 审查抓到：原来 applyLabelScale 只由 3 秒定时器调用，
+             * 而拖动改窗口大小时 applyAspect 每帧都在 updateViewLayout ——
+             * 结果窗口平滑跟手、文字纹丝不动，过几秒突然跳一下，就是用户说的
+             * 「文字跟随屏幕放大缩小非常不同步」。这里用刚算出的 w（不要读 getWidth，
+             * updateViewLayout 是异步的，紧跟读会拿到旧值）。
+             */
+            applyLabelScaleTo(w);
             if (lp != null) {
                 boolean sizeChanged = (Math.abs(lp.width - w) > 2 || Math.abs(lp.height - h) > 2);
                 lp.width = w;
@@ -1360,37 +1375,69 @@ int dx = (int)(e.getRawX() - downX);
                   if (!op.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append(op); }
                   if (!dn.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append("屏").append(dn); }
               }
-              if (sb.length() == 0) {
-                  label.setText("屏 " + port);
-                  label.setTextColor(0xCCFFFFFF);
-              } else {
-                  label.setText(sb.toString());
-                  label.setTextColor(lv.isEmpty() ? 0xCCFFFFFF : levelColor(lv));
-              }
+              /* **内容没变就别动视图。** 这个方法每 3 秒被定时器调一次，
+               * 每次无条件 setText/setTextColor/setPadding/setBackground 都会 requestLayout，
+               * 即使文字完全一样也会重新测量布局 —— 那就是「字自己抖」的直接来源。 */
+              final String wantText = sb.length() == 0 ? ("屏 " + port) : sb.toString();
+              final int wantColor = (sb.length() > 0 && !lv.isEmpty()) ? levelColor(lv) : 0xCCFFFFFF;
+              if (wantText.equals(labelText) && wantColor == labelColor) return;
+              labelText = wantText;
+              labelColor = wantColor;
+              label.setText(wantText);
+              label.setTextColor(wantColor);
               /* **字号和背景随窗口缩放。** 用户要求：「如果装不下这么多字，
                * 就根据虚拟屏放大缩小来同步放大缩小这些字体显示的大小以及字体后面的背景」。
                * 窗口小 → 字小；窗口大 → 字大。以窗口宽度为基准，10sp 对应 300px 宽。 */
               applyLabelScale();
           }
 
-          /** 按当前窗口宽度缩放 label 的字号和背景圆角/内边距。 */
+          /** **量完再定字号** —— 让整行文字正好填满可用宽度，不换行、不溢出。
+           *
+           *  2026-11-22 实机踩到：上一版按「窗口宽 / 300」乘系数，559px 的窗口算出 1.6 倍，
+           *  10sp 变 16sp，字直接溢出窗口还折成两行 —— 用户说的「字跳来跳去、缩放不同步」
+           *  就是这个。按比例放大是错的，因为字数不是恒定的：`风控 中 · 待机 · 屏 748`
+           *  和 `风控 极高 · 注入·tap · 屏 712` 长度差很多，同一个系数不可能都对。
+           *
+           *  正确做法：先量这行字在当前字号下有多宽，再按「可用宽度 ÷ 实测宽度」回推字号。
+           *  上限 12sp 防止短文本被放得过大，下限 7sp 保证小窗也读得清。
+           */
+          /** 定时器那条路的入口：读当前视图宽度。 */
           void applyLabelScale() {
-              if (label == null || root == null) return;
-              int w = root.getWidth();
+              if (root == null) return;
+              applyLabelScaleTo(root.getWidth());
+          }
+
+          /** 真正的实现：按给定宽度定字号。 */
+          void applyLabelScaleTo(int w) {
+              if (label == null) return;
               if (w <= 0) return;                      // 还没布局
-              /* 以 300px 窗口宽为基准：字号 10sp、圆角 4dp、左右内边距 6dp。
-               * 缩放范围限制在 0.7~1.6 倍，太小时看不清、太大时挤爆窗口。 */
-              float k = w / 300f;
-              if (k < 0.7f) k = 0.7f;
-              if (k > 1.6f) k = 1.6f;
-              float sp = (collapsed ? 11f : 10f) * k;
-              label.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-              int padH = Math.max(dp(3), Math.round(dp(6) * k));
-              int padV = Math.max(dp(1), Math.round(dp(1) * k));
+              CharSequence cs = label.getText();
+              if (cs == null || cs.length() == 0) return;
+
+              /* 可用宽度要留够：文字左右各留 8dp，否则会贴边甚至被裁。
+               * 2026-11-22 实机：559px 窗口里「风控 中 · 待机 · 屏760」按 12sp 算刚好超，
+               * 渲染出来左边「风控」被裁掉一截。 */
+              int availW = Math.max(dp(24), w - dp(16));
+              // 先用一个基准字号量宽度，再按比例回推
+              float base = 10f;
+              label.setTextSize(TypedValue.COMPLEX_UNIT_SP, base);
+              android.text.TextPaint tp = label.getPaint();
+              float measured = tp.measureText(cs.toString());
+              if (measured <= 0f) return;
+
+              float want = base * (availW / measured);
+              /* 上限从 12sp 降到 9sp：实机看 12sp 在 40% 屏宽的浮窗里明显过大、压住内容。
+               * 9sp 在同样窗口里清晰但不抢戏。下限 7sp 保证小窗可读。 */
+              if (want > 9f) want = 9f;
+              if (want < 7f) want = 7f;
+              label.setTextSize(TypedValue.COMPLEX_UNIT_SP, want);
+
+              int padH = Math.max(dp(2), Math.round(dp(5) * (want / base)));
+              int padV = Math.max(dp(1), Math.round(dp(1) * (want / base)));
               label.setPadding(padH, padV, padH, padV);
               GradientDrawable bg = new GradientDrawable();
               bg.setColor(0x88000000);
-              bg.setCornerRadius(Math.max(dp(2), dp(4) * k));
+              bg.setCornerRadius(Math.max(dp(2), Math.round(dp(4) * (want / base))));
               label.setBackground(bg);
           }
 

@@ -1686,7 +1686,14 @@ async function riskLevelOf(pkg) {
 export async function syncRiskLevel() {
   try {
     if (Date.now() - _riskCache.at < 5000 && _riskCache.lv) {
-      markOpMode(_riskCache.lv);
+      /* **缓存命中也要写完整三段。**
+       * 2026-11-22 实机踩到：原来这里只写 `L2` 一段，而重算路径写 `L2|注入·tap|699` 三段，
+       * 浮窗就在「风控 中」和「风控 中 · 注入·tap · 屏699」之间来回切，
+       * 宽度差四倍 → 每次重新居中 → 用户看到的就是「字自己跳来跳去」。
+       * 状态字符串长度必须稳定，否则再怎么调字号都没用。 */
+      const _cope = _riskCache.op || '待机';
+      const _cdn = state.displayId ? String(state.displayId) : '-';
+      markOpMode(_riskCache.lv + '|' + _cope + '|' + _cdn);
       return _riskCache.lv;
     }
     const st = await status();
@@ -1706,7 +1713,10 @@ export async function syncRiskLevel() {
     const _op = (_riskCache.op || '待机');
     const _dn = state.displayId ? String(state.displayId) : '-';
     markOpMode(lv + '|' + _op + '|' + _dn);
-    _riskCache = { at: Date.now(), pkg, lv };
+    /* **必须保留 op**：原来这里只存 {at,pkg,lv}，把声明里的 op 丢了（见文件上方
+     * `let _riskCache = { at: 0, pkg: '', lv: '', op: '待机' }`），
+     * 于是 `_riskCache.op || '待机'` 永远是「待机」，浮窗从来不显示真正的操作方式。 */
+    _riskCache = { at: Date.now(), pkg, lv, op: _op };
     return lv;
   } catch { return ''; }
 }
@@ -1717,7 +1727,12 @@ export function markOpMode(text) {
    * 所以不 await、失败也不管。 */
   try {
     const t = String(text || '').replace(/["'`$\\]/g, '').slice(0, 60);
-    adb(['shell', 'mkdir -p /data/local/tmp/dshframe; echo "' + t + '" > /data/local/tmp/dshframe/opmode'])
+    /* **原子写**：`echo >` 是「先截断再写」，浮窗正好在截断那一瞬间读就会读到空行，
+     * readStatus() 返回 null，标签退回「屏 38820」—— 又是一次可见的跳变。
+     * 改成写临时文件再 mv，同目录 rename 是原子的，读到的永远是完整的一行。 */
+    adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+      + 'printf "%s" "' + t + '" > /data/local/tmp/dshframe/opmode.tmp && '
+      + 'mv -f /data/local/tmp/dshframe/opmode.tmp /data/local/tmp/dshframe/opmode'])
       .catch(() => {});
   } catch { /* ignore */ }
 }

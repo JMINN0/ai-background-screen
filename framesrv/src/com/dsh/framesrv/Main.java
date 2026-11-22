@@ -421,7 +421,21 @@ public class Main {
                     // 这是审计里最大的一笔浪费：原来无条件编码，1.04 GB/s 的垃圾。
                     long nowMs = System.currentTimeMillis();
                     boolean watching = (nowMs - lastFetchAt) < IDLE_PAUSE_MS;
-                    if (!watching && mjpegClients.isEmpty()) {
+                    /* **第一帧必须无条件存下来。**
+                     *
+                     * 2026-11-22 实机踩到：浮窗空白，/frame.jpg 永远 503，
+                     * /status 却是 frames=1。原因就是这里的顺序 ——
+                     * frames 计数加在前面，编码又在这道「没人看就不编码」的检查之后。
+                     *
+                     * 于是：服务刚起来、观众还没连上时到达的那一帧 → 计数 +1、帧没存；
+                     * 而虚拟屏画面静止时 ImageReader 不再回调 → latest 永远是 null →
+                     * 后来连上的观众一次都拿不到帧。第一个观众永远看不到第一帧。
+                     *
+                     * 现在：latest 为空时无论如何都编码一帧。代价是一帧的编码开销，
+                     * 换来的是「任何时刻连上来都能看到当前画面」。
+                     */
+                    boolean mustPrime = (latest == null);
+                    if (!watching && mjpegClients.isEmpty() && !mustPrime) {
                         return;    // finally 会 close
                     }
                     byte[] jpg = encode(img);
