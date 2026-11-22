@@ -1,4 +1,4 @@
-# Offscreen · 屏外 — let an AI use another screen while your phone stays yours
+# Offscreen · 后台屏 — let an AI use another screen while your phone stays yours
 
 Let an AI **operate the phone in the background without taking your screen**.
 

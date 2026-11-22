@@ -1,4 +1,4 @@
-# 屏外 · Offscreen — 让 AI 用另一块屏，你的手机还是你的
+# 后台屏 — 让 AI 在另一块屏上操作手机，你的手机还是你的
 
 > 仓库：https://github.com/JMINN0/ai-background-screen
 > npm 包名是历史名 `offscreen-android`，安装 id 是 `dsh-go-plugin-screen`。
