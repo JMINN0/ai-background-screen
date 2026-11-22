@@ -320,6 +320,58 @@ public class Main {
     // 所以用户看不到点击位置 —— 这是实机反馈的问题。
     static volatile float markNx = -1f, markNy = -1f;
     static volatile long markAt = 0;
+
+    /**
+     * **多指点击标记。**
+     *
+     * 用户 2026-11-22 要求：「显示时间要更长、能看出是多久前点的、
+     * 不能太占屏幕、要支持多指触控」。
+     *
+     * 所以从「单个 markNx/markNy」改成列表：每一根手指/每一次点击都是一个条目，
+     * 各自带自己的时间戳，绘制时按年龄算透明度和大小。
+     * 上限 8 个 —— 再多屏幕就糊了，而且用户也分不清。
+     */
+    static final class Mark {
+        final float nx, ny;
+        final long at;
+        Mark(float nx, float ny, long at) { this.nx = nx; this.ny = ny; this.at = at; }
+    }
+    static final java.util.ArrayDeque<Mark> marks = new java.util.ArrayDeque<>();
+    /** 标记最长保留多久。15 秒：够用户看清「刚才点了哪」，又不会堆满屏。 */
+    static final long MARK_LIVE_MS = 15_000;
+    /** 同时最多几个标记。超了淘汰最老的。 */
+    static final int MARK_MAX = 8;
+
+    static void addMark(float nx, float ny) {
+        long now = System.currentTimeMillis();
+        synchronized (marks) {
+            // 同一位置 400ms 内的重复点击合并，避免长按/连点堆成一坨
+            for (Mark m : marks) {
+                if (Math.abs(m.nx - nx) < 0.02f && Math.abs(m.ny - ny) < 0.02f
+                        && now - m.at < 400) {
+                    return;
+                }
+            }
+            while (marks.size() >= MARK_MAX) marks.pollFirst();
+            marks.addLast(new Mark(nx, ny, now));
+        }
+    }
+
+    /** 清掉已经过期的标记。 */
+    static void pruneMarks(long now) {
+        synchronized (marks) {
+            while (!marks.isEmpty() && now - marks.peekFirst().at > MARK_LIVE_MS) {
+                marks.pollFirst();
+            }
+        }
+    }
+
+    static boolean hasAnyMark(long now) {
+        synchronized (marks) {
+            for (Mark m : marks) if (now - m.at <= MARK_LIVE_MS) return true;
+            return false;
+        }
+    }
     static volatile long lastCheckAt = 0;
     static final int IDLE_PAUSE_MS = 15_000;   // 15 秒没人取 → 暂停编码
     /** 用户事件日志（悬浮窗写、插件读）：路径固定，双方约定。 */
@@ -532,8 +584,10 @@ public class Main {
             // **画点击十字**（5 秒内的标记）
             byte[] marked = out;
             try {
-                long age = System.currentTimeMillis() - markAt;
-                if (marked != null && markNx >= 0 && age < 5000) {
+                long nowMs = System.currentTimeMillis();
+                pruneMarks(nowMs);
+                long age = nowMs - markAt;
+                if (marked != null && hasAnyMark(nowMs)) {
                     android.graphics.Bitmap target = null;
                     if (w > outWidth) {
                         // out 是缩放后的，重画一遍
@@ -546,7 +600,15 @@ public class Main {
                         pt.setAntiAlias(true);
                         float tw = target.getWidth(), th = target.getHeight();
                         // **水滴波纹**（点击动画，不再画十字）
-                        drawRipple(cv, pt, markNx * tw, markNy * th, age, tw, th);
+                        // **逐个画所有还活着的标记**，各自按自己的年龄决定样子
+                        java.util.List<Mark> snapshot;
+                        synchronized (marks) { snapshot = new java.util.ArrayList<>(marks); }
+                        for (Mark m : snapshot) {
+                            long a = nowMs - m.at;
+                            if (a < 0 || a > MARK_LIVE_MS) continue;
+                            drawRipple(cv, pt, m.nx * tw, m.ny * th, a, tw, th);
+                            drawAgeRing(cv, pt, m.nx * tw, m.ny * th, a, tw, th);
+                        }
                         java.io.ByteArrayOutputStream o2 = new java.io.ByteArrayOutputStream();
                         target.compress(Bitmap.CompressFormat.JPEG, 70, o2);
                         marked = o2.toByteArray();
@@ -564,6 +626,30 @@ public class Main {
             return null;
         }
     }
+
+    /**
+     * **年龄环：一个随时间收缩的圆环，像倒计时。**
+     *
+     * 为什么需要：用户要求「能知道是多久前点的」。光靠淡出不够 ——
+     * 淡到一半时看不出是 3 秒前还是 10 秒前。收缩的环把「剩余寿命」直接画出来：
+     * 环大 = 刚点的，环小 = 快过期了，环消失 = 即将移除。
+     *
+     * 只画一个细环，不占地方（半径最大约 min(宽,高) 的 4%）。
+     */
+    static void drawAgeRing(android.graphics.Canvas cv, android.graphics.Paint pt,
+                            float cx, float cy, long age, float tw, float th) {
+        float life = age / (float) MARK_LIVE_MS;          // 0..1
+        if (life >= 1f) return;
+        float maxR = Math.max(18f, Math.min(tw, th) * 0.040f);
+        float r = maxR * (1f - life);                      // 越来越小
+        if (r < 3f) return;
+        float alpha = 0.55f * (1f - life) + 0.12f;         // 越老越淡，但还看得见
+        pt.setStyle(android.graphics.Paint.Style.STROKE);
+        pt.setStrokeWidth(Math.max(1.6f, maxR * 0.10f));
+        pt.setColor(((int) (255 * alpha) << 24) | 0xFF3B30);
+        cv.drawCircle(cx, cy, r, pt);
+    }
+
 
     /** 用缓存的最后一帧重编一张带标记的（/mark 时调）。 */
     /**
@@ -780,7 +866,9 @@ public class Main {
                                 if ("ny".equals(p2[0])) markNy = Float.parseFloat(p2[1]);
                             }
                         }
+                        // **多指：每次 /mark 记一条，不再覆盖上一条**
                         markAt = System.currentTimeMillis();
+                        if (markNx >= 0 && markNy >= 0) addMark(markNx, markNy);
                         // **立刻重编一张，然后连播 16 帧形成动画。**
                         // 静止画面时 ImageReader 不出新帧，不主动重绘就只会看到一张静图。
                         reencodeWithMark();
