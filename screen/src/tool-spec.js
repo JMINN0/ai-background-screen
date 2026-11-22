@@ -30,9 +30,23 @@ export function startSpec() {
       '关键性质（都实测过）：不画在物理屏幕上、不抢主屏焦点、不弹输入法。',
       '需要这台机器的 com.android.shell 拥有 ADD_TRUSTED_DISPLAY 权限（一部分机型有，Pixel 默认没有）。',
       '',
-      '屏与插件进程同生共死：客户端断开或引擎重启，屏自动消失，不会留垃圾。',
+        '',
+        '**这一条命令就是全套**，不需要再单独调推流：',
+        '  ① 建虚拟屏',
+        '  ② 自动起推流 + 悬浮窗（用户马上能在屏幕上看到这块屏的画面）',
+        '  ③ 自动投一个 App 上去（不指定 pkg 时挑一个不会打断用户的，保证屏上有画面而不是黑框）',
+        '  ④ 五项自检并逐项报告证据：屏在系统里存在 / 推流在监听且属于这块屏 / 帧能取到且是合法 JPEG /',
+        '     画面有内容（亮度 + 对比度，全白崩溃页会被拦下）/ 悬浮窗在屏幕可见范围内 / 前台 App 就是投的那个',
+        '  ⑤ 自检不过时**自动修一次**（只修失败项）再复检，仍不过才报告',
+        '全部通过才打印「创建完成并自检通过」。',
+        '',
+        '想只建屏、不要画面：传 overlay:false。想关自动修复：autoRepair:false。只修指定项：repairOnly:[检查项名]。',
     ].join('\n'),
     parameters: {
+      pkg: { type: 'string', description: '可选。建完屏直接把这个包名投上去。不传则自动挑一个不会打断用户的 App（不会 force-stop 你正在用的那个）。' },
+      overlay: { type: 'boolean', description: '默认 true（建屏同时起推流和悬浮窗）。传 false 只建屏、不推流 —— 比如 AI 只想后台操作、不想在用户屏幕上出现窗口。' },
+      autoRepair: { type: 'boolean', description: '默认 true。自检失败时自动修复一次再复检。传 false 只看自检结果不修。' },
+      repairOnly: { type: 'array', description: '只自动修复列出的检查项（比如 ["推流在监听"]），其余失败项不碰。' },
       keepMin: { type: 'integer', description: '**按任务预估后台屏要活多久**（分钟，1~360）。不传沿用当前设定（默认 5）。长任务（挂机/轮询/等转盘）先设大，比如 60；点几下就完的设 3。AI 连续这么多分钟没调工具就自动关闭。' },
       maxFps: {
         type: 'integer',
@@ -46,7 +60,8 @@ export function startSpec() {
       systemDecorations: { type: 'boolean', description: '默认 false。false 时虚拟屏上不含二级桌面、导航栏和权限弹窗，AI 截图更干净（scrcpy ≥3.1）。改这个值会重建屏。' },
       hwc: { type: 'string', description: '是否让硬件合成器（HWC）参与虚拟屏合成。"auto"（默认）：仅当本机 vendor.display.vds_allow_hwc=1 时自动开启；"on"：强制尝试；"off"：不碰。开启后 3D 游戏（SurfaceView 渲染）能正常出画面，否则全黑。这是全局 SurfaceFlinger 属性，stop 时会恢复原值。' },
     },
-    output: out('displayId、SurfaceFlinger id、是否具备托管 App 的能力标志。'),
+    output: out('一段逐项播报：建屏结果、推流和悬浮窗状态、投了哪个 App、五项自检的每项证据、'
+      + '自动修复了什么（如果发生了）、最后是「创建完成并自检通过」或哪几项没通过。'),
   };
 }
 
