@@ -69,10 +69,58 @@ const ACTIONS = {
       orientation: args?.orientation,
       hwc: args?.hwc || 'auto',
     });
-    return r;
+    if (!r?.ok) return r;
+
+    /*
+     * **建屏就是全套：建屏 + 推流 + 浮窗。**
+     *
+     * 2026-11-22 实机踩到：插件工具 vdisplay_start 会自动推流，但 CLI 和 MCP 走的是
+     * daemon 这条 start，只建屏不推流 —— 用户「建了屏却什么都看不到」。
+     * 三条入口行为不一致，而且不报错，最难排查。
+     *
+     * 现在把推流收进 daemon 的 start，任何入口建屏都会连带推流和浮窗。
+     * 用动态 import 是为了避免顶层循环依赖（tools.js 会反向依赖 vd）。
+     * 推流失败不影响建屏结果 —— 屏已经建好了，如实告诉调用方为什么没画面。
+     */
+    let stream = null;
+    try {
+      const T = await import('../src/tools.js');
+      const auto = await T.streamStart({ fps: 2, width: 360 });
+      const txt = String(auto?.text || '');
+      stream = {
+        ok: /悬浮窗已浮起|ImageReader/.test(txt),
+        detail: txt.split('\n')[0] || '',
+      };
+    } catch (e) {
+      stream = { ok: false, detail: String(e?.message || e).slice(0, 120) };
+    }
+    return { ...r, stream };
   },
   async stop(args) {
-    return vd.stop({ forceStopApps: args?.forceStopApps === true });
+    /*
+     * **停屏必须连带关掉那块屏的推流和浮窗。**
+     *
+     * 2026-11-22 实机踩到：CLI/MCP 停屏走的是这里，只调 vd.stop()，
+     * 而 tools.js 的 stop() 才有关浮窗的逻辑 —— 于是停掉屏之后，
+     * 那块屏的悬浮窗还开着，一直去连一个已经没人监听的端口，
+     * 日志里每 3 秒一条 ConnectException，直到用户自己重启 App。
+     * 多建几次屏就会攒一堆僵尸窗口。
+     *
+     * 现在和 tools.js 的清理顺序一致：先关这块屏的浮窗，再停 framesrv，最后销毁屏。
+     */
+    let streamStopped = false;
+    try {
+      const T = await import('../src/tools.js');
+      // 只关这块屏的窗口，不要全关 —— 用户可能同时开着别的屏
+      const disp = vd.getActive?.()?.displayId;
+      const stopPort = disp != null ? (T.screenPorts?.get?.(Number(disp)) || 0) : 0;
+      try { await T.overlayStop(stopPort || undefined); } catch { /* 窗口可能本来就不在 */ }
+      const fsrv = await import('../src/framesrv.js');
+      await fsrv.stop();
+      streamStopped = true;
+    } catch { /* 推流本来就没起来就算了 */ }
+    const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
+    return { ...r, streamStopped };
   },
   async status() {
     return vd.status();

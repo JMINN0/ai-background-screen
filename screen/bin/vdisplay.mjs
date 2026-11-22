@@ -134,6 +134,13 @@ function human(action, r) {
       lines.push(`SurfaceFlinger id: ${r.sfId || '(未取到)'}`);
       lines.push(`能托管 App：${r.canHost ? '是' : '否'}`);
       lines.push(`硬件合成（HWC）：${r.hwc ? '已开启' : '未开启'}`);
+      /* 建屏现在连带推流和浮窗（见 daemon 的 start），把结果显示出来 ——
+       * 以前从 CLI 建完屏什么都不说，用户以为能看到画面，其实没有浮窗。 */
+      if (r.stream) {
+        lines.push(r.stream.ok
+          ? '推流：已开启 ✅ 悬浮窗已浮起'
+          : `推流：没起来 ⚠️ ${r.stream.detail || ''}`);
+      }
       return lines.join('\n');
 
     case 'launch':

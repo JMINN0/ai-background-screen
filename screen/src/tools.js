@@ -414,7 +414,7 @@ async function overlayStart(port) {
  *
  * **多窗口后必须支持单关**：一块屏停止推流时，不该把别的屏的窗口也关了。
  */
-async function overlayStop(port) {
+export async function overlayStop(port) {
   /* **服务没在跑就别发停止指令。**
    *
    * 2026-11-21 用户报：浮窗早关了，过一会又弹一个「已关闭」。
@@ -452,7 +452,7 @@ async function overlayStop(port) {
 
 /** 开始把虚拟屏画面推给原生胶囊插件（装了悬浮窗 APK 的话一起拉起来）。 */
 /** displayId → framesrv 端口。多屏时用于按屏关推流/画标记。 */
-const screenPorts = new Map();
+export const screenPorts = new Map();
 
 export async function streamStart(args) {
   // **支持为指定的屏开推流（屏幕池用）。**
