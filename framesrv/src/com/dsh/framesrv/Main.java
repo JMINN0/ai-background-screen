@@ -444,12 +444,28 @@ public class Main {
                 while (true) {
                     try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
                     fps = lastSecFrames.getAndSet(0);
-                    // **长时间没人看就自己退出。**
-                    // 原来这个进程永不停止：app_process 一直活着，一直编码，
-                    // 一直占 1.0 核，直到手机重启或 OOM。
+                    /* **没人看时不再自杀 —— 屏还在就活着。**
+                     *
+                     * 2026-11-22 用户报「虚拟屏在后台一直待机就会黑屏或者卡掉」。
+                     * 查到的直接原因之一就是这个：原来 120 秒没人取帧就 System.exit(0)。
+                     *
+                     * 场景很容易复现：用户把浮窗最小化、或者切走去干别的 → 没人取帧
+                     * → 2 分钟后推流进程退出 → 虚拟屏还在、App 还在跑，但推流没了
+                     * → 用户回来看到的是黑框，要重建屏才能恢复。
+                     *
+                     * 「怕烧 CPU」这个理由已经不成立了：上面有 IDLE_PAUSE_MS（15 秒）
+                     * 的优化 —— 没人看的时候**根本不编码**，只统计帧数，
+                     * 空闲成本接近 0。用「退出」来省电是上一版的做法，
+                     * 那一版是无条件编码才需要退出。
+                     *
+                     * 现在保留一个更宽的兜底：只有在「屏都不存在了」的情况下才退出
+                     * （由上面的 displayAlive 检查负责，那是真的没用了）。
+                     * 长时间无人使用也不再自杀，因为虚拟屏本身还在，用户随时可能回来。
+                     */
                     long idle = System.currentTimeMillis() - Math.max(lastFetchAt, createdAt);
-                    if (idle > IDLE_EXIT_MS && mjpegClients.isEmpty()) {   // 有长连接就不退
-                        System.out.println("IDLE_EXIT idleMs=" + idle);
+                    if (idle > IDLE_EXIT_MS && mjpegClients.isEmpty() && !displayAlive()) {
+                        // 屏没了 + 没人看 → 才是真的可以退
+                        System.out.println("IDLE_EXIT idleMs=" + idle + "（屏已不存在）");
                         System.exit(0);
                     }
                 }
