@@ -1039,8 +1039,16 @@ export async function displayHasContent(displayId) {
   const id = String(displayId || '').trim();
   if (!id) return null;
   try {
+    /* **必须 -A20 + 行尾锚定，不能 -A6 无锚定。**
+     *
+     * 2026-11-23 实测：`mDisplayId=877` 这种字符串在 dumpsys 里出现很多次，
+     * 不加 `$` 锚定就会匹配到别的段落；`-A6` 在某些屏上也覆盖不到 mHasContent
+     * （手工对比：878 用 -A6 返回空，用 -A20+锚定才拿到 false）。
+     * 读错的后果很严重 —— tick 会以为「屏空了」去拆一块好好的屏，
+     * 正是用户报的「浮窗突然没了但说已创建」那条 bug。
+     */
     const out = await shell(
-      `dumpsys display 2>/dev/null | grep -A6 "mDisplayId=${id}" | grep -m1 "mHasContent="`
+      `dumpsys display 2>/dev/null | grep -A20 'mDisplayId=${id}$' | grep -m1 "mHasContent="`
     );
     const t = String(out || '');
     if (t.includes('mHasContent=true')) return true;
