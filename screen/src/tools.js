@@ -39,6 +39,19 @@ export async function start(args) {
     // 帧率上限。以前没传过 = 无限，实测 MC 跑起来 145fps 白烧 CPU/带宽。
     // 默认 60；传 0 表示不限。
     maxFps: args?.maxFps === 0 ? 0 : (Number(args?.maxFps) || 60),
+    /* **虚拟屏的输入法策略。**
+     *
+     * 2026-11-22 踩到：默认 hide 让虚拟屏上根本打不进中文 —— 剪贴板粘贴要走
+     * IME 的 InputConnection，IME 被隐藏就没有这个连接，于是 SET_CLIPBOARD
+     * 成功但贴不进去，只有 adb input text（ASCII 直注）能进。
+     *
+     *   hide   默认。不占系统输入法，用户主屏打字不受影响。**但虚拟屏上打不了字。**
+     *   local  输入法渲染到虚拟屏上，中文能打。代价：虚拟屏上有输入框聚焦时，
+     *          可能把系统 IME 焦点抢过去，用户在主屏打字时键盘会没。
+     *
+     * 所以默认仍是 hide（不打扰用户优先），需要输入中文时显式传 ime:"local"。
+     */
+    imePolicy: args?.ime === 'local' ? 'local' : 'hide',
   });
   if (!r.ok) return { text: `建屏失败：${r.hint}` };
   // HWC 状态以真实属性为准（复用分支以前不返回 hwc，开着 HWC 的屏会被报成「会黑屏」）。
