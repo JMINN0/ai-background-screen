@@ -1514,6 +1514,23 @@ int dx = (int)(e.getRawX() - downX);
                         Log.i(TAG, "端口 " + port + " 连不上，进入重连（窗口保留）");
                         ui.post(new Runnable() { public void run() { setReconnecting(true); } });
                     }
+                    /* **重试要有上限。**
+                     *
+                     * 2026-11-22 实机：上面「永不放弃」写完就发现新问题 ——
+                     * 反复建屏/杀推流之后，攒了 4 个窗口分别对着 38825/38827/38829
+                     * 这些永远回不来的端口，每个都在无限重试。僵尸窗口堆在屏幕上，
+                     * 而且它们永远显示「重连中」，用户没法区分「等一会就好」和「这块屏没了」。
+                     *
+                     * 3 秒一次 × 60 次 ≈ 3 分钟。真的断了 3 分钟还不回来，
+                     * 基本可以断定这块屏被销毁或端口换了（端口按 displayId 推导，
+                     * 换了 displayId 就是换了端口）。这时关窗比留着更有用：
+                     * 屏幕干净，用户也知道该重新建屏了。
+                     */
+                    if (statusFails >= 60) {
+                        Log.i(TAG, "端口 " + port + " 重试 3 分钟仍不通，判定这块屏已关闭，移除窗口");
+                        ui.post(new Runnable() { public void run() { removeWin(port); } });
+                        return false;
+                    }
                     return true;    // **继续轮询，不关窗**
                 }
                 statusFails = 0;

@@ -108,7 +108,7 @@ export async function start(args) {
     // **快速自检**：逐项给证据，不靠「命令返回成功」判断
     parts.push('正在快速自检…');
     try {
-      const sc = await selfCheck({ displayId: r.displayId });
+      const sc = await selfCheck({ displayId: r.displayId, expectPkg: castPkg || undefined });
       for (const c of sc.checks) parts.push((c.ok ? '  ✅ ' : '  ❌ ') + c.name + '：' + c.evidence);
       parts.push(sc.ok ? '创建完成并自检通过 ✅' : '⚠️ 自检没全过，标 ❌ 的那几项要修');
     } catch (e) {
@@ -216,18 +216,71 @@ export async function selfCheck(args = {}) {
   if (bright >= 0) push('画面非全黑', bright > 8, '平均亮度=' + bright);
   else push('画面非全黑', true, '跳过（无法解码，不当作失败）');
 
-  // ⑤ 浮窗窗口在不在
+  /* ⑤ 浮窗窗口在不在 —— 而且**真的在屏幕上看得见的地方**。
+   *
+   * 第一性原理：用户「能看到」的完整证据链是
+   *   窗口存在 → 位置在屏幕可见范围内 → 屏上是预期的那个 App。
+   * 只数窗口数量是假阳性：窗口存在但被拖到屏幕外、或尺寸算成 0，照样会数到。
+   */
   let winCount = 0;
+  let winVisible = false;
+  let winEvidence = '';
   try {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const run = promisify(execFile);
     const target = await adbTarget();
     const r = await run('adb', ['-s', target, 'shell',
-      "dumpsys window windows 2>/dev/null | grep -c 'u0 com.dsh.overlay'"], { timeout: 8000 });
-    winCount = Number(String(r.stdout).trim()) || 0;
-  } catch { /* 查不到当失败 */ }
-  push('悬浮窗可见', winCount > 0, '窗口数=' + winCount);
+      "dumpsys window windows 2>/dev/null | grep -A3 'u0 com.dsh.overlay'"], { timeout: 8000 }).catch(() => ({ stdout: '' }));
+    const txt = String(r.stdout || '');
+    winCount = (txt.match(/Window\{/g) || []).length;
+    // 屏幕尺寸
+    const sz = await run('adb', ['-s', target, 'shell', 'wm size'], { timeout: 6000 }).catch(() => ({ stdout: '' }));
+    const m = String(sz.stdout || '').match(/(\d+)x(\d+)/);
+    const scrW = m ? Number(m[1]) : 0;
+    const scrH = m ? Number(m[2]) : 0;
+    /* 实际格式是 `mAttrs={(x,y)(w x h) ...}` —— 位置和尺寸，不是 frame 边界。
+     * 2026-11-22 第一次写成 frame=[l,t][r,b]，永远匹配不到，自检报假警。
+     * 真样例：mAttrs={(20,312)(486x1074) gr=TOP START CENTER ...} */
+    const attrs = [...txt.matchAll(/mAttrs=\{\((-?\d+),(-?\d+)\)\((\d+)x(\d+)\)/g)];
+    for (const f of attrs) {
+      const l = Number(f[1]), t = Number(f[2]), w = Number(f[3]), h = Number(f[4]);
+      if (w < 40 || h < 40) continue;                      // 尺寸不合理（收起成一条也算可见，但别把 0 当可见）
+      const rr = l + w, bb = t + h;
+      if (scrW && scrH) {
+        // 至少要有一部分落在屏幕可见区域内
+        const overlapW = Math.min(scrW, rr) - Math.max(0, l);
+        const overlapH = Math.min(scrH, bb) - Math.max(0, t);
+        if (overlapW < 40 || overlapH < 40) continue;
+      }
+      winVisible = true;
+      winEvidence = '窗口数=' + winCount + '，位置(' + l + ',' + t + ') 尺寸' + w + 'x' + h;
+      break;
+    }
+    if (!winEvidence) winEvidence = '窗口数=' + winCount + '，但没解析到可见的窗口位置';
+  } catch { winEvidence = '查询失败'; }
+  push('悬浮窗可见', winVisible, winEvidence);
+
+  /* ⑥ **屏上的 App 是不是我们投的那个。**
+   *
+   * 「app 画面正常」不能只看「不是全黑」：崩溃页、错误页、别的 App 的界面
+   * 亮度都 > 8，都会让上一项通过。真正的判据是那一屏的前台 App 对得上。
+   */
+  if (args?.expectPkg) {
+    let focus = '';
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const target = await adbTarget();
+      const r = await run('adb', ['-s', target, 'shell',
+        'dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=' + wantId + '" | grep -m1 mCurrentFocus'],
+        { timeout: 8000 }).catch(() => ({ stdout: '' }));
+      focus = String(r.stdout || '').trim();
+    } catch { /* 查不到当失败 */ }
+    push('画面是预期的 App', focus.includes(String(args.expectPkg)),
+      '前台=' + (focus || '(空)') + ' 期望=' + args.expectPkg);
+  }
 
   const allOk = checks.every(c => c.ok);
   return { ok: allOk, checks, port, displayId: wantId };
