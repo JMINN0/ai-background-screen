@@ -999,7 +999,11 @@ export async function streamStart(args) {
       };
       const screens = prevScreens.filter((x) => Number(x.displayId) !== me.displayId);
       screens.push(me);
-      await writeFile(join(dir, 'stream.json'), JSON.stringify({
+      /* **原子写：浮窗每 3 秒读这个文件刷新状态行。**
+       * 直接 writeFile 覆盖时有个瞬间文件是空或半截的，浮窗正好在那个瞬间读
+       * 就会 parse 失败，可能误判推流停了而关窗。改成写 tmp 再 rename。 */
+      const { atomicWrite: awStream } = await import('./atomic-write.js');
+      await awStream(join(dir, 'stream.json'), JSON.stringify({
         port: fast.port, running: true, startedAt: Date.now(),
         fps, width, displayId: String(s.displayId),
         focusedApp: focus || '',
@@ -1051,7 +1055,8 @@ export async function streamStop(args) {
         j.screens = j.screens.filter((x) => Number(x.displayId) !== oneId);
         // 全没了就标 not running
         if (!j.screens.length) { j.running = false; j.port = 0; j.displayId = null; }
-        await writeFile(f, JSON.stringify(j));
+        const { atomicWrite: aw2 } = await import('./atomic-write.js');
+      await aw2(f, JSON.stringify(j));
       }
     } catch { /* 写不进去不影响停推流 */ }
     return { text: `已停掉 displayId=${oneId} 的推流` + (p ? `（端口 ${p}）` : '') };

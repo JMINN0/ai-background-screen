@@ -26,7 +26,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -271,11 +271,22 @@ function loadPersistedState() {
 function savePersistedState() {
   try {
     mkdirSync(dirname(VD_STATE_FILE), { recursive: true });
-    writeFileSync(VD_STATE_FILE, JSON.stringify({
+    /* **原子写。** 别的进程（浮窗、另一个 Node 进程）会读这个文件判断屏在不在。
+     * 直接 writeFileSync 覆盖有个瞬间文件是空的或半截的，读到就解析失败 ——
+     * 那个瞬间恰好被读到，就会误判「屏没了」。 */
+    const data = JSON.stringify({
       displayId: state.displayId, sfId: state.sfId, scid: state.scid,
       width: state.width, height: state.height, startedAt: state.startedAt,
       at: Date.now(),
-    }));
+    });
+    try {
+      const tmp = VD_STATE_FILE + '.tmp-' + process.pid;
+      writeFileSync(tmp, data);
+      renameSync(tmp, VD_STATE_FILE);
+    } catch (e) {
+      // 原子写失败退回直接写 —— 宁可有一个极小概率的窗口，也不能完全不落盘
+      writeFileSync(VD_STATE_FILE, data);
+    }
   } catch { /* ignore */ }
 }
 
