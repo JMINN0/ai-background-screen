@@ -229,7 +229,14 @@ public class OverlayService extends Service {
                 } else {
                     w.collapsedByWatch = false;
                 }
-                w.expandedInWatch = false;
+                /* **不要每次转屏都清空「用户手动展开过」这个记忆。**
+                 * 2026-11-22 对抗审查指出：原来这里无条件清，
+                 * 于是用户横屏手动展开看细节 → 转竖屏 → 再转回横屏，
+                 * 又会被自动收起一次。用户的感受是「点开了又被收起来」。
+                 * 只在**回到竖屏**时清（那时候 watchMode 本来就不起作用），
+                 * 横屏期间一直记着用户的选择。
+                 */
+                if (!watchMode) w.expandedInWatch = false;
             } catch (Throwable t) { /* 单个失败不影响其它 */ }
         }
         if (watchMode) {
@@ -240,13 +247,22 @@ public class OverlayService extends Service {
     /** 横屏收起后，把缩略图排到顶部中间一排，别乱放。 */
     private void layoutWatchThumbs() {
         int n = 0, w0 = dp(36), gap = dp(8);
-        for (Win w : wins.values()) if (w.collapsed && w.lp != null) n++;
+        /* **只排「自动定位」的窗口，用户自己摆过的不搬。**
+         *
+         * 2026-11-22 对抗审查指出：原来这里把**所有** collapsed 窗口都搬到
+         * 顶部中间，完全不看 autoPos —— 用户在竖屏时把窗口拖到角落、
+         * 手动最小化，一转横屏位置就被抢走。
+         * 那不是「自动收起」，那是「我摆好的位置被覆盖了」。
+         */
+        for (Win w : wins.values()) {
+            if (w.collapsed && w.lp != null && w.autoPos) n++;
+        }
         if (n == 0) return;
         int total = n * w0 + (n - 1) * gap;
         int x0 = Math.max(EDGE_GUARD, (lastScreenW - total) / 2);
         int i = 0;
         for (Win w : wins.values()) {
-            if (!w.collapsed || w.lp == null) continue;
+            if (!w.collapsed || w.lp == null || !w.autoPos) continue;
             int x = x0 + i * (w0 + gap);
             x = Math.max(EDGE_GUARD, Math.min(x, Math.max(EDGE_GUARD, lastScreenW - w0 - EDGE_GUARD)));
             w.lp.x = x;

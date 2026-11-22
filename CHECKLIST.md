@@ -1,112 +1,78 @@
-# 项目清单（2026-11-22 夜）
+# 总清单（2026-11-23 00:20）
 
-> 用户要求：列清单防忘记。这份是**当前未完成工作的唯一清单**，
-> 每完成一项就更新。压缩上下文后按这份重建。
+> 用户要求：全部搞定 + 交叉验证 + 对抗挑刺，确认了才推送。
+> 这份是唯一清单。压缩上下文后按它重建。
 
-## A. 命名统一（用户 23:22 提出）
+## 已完成（今天修的，不再动）
 
-- [x] A1. ✅ 已改 `screen/package.json` 描述（去掉 invisible，改成「后台屏 · Offscreen」+ 连续操作卖点）
-      ✅ 顺手改掉 `README.en.md:37` 的 invisible
-- [ ] A2. 决定 npm 主包名：`ai-background-screen`（和 GitHub 仓库同名）
-- [ ] A3. `offscreen-android@0.1.2` 在 npm 上 deprecate，指向新包
-- [ ] A4. `android-adb-direct` / `ai-background-screen` 是否也要发 npm 主包
-- [ ] A5. 检查所有 README / llms.txt / 文档里的旧名残留
-- [ ] A6. 确认旧链接：`dsh-go-plugin-adb` → `android-adb-direct` 的 301 重定向正常
+代码类：
+- [x] 看门狗从没执行过（emptyStreak/streamFailStreak 未声明 → ReferenceError 被吞）
+- [x] opBusy / lastStreamStartAt 作用域（同型 bug 第二、三次）
+- [x] 互斥锁 90 秒上限 + 超时不破坏互斥
+- [x] framesrv 120 秒自杀（屏还在就不退）
+- [x] mHasContent 检测 + 自动重建 + 重建前 markLost
+- [x] ③ 内容检测加 opBusy 保护（用户 bug 的真根因：建屏中被自己拆掉）
+- [x] tick 重建走 withLock（和外部请求同一把锁）
+- [x] tick 防重入（ticking + finally 复位）
+- [x] 脏状态清理（running=false 但 displayId 还在）
+- [x] EDGE_GUARD 被级联引擎打穿（实测 x=106）
+- [x] autoPos 死标志（拖动后不再被弹回）
+- [x] clampAll 全量夹取
+- [x] 横屏尺寸不再压成细缝
+- [x] 横屏自动收起 15.1% → 0.74%
+- [x] 启动即横屏时 watchMode 不初始化
+- [x] 全屏进出不重排（rotated/big 判据）
+- [x] 单位混用 dp/px
+- [x] 右侧投放条 END 语义
+- [x] 自动边缘状态（working/done/idle 由插件自己挂）
+- [x] AI 手动 warning/error/critical 优先级保护
+- [x] working/done 不再解除 critical 保护
+- [x] 操作停下来先亮 4 秒绿 done 再回 idle
+- [x] done TTL 2500 → 4000ms
+- [x] 边缘状态按端口路由
+- [x] 500ms 快速轮询（不再等 3 秒）
+- [x] critical 降到 1.43Hz（WCAG 光敏性癫痫合规）
+- [x] critical 闩锁 60 秒
+- [x] settleIfIdle 走 adb（proot 里 readFileSync 读不到设备文件）
+- [x] flushAutoEdge 先读文件 mode（不覆盖 AI 设的严重状态）
+- [x] verifyOverlayVisible 截主屏验证
+- [x] closeOrphanWindows 硬保护 + 清理后复验
+- [x] 多指点击标记（8 个 / 15 秒 / 年龄环）
 
-## B. 代码 BUG（用户 23:08 报的，最优先）
+文档/打包类：
+- [x] screen/package.json 描述去掉 invisible
+- [x] README.en.md 去掉 invisible
+- [x] screen/README.md 安装命令改成真实可用的（原来教用户装 404 的包）
+- [x] screen/package.json files 补 cordis.patch.yml + dsh.plugin.json（**包是坏的**）
+- [x] AGENTS.md 加边缘光效章节
 
-- [ ] B1. 🔴 **假成功**：报「悬浮窗已创建」但窗口实际没了
-      - 根因已定位：`lastStreamStartAt` 作用域 bug（第三次同型）
-      - 已修，**待端到端验证**
-- [ ] B2. `verifyOverlayVisible` 截主屏验证 —— 已写，**待实机验证**
-- [ ] B3. `closeOrphanWindows` 硬保护 + 清理后复验 —— 已写，**待验证**
-- [ ] B4. 端到端实测：建屏 → 截主屏确认浮窗 → 杀 framesrv 看自愈 → 转横屏看自动收起
+## 待做（本轮目标）
 
-## C. 边缘光效（今天做完，待验证）
+### 代码
+- [ ] 1. multitouch 标记画不出来（tools.js 取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
+- [ ] 2. 两套标记系统（framesrv 8个/15秒 vs stream.js 3个/60秒）—— 统一或确认不冲突
+- [ ] 3. framesrv displayAlive() 反射失败时 return true → 那类机型上永不退出
+- [ ] 4. 删掉 vdisplayd 99/214 两处无用的 try/catch（只会吞下次的作用域错误）
+- [ ] 5. T.start 没套超时（adbd 卡死时 opBusy 永久 >0 → 看门狗永久失效）
+- [ ] 6. layoutWatchThumbs 不看 autoPos（用户摆好的位置被抢）
+- [ ] 7. expandedInWatch 每次转屏都重置（手动展开只保到下次转屏）
+- [ ] 8. EdgeView 60fps + BlurMaskFilter 压在视频上（性能）
+- [ ] 9. critical 在 36dp 缩略图上糊成一团红
+- [ ] 10. 收起时没有任何提示（标签只剩风控等级）
 
-- [ ] C1. 自动 working/done/idle —— 已写，待验证
-- [ ] C2. AI 手动设的 warning/error/critical 优先级保护 —— 已写，逻辑已验证
-- [x] C3. ✅ 按端口路由 —— 已实测（edge 文件第 6 段是端口 38837）
-- [x] C4. ✅ 500ms 快速轮询 —— 已写（startEdgeTimer）
-- [ ] C5. critical 低于 3Hz（WCAG 光敏性癫痫）—— 已做
-- [ ] C6. critical 闩锁 60 秒 —— 已做
+### 文档
+- [ ] 11. README / README.en / llms.txt 补 vdisplay_edge 说明
 
-## D. 转屏 / 横屏（今天做完，部分待验证）
+### 验证
+- [ ] 12. 端到端实测：建屏 → 截主屏确认浮窗 → 杀 framesrv 看自愈 → 转横屏看自动收起
+- [ ] 13. 建屏期间盯 mHasContent，确认不会误触发重建
+- [ ] 14. 子代理交叉验证 + 对抗挑刺
 
-- [ ] D1. EDGE_GUARD 被级联引擎打穿 —— 已修，**实测 x=106 ✅**
-- [ ] D2. autoPos 死标志 —— 已修
-- [ ] D3. clampAll 全量夹取 —— 已修
-- [ ] D4. 横屏尺寸不再压成细缝 —— 已修
-- [ ] D5. 横屏自动收起（15.1% → 0.74%）—— 已写，**待实机验证**
-- [ ] D6. 全屏进出不重排 —— 已修
-- [ ] D7. 单位混用 dp/px —— 已修
-- [ ] D8. 右侧投放条 END 语义 —— 已修
-- [x] D9. ✅ 启动即横屏时 watchMode 不初始化 —— 已修（first 分支也调 updateWatchMode）
+### 发布（确认后才做）
+- [ ] 15. 推 GitHub
+- [ ] 16. 发 npm（发之前先确认 files 齐全）
 
-## E. 待机黑屏 / 卡住（今天做完，待验证）
-
-- [ ] E1. framesrv 120 秒自杀 —— 已修
-- [ ] E2. 互斥锁 90 秒上限 + 不破坏互斥 —— 已修
-- [x] E3. ✅ 重复 framesrv —— opBusy + 60s 宽限期 + tick 防重入（待实机复测）
-- [ ] E4. mHasContent 检测 + 自动重建 —— 声明已修，**待验证**
-- [ ] E5. 脏状态清理（running=false 但 displayId 还在）—— 已修，日志已验证
-
-## F. 未做
-
-- [ ] F1. 点击标记从烤进 JPEG 挪到浮窗图层
-- [ ] F2. README / README.en / llms.txt 补 `vdisplay_edge` 说明
-- [ ] F3. npm 发布（**用户要求全部优化完再发**）
-
-## I. 第六轮对抗审查（23:55）—— 找到用户 bug 的真根因
-
-- [x] I1. 🔴 **③ 内容检测没有 opBusy 保护**（真根因）
-      建屏期间 mHasContent=false 是正常的，3 个 tick（30 秒）就判空 → 拆屏 + 关窗
-      → T.start 抢锁等 90 秒 → 503 → 用户看到窗凭空消失
-      → 已加 opBusy 保护和醒目注释
-- [x] I2. 重建前没 markLost → T.start 走复用分支复用死屏 → 无限循环
-      → 已加 vd.markLost()
-- [x] I3. tool-spec 说「操作开始→working」，和 AGENTS.md 的「不要手动调」矛盾
-      而且 AI 调 working 会解除 critical 保护 → 两处都修了
-- [x] I4. done 自动触发只有「建屏成功」一处 → 用户发完消息没有绿边
-      → settleIfIdle 现在先亮 4 秒绿色 done 再回 idle
-- [x] I5. done TTL 2500ms + 3 秒轮询 → 17% 概率一次都不亮 → TTL 改 4000ms（500ms 轮询下能看 8 次）
-- [ ] I6. multitouch 标记画不出来（取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
-- [ ] I7. 两套标记系统（framesrv 8 个/15 秒 vs stream.js 3 个/60 秒）
-      stream.js 那套可能污染 AI 自己的截图 —— **要实测确认**
-- [ ] I8. framesrv 的 displayAlive() 反射失败时 return true → 反射失效的机型上永不退出
-
-## H. 第五轮复核发现的（23:40）
-
-- [x] H1. ✅ **settleIfIdle 在 proot 里永远读不到设备文件**（readFileSync → ENOENT 被吞）
-      → 改成走 adb，**已实测通过**：写 working|#7FD9FF|1|...|0|38837，读回判断正确
-- [x] H2. ✅ flushAutoEdge 会覆盖 AI 设的 critical（_manualMode 是进程内的）
-      → 改成先读文件 mode，有严重状态就让路
-- [x] H3. ✅ tick 不防重入（一次重建 60 秒，期间叠 5-6 个 tick 重复拉推流）
-      → 加 ticking 标记 + finally 复位
-- [ ] H4. tick 的重建路径（调 T.start 而不是 ACTIONS.start）不占 opBusy —— **未修**
-- [ ] H5. 删掉 99/214 两处无用的 try/catch（只会吞掉下次的作用域错误）
-- [ ] H6. T.start 没套超时，adbd 卡死时 opBusy 永久 >0
-
-## F2. 文档补充
-
-- [ ] F2a. README / README.en / llms.txt 补 `vdisplay_edge` 说明
-- [ ] F2b. 检查 `screen/` 被标成 "Cordis plugin" 是否正确（keywords 有 cordis，应该是）
-
-## G. 发布前必做
-
-- [ ] G1. 全部端到端实测通过
-- [ ] G2. 子代理对抗审查通过
-- [ ] G3. 推 GitHub（**用户要求先不推**）
-- [ ] G4. 发 npm
-
----
-
-## 本地未推送的提交（截至 23:22）
-
-```
-c7b3f7a  自动边缘光效 + 端口路由 + 500ms 轮询 + AGENTS.md
-4641568  截主屏验证（verifyOverlayVisible）
-63e4fda  作用域 bug 第三次修复 + critical 闩锁 + cross-process settle
-```
-
-远端 HEAD = `b57743f`。**用户要求全部优化完再推。**
+## 不做的（已决定）
+- npm 改名：保持 dsh-go-plugin-screen / dsh-go-plugin-adb
+- GitHub 仓库名不动：ai-background-screen / android-adb-direct
+- 旧包 offscreen-android 暂不 deprecate（等新包验证可用）

@@ -132,14 +132,36 @@ const ACTIONS = {
     opBusy++;
     let r;
     try {
-      r = await T.start(args || {});
+      /* **套超时，防止 opBusy 永久卡住。**
+       *
+       * 2026-11-22 复核指出：T.start 里全是 adb 调用，adbd 卡死或设备过热降频时
+       * 可能挂很久；而 opBusy 在 finally 里减 —— 只要 Promise 不 settle，
+       * opBusy 就永久 >0，看门狗从此永久跳过所有判断，而且没有任何日志。
+       *
+       * 5 分钟是宽松上限：正常建屏 60-120 秒，留 2.5 倍余量。
+       * 超时不取消底层操作（那会留下半成品），只让调用方拿到明确结果，
+       * 让 opBusy 能复位。
+       */
+      const START_TIMEOUT_MS = 5 * 60 * 1000;
+      let stTimer = null;
+      const stTimeout = new Promise((resolve) => {
+        stTimer = setTimeout(() => resolve(null), START_TIMEOUT_MS);
+        if (stTimer.unref) stTimer.unref();
+      });
+      r = await Promise.race([T.start(args || {}), stTimeout]);
+      if (stTimer) clearTimeout(stTimer);
+      if (r === null) {
+        r = { text: '建屏超时（超过 ' + Math.round(START_TIMEOUT_MS / 1000) + ' 秒还没返回）。'
+          + '底层操作可能还在跑，稍后用 status 确认；如果一直这样，重启 daemon。' };
+        console.error('[vdisplayd] start 超时');
+      }
     } finally {
       opBusy--;
     }
     /* 记下「刚起过推流」。**必须是模块作用域变量** ——
      * 写在 startIdleWatch 内部的话，这里赋值会抛 ReferenceError 被吞掉，
      * 60 秒宽限期永远读到 0 = 从来没生效（同型 bug 第三次）。 */
-    try { if (r && (r.ok || r.text)) lastStreamStartAt = Date.now(); } catch { /* ignore */ }
+    if (r && (r.ok || r.text)) lastStreamStartAt = Date.now();
     return r;
   },
   async stop(args) {
@@ -254,7 +276,7 @@ const ACTIONS = {
       try {
         auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
       } finally { opBusy--; }
-      try { lastStreamStartAt = Date.now(); } catch { /* ignore */ }
+      lastStreamStartAt = Date.now();
       const txt = String(auto?.text || '');
 
       /* **池屏也要投个 App，否则浮窗里是黑的。**
@@ -711,7 +733,7 @@ function startIdleWatch() {
               } finally {
                 opBusy--;
               }
-              try { lastStreamStartAt = Date.now(); } catch { /* ignore */ }
+      lastStreamStartAt = Date.now();
             });
             if (!rb.ok) {
               console.error('[vdisplayd] 重建失败：' + (rb.timeout ? '等锁超时（有别的操作在跑）' : rb.error));

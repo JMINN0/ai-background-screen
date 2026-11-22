@@ -388,7 +388,21 @@ public class Main {
      *
      * 所以每次 /status 和被看时都查一下，屏没了就自己退。
      */
-    static boolean displayAlive() {
+    /* **三态：活着 / 死了 / 不知道。**
+     *
+     * 2026-11-22 复核指出一个真实缺陷：原来反射失败时 `return true`
+     * （「保底不误杀」），配上「取消 120 秒空闲自杀」之后，就变成
+     * **反射失效的机型上 framesrv 永远活着**，一直占资源，没有兜底。
+     *
+     * 所以改成三态，让调用方自己决定：不知道的时候不要擅自当作「活着」，
+     * 而是看「还有没有人在看」—— 没人看又判断不了，才退。
+     */
+    static final int DISP_ALIVE = 1;
+    static final int DISP_DEAD = 0;
+    static final int DISP_UNKNOWN = -1;
+
+    /** @return DISP_ALIVE / DISP_DEAD / DISP_UNKNOWN */
+    static int displayState() {
         // **首选 DisplayManagerGlobal.getDisplayInfo()：屏不存在时返回 null。**
         //
         // 实机踩到：scrcpy 那块屏（Node 进程持有）死了之后，
@@ -401,22 +415,24 @@ public class Main {
             Class<?> dmg = Class.forName("android.hardware.display.DisplayManagerGlobal");
             Object inst = dmg.getMethod("getInstance").invoke(null);
             Object info = dmg.getMethod("getDisplayInfo", int.class).invoke(inst, displayId);
-            return info != null;          // null = 这块屏已经不存在
+            return info != null ? DISP_ALIVE : DISP_DEAD;   // null = 屏已经不存在
         } catch (Throwable t) {
             // 退路：用 ServiceManager 列 id
         }
         try {
             Class<?> sm = Class.forName("android.os.ServiceManager");
             Object dms = sm.getMethod("getService", String.class).invoke(null, "display");
-            if (dms == null) return true;
+            if (dms == null) return DISP_UNKNOWN;
             Class<?> stub = Class.forName("android.hardware.display.IDisplayManager$Stub");
             Object idm = stub.getMethod("asInterface", Class.forName("android.os.IBinder")).invoke(null, dms);
             int[] arr = (int[]) idm.getClass().getMethod("getDisplayIds").invoke(idm);
-            if (arr == null) return true;
-            for (int x : arr) if (x == displayId) return true;
-            return false;
+            if (arr == null) return DISP_UNKNOWN;
+            for (int x : arr) if (x == displayId) return DISP_ALIVE;
+            return DISP_DEAD;
         } catch (Throwable t) {
-            return true;   // 两条路都失败才保底
+            /* 两条反射路都失败 —— **不要假装「活着」**。
+             * 返回 UNKNOWN，让调用方按「有没有人在看」决定。 */
+            return DISP_UNKNOWN;
         }
     }
 
@@ -463,7 +479,12 @@ public class Main {
                      * 长时间无人使用也不再自杀，因为虚拟屏本身还在，用户随时可能回来。
                      */
                     long idle = System.currentTimeMillis() - Math.max(lastFetchAt, createdAt);
-                    if (idle > IDLE_EXIT_MS && mjpegClients.isEmpty() && !displayAlive()) {
+                    /* 只有「确定死了」或「判断不了且长时间没人看」才退。
+                     * UNKNOWN 不再无条件保活 —— 那正是原来那个「永不退出」的来源。 */
+                    final boolean noViewer = mjpegClients.isEmpty();
+                    final int ds = displayState();
+                    if (idle > IDLE_EXIT_MS && noViewer
+                            && (ds == DISP_DEAD || ds == DISP_UNKNOWN)) {
                         // 屏没了 + 没人看 → 才是真的可以退
                         System.out.println("IDLE_EXIT idleMs=" + idle + "（屏已不存在）");
                         System.exit(0);
@@ -797,7 +818,7 @@ public class Main {
                 boolean alive = !mjpegClients.isEmpty()
                         || (System.currentTimeMillis() - lastFetchAt) < IDLE_EXIT_MS;
                 // **屏没了就直接退出**，别再吐冻结的最后一帧
-                if (!displayAlive()) {
+                if (displayState() == DISP_DEAD) {
                     System.out.println("DISPLAY_GONE display=" + displayId);
                     try { Thread.sleep(100); } catch (Throwable t2) { }
                     System.exit(0);
