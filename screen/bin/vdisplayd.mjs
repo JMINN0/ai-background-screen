@@ -328,7 +328,47 @@ async function handle(req, res) {
 }
 
 async function shutdown(reason) {
+  /*
+   * **退出前把所有东西收干净。**
+   *
+   * 2026-11-22 复核抓到：原来这里只 `vd.stop()` 当前活动屏，而：
+   *   · 池里的其它屏（pool.destroyAll）从来没被调用过 —— 全库零调用点，
+   *     文件注释自己写着「daemon 退出时用」；
+   *   · framesrv 的 app_process 不停，继续编码（index.js 注释自己记了约 10.3% 核）；
+   *   · 悬浮窗不停，继续从活着的 framesrv 拿帧。
+   * 结果：daemon 空闲自杀或收到 SIGTERM 之后，虚拟屏、推流、浮窗全都还在，
+   * 用户看到一个没人管的窗口，CPU 和电量继续烧。
+   *
+   * 顺序很重要：先关窗口（用户先看不到），再停推流，最后销毁屏。
+   * 每一步独立 try —— 一步失败不能把后面的都跳过。
+   */
+  // ① 先关所有悬浮窗：用户最先感知到的就是屏幕上的窗口
+  try {
+    const T = await import('../src/tools.js');
+    await T.overlayStop('all');
+  } catch { /* 浮窗服务本来就没起 */ }
+
+  // ② 停掉 framesrv：它是最耗 CPU 的那个
+  try {
+    const fsrv = await import('../src/framesrv.js');
+    await fsrv.stop();
+  } catch { /* 没起来就算了 */ }
+
+  // ③ 停推流服务（Node 侧）
+  try {
+    const st = await import('../src/stream.js');
+    await st.stop();
+  } catch { /* ignore */ }
+
+  // ④ 销毁池里所有屏
+  try {
+    const pool = await import('../src/pool.js');
+    await pool.destroyAll();
+  } catch { /* ignore */ }
+
+  // ⑤ 最后销毁活动屏
   try { await vd.stop({ forceStopApps: false }); } catch { /* 尽力而为 */ }
+
   // vd.stop() 正常会恢复 HWC，但它可能因为 adb 不通而失败；
   // 这里同步再兜一次，保证全局属性不留残。
   try { vd.restoreHwcSync(); } catch { /* ignore */ }
