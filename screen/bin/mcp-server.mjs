@@ -97,6 +97,15 @@ function listTools() {
     try { spec = SPECS[key](); } catch { continue; }
     if (!spec?.name) continue;
     if (HIDDEN.has(spec.name)) continue;
+    /* **只广告真能调的。** 2026-11-22 实测：spec 有 39 个，排除 2 个后列 37 个，
+     * 但 callTool 只认 ACTION_MAP 的 17 条 + screen_modes 特判 = 18 个。
+     * 也就是 20 个工具向宿主广告了、一调就报「没暴露」—— 超过一半是坏的。
+     *
+     * 根因是那些工具只活在插件层（tools.js），daemon（vdisplayd.mjs）没有对应 action，
+     * 而 MCP 走的是 daemon。补 20 个 action 是后续的事，现在先止血：
+     * 没映射的不列出来。宁可少给 20 个，也不能给 20 个一调就错的。
+     */
+    if (spec.name !== 'screen_modes' && !ACTION_MAP[spec.name]) continue;
     out.push({
       name: spec.name,
       description: String(spec.description || '').slice(0, 4000),
