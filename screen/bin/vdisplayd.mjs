@@ -747,7 +747,25 @@ function startIdleWatch() {
 
       // ④ 推流看门狗：本地 HTTP，不花 adb
       const n = Number(st.displayId) || 0;
-      const port = 38820 + (((n % 20) + 20) % 20);
+      /* **端口要从账本读，不能用公式算。**
+       *
+       * 2026-11-23 实测抓到的严重 bug：这里原来硬算 `38820 + id%20`，
+       * 但实际端口可能因为碰撞漂移（allocPort 的兜底分支）。
+       * 一旦漂移，看门狗检查 A 端口、进程在 B 端口 →
+       * 永远判「没在听」→ 每 10 秒重起一次 → 实测攒出 3 个 framesrv
+       * 全挤在同一个端口，画面全黑。
+       *
+       * 账本（T.screenPorts / framesrv 的 servers）才是真相。
+       */
+      let port = 0;
+      try {
+        const Tmod = await import('../src/tools.js');
+        port = Tmod.screenPorts?.get?.(Number(st.displayId)) || 0;
+      } catch { /* ignore */ }
+      if (!port) {
+        // 账本里没有（换进程了/刚启动），才退回公式
+        port = 38820 + (((Number(st.displayId) % 20) + 20) % 20);
+      }
       let up = false;
       try {
         const r = await fetch('http://127.0.0.1:' + port + '/status', { signal: AbortSignal.timeout(3000) });
@@ -808,6 +826,18 @@ function startIdleWatch() {
           console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
         }
       }
+
+      /* **不再自动清「孤儿」framesrv。**
+       *
+       * 2026-11-23 我自己加过一条定时清理，然后意识到它很危险：
+       * 判据是「端口不在账本里就杀」，但端口本来就会因为碰撞漂移
+       * （实测 38827 → 38828），于是**正在工作的进程会被当成孤儿杀掉**。
+       * 用一个会误杀的兜底去防一个已经修好的泄漏，不划算。
+       *
+       * 真正的修复是 framesrv.stop() 先清账本再 quit（已修），
+       * 账本泄漏没了，孤儿自然不产生。
+       * cleanupOrphans() 函数保留着，只在人工诊断时调（dryRun=true 先看）。
+       */
 
       // ④ 风控同步：每两个 tick（20 秒）一次就够了，原来 5 秒太频繁
       if (tickNo % 2 === 0) {

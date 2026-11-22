@@ -265,12 +265,66 @@ async function quit(port) {
  * 停取帧服务。
  * @param {number} [displayId] 只停这一块；省略 = 全停。
  */
+/**
+ * **杀掉不在账本里的 framesrv 孤儿进程。**
+ *
+ * 2026-11-23 实测踩到：看门狗重起 3 次，攒出 3 个 framesrv 全挤在同一端口
+ * （38820），只有第一个能绑上，其余空转占内存。
+ * 根因是 stop 的账本泄漏（已修），但还要有兜底 ——
+ * 任何不在账本里的 framesrv 都该被清掉。
+ *
+ * @param {boolean} dryRun true 只报告不杀
+ * @returns {{ok:boolean, orphans:number[], killed:number[]}}
+ */
+export async function cleanupOrphans(dryRun = false) {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const target = await adbTarget();
+    const r = await run('adb', ['-s', target, 'shell',
+      "ps -A -o PID,ARGS 2>/dev/null | grep 'app_process.*framesrv.Main' | grep -v grep"],
+      { timeout: 8000 }).catch(() => ({ stdout: '' }));
+    const lines = String(r.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean);
+    const ledgerPorts = new Set([...servers.values()].map((x) => x.port));
+    const orphans = [];
+    for (const ln of lines) {
+      const m = ln.match(/^(\d+)\s+.*--port=(\d+)/);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const port = Number(m[2]);
+      if (!ledgerPorts.has(port)) orphans.push({ pid, port });
+    }
+    const killed = [];
+    if (!dryRun) {
+      for (const o of orphans) {
+        try {
+          await run('adb', ['-s', target, 'shell', `kill -9 ${o.pid}`], { timeout: 6000 });
+          killed.push(o.pid);
+        } catch { /* 单个失败不影响其它 */ }
+      }
+    }
+    return { ok: true, orphans: orphans.map((o) => o.pid), killed };
+  } catch (e) {
+    return { ok: false, hint: String(e?.message || e).slice(0, 80) };
+  }
+}
+
 export async function stop(displayId) {
   if (displayId != null) {
     const s = servers.get(displayId);
     if (s) {
-      await quit(s.port);
+      /* **必须先清账本，再尝试优雅退出。**
+       *
+       * 2026-11-23 实测抓到的严重 bug：原来是 `await quit(s.port)` 之后再
+       * `servers.delete()`。而 quit 是 HTTP 请求 —— 进程已经被 kill -9 时它抛异常，
+       * `delete` 就永远不执行，内存里一直记着这个端口被占用。
+       * 于是下一次 allocPort 发现「首选端口被占」，漂移到下一个空端口，
+       * 而看门狗检查的还是公式算出来的老端口 → 永远对不上 → 每 10 秒重起一次，
+       * **实测攒出 3 个 framesrv 全挤在同一端口**。
+       */
       servers.delete(displayId);
+      try { await quit(s.port); } catch { /* 进程已死，退不出来是正常的 */ }
       try { s.proc?.kill?.(); } catch { /* ignore */ }
     }
     if (activeDisplayId === displayId) activeDisplayId = firstKey();
