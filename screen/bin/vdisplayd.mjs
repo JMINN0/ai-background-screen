@@ -395,16 +395,41 @@ async function handle(req, res) {
 
   if (!MUTATING.has(payload.action)) return run();
 
-  // single-flight：一把全局锁，后来的排队
-  const prev = mutexTail;
-  let release;
-  mutexTail = new Promise((r) => { release = r; });
-  try {
-    await prev;
-    return await run();
-  } finally {
-    release();
-  }
+    /* single-flight：一把全局锁，后来的排队。
+     *
+     * **但排队必须有上限。** 2026-11-22 用户报「你也会说卡住了」，根因就在这：
+     * 一次 start 要跑十几个 adb 调用（推 jar、spawn、等 socket、投 App、六项自检），
+     * 正常也要 60-120 秒；期间所有其他写操作（input/shot/launch/stop）全在这里死等，
+     * 而 `await prev` 没有超时 —— 前一个卡住就全卡住。
+     *
+     * 表现：AI 调一个 input 等两分钟不返回，看起来就是「工具挂了」。
+     *
+     * 现在给排队本身设上限：等太久就明确返回「前面有操作在跑，稍后重试」，
+     * 而不是无声挂着。宁可让调用方知道要重试，也不要让它以为死了。
+     */
+    const prev = mutexTail;
+    let release;
+    mutexTail = new Promise((r) => { release = r; });
+    try {
+      const LOCK_WAIT_MS = 90_000;
+      let timer = null;
+      const timeoutP = new Promise((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), LOCK_WAIT_MS);
+        if (timer.unref) timer.unref();
+      });
+      const got = await Promise.race([prev.then(() => 'ok'), timeoutP]);
+      if (timer) clearTimeout(timer);
+      if (got === 'timeout') {
+        return send(res, 503, {
+          ok: false,
+          error: '前面还有操作在执行（可能在建屏/自检），' + Math.round(LOCK_WAIT_MS / 1000)
+            + ' 秒内没轮到。稍后重试；长时间这样用 status 看是不是卡在建屏。',
+        });
+      }
+      return await run();
+    } finally {
+      release();
+    }
 }
 
 async function shutdown(reason) {
