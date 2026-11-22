@@ -1858,9 +1858,34 @@ export function manualEdgeActive() {
  * 把「AI 在操作」这个事实刷到边缘状态文件。
  * @param {string} phase 'working' 或 'done'
  */
-export function flushAutoEdge(phase) {
+export async function flushAutoEdge(phase) {
   // AI 手动设的严重状态期间不覆盖 —— 让用户先看到那个警告
   if (manualEdgeActive()) return { skipped: 'manual-edge-active' };
+  /* **还要看文件里现在的 mode。**
+   *
+   * 2026-11-22 独立复核抓到：`_manualMode` 是**进程内**变量。
+   * 插件进程设了 critical，daemon 进程里的 `_manualMode` 还是空 ——
+   * 于是 daemon 走一次 launch 或 start 自检，就无条件把 edge 文件
+   * 覆盖成 working/done，用户刚看到的红边一闪就没了。
+   *
+   * 文件是唯一跨进程共享的真相来源，必须以它为准。
+   */
+  try {
+    const cur = String(await adb(['shell', 'cat /data/local/tmp/dshframe/edge 2>/dev/null'])
+      .then((r) => (r.ok ? r.out : ''))).trim();
+    if (cur) {
+      const m0 = cur.split('|')[0];
+      if (m0 === 'warning' || m0 === 'error' || m0 === 'critical') {
+        // 文件里还有一个严重状态没清，别覆盖
+        const ts = Number(cur.split('|')[3]) || 0;
+        const ttl = Number(cur.split('|')[4]) || 0;
+        // 没 TTL（critical 常见）或还没过期 → 让路
+        if (ttl <= 0 || (ts > 0 && Date.now() - ts < ttl)) {
+          return { skipped: 'file-has-serious-state:' + m0 };
+        }
+      }
+    }
+  } catch { /* 读不到就当没有，往下走 */ }
   const now = Date.now();
   const color = phase === 'done' ? '#34D399' : '#7FD9FF';
   const ttl = phase === 'done' ? 2500 : 0;
@@ -1885,7 +1910,7 @@ export function flushAutoEdge(phase) {
  * 操作停下来之后回 idle。
  * 由 daemon 的 tick 调用：超过 N 秒没操作就清掉 working，别让边一直亮着。
  */
-export function settleIfIdle(idleMs = 8000) {
+export async function settleIfIdle(idleMs = 8000) {
   if (manualEdgeActive()) return { skipped: 'manual-edge-active' };
   /* **跨进程问题：不能用进程内变量判断「AI 还在操作吗」。**
    *
@@ -1899,16 +1924,26 @@ export function settleIfIdle(idleMs = 8000) {
    * 文件是跨进程共享的真相来源。读它的第 4 段（写入时刻），
    * 超过 idleMs 就清。这样不管谁写的、谁清的，判断一致。
    */
-  return settleIfIdleByFile(idleMs);
+  return await settleIfIdleByFile(idleMs);
 }
 
-/** 真正的实现：读 edge 文件的写入时间戳判断是否该清。 */
-function settleIfIdleByFile(idleMs) {
+/**
+ * 真正的实现：读 edge 文件的写入时间戳判断是否该清。
+ *
+ * **必须走 adb，不能直接 readFileSync。**
+ *
+ * 2026-11-22 独立复核抓到并实测确认：这个包跑在 proot 的 Ubuntu 里，
+ * 根本看不到设备的 `/data/local/tmp` —— 直接读会 ENOENT，
+ * 被 catch 吞掉，于是整个函数永远返回 no-edge-file，一次都没生效过。
+ * 这和「emptyStreak 未声明被吞掉」是完全同一种失效方式：
+ * 代码看着对、改了但没效果、而且没有任何日志。
+ *
+ * 本文件里所有访问设备文件的地方（opmode、state）都走 adb，只有这里写错成了本地读。
+ */
+async function settleIfIdleByFile(idleMs) {
   let line = '';
   try {
-    /* **不能用 require** —— 这个包是 ESM，require 不存在。
-     * vd.js 顶部已经 import 了 readFileSync，直接用。 */
-    line = String(readFileSync('/data/local/tmp/dshframe/edge', 'utf8')).trim();
+    line = String(await adb(['shell', 'cat /data/local/tmp/dshframe/edge 2>/dev/null']).then((r) => r.ok ? r.out : '')).trim();
   } catch { return { skipped: 'no-edge-file' }; }
   if (!line) return { skipped: 'no-edge-file' };
   const parts = line.split('|');

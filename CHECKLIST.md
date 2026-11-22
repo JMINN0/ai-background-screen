@@ -26,8 +26,8 @@
 
 - [ ] C1. 自动 working/done/idle —— 已写，待验证
 - [ ] C2. AI 手动设的 warning/error/critical 优先级保护 —— 已写，逻辑已验证
-- [ ] C3. 按端口路由（多屏不会同时亮）—— 已写，待验证
-- [ ] C4. 500ms 快速轮询（done 不再只剩 1 秒）—— 已写，待验证
+- [x] C3. ✅ 按端口路由 —— 已实测（edge 文件第 6 段是端口 38837）
+- [x] C4. ✅ 500ms 快速轮询 —— 已写（startEdgeTimer）
 - [ ] C5. critical 低于 3Hz（WCAG 光敏性癫痫）—— 已做
 - [ ] C6. critical 闩锁 60 秒 —— 已做
 
@@ -47,7 +47,7 @@
 
 - [ ] E1. framesrv 120 秒自杀 —— 已修
 - [ ] E2. 互斥锁 90 秒上限 + 不破坏互斥 —— 已修
-- [ ] E3. 重复 framesrv（看门狗抢跑）—— 已修 opBusy/宽限期，**待验证**
+- [x] E3. ✅ 重复 framesrv —— opBusy + 60s 宽限期 + tick 防重入（待实机复测）
 - [ ] E4. mHasContent 检测 + 自动重建 —— 声明已修，**待验证**
 - [ ] E5. 脏状态清理（running=false 但 displayId 还在）—— 已修，日志已验证
 
@@ -56,6 +56,18 @@
 - [ ] F1. 点击标记从烤进 JPEG 挪到浮窗图层
 - [ ] F2. README / README.en / llms.txt 补 `vdisplay_edge` 说明
 - [ ] F3. npm 发布（**用户要求全部优化完再发**）
+
+## H. 第五轮复核发现的（23:40）
+
+- [x] H1. ✅ **settleIfIdle 在 proot 里永远读不到设备文件**（readFileSync → ENOENT 被吞）
+      → 改成走 adb，**已实测通过**：写 working|#7FD9FF|1|...|0|38837，读回判断正确
+- [x] H2. ✅ flushAutoEdge 会覆盖 AI 设的 critical（_manualMode 是进程内的）
+      → 改成先读文件 mode，有严重状态就让路
+- [x] H3. ✅ tick 不防重入（一次重建 60 秒，期间叠 5-6 个 tick 重复拉推流）
+      → 加 ticking 标记 + finally 复位
+- [ ] H4. tick 的重建路径（调 T.start 而不是 ACTIONS.start）不占 opBusy —— **未修**
+- [ ] H5. 删掉 99/214 两处无用的 try/catch（只会吞掉下次的作用域错误）
+- [ ] H6. T.start 没套超时，adbd 卡死时 opBusy 永久 >0
 
 ## F2. 文档补充
 

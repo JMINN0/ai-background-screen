@@ -558,7 +558,13 @@ function startIdleWatch() {
   /** **有写操作正在跑**。tick 在看门狗阶段要跳过 ——
    *  一次 start 里 framesrv 还没监听是正常的，不能判死。 */
   let tickNo = 0;
+  /** **tick 防重入。**
+   * 一次重建要 60 秒，而 setInterval 每 10 秒触发 —— 期间会叠加 5-6 个 tick，
+   * 它们互相看不到对方在重建，会重复 fsrv.stop + streamStart，造出两个 framesrv。 */
+  let ticking = false;
   setInterval(async () => {
+    if (ticking) return;   // 上一轮还没跑完，别叠加
+    ticking = true;
     tickNo++;
     try {
       const st = await vd.status().catch(() => null);
@@ -706,7 +712,7 @@ function startIdleWatch() {
        * AI 不会主动清 working —— 用户也不该看到一块一直亮着青边的屏。
        * 8 秒没有新操作就清掉；AI 手动设的严重状态（warning/error/critical）
        * 由 settleIfIdle 内部判断，不会被这条清掉。 */
-      try { vd.settleIfIdle(8000); } catch { /* 光效失败不影响守护进程 */ }
+      try { await vd.settleIfIdle(8000); } catch { /* 光效失败不影响守护进程 */ }
     } catch (e) {
       /* **不能空吞异常。**
        *
@@ -716,6 +722,11 @@ function startIdleWatch() {
        * 定时器确实不该崩，但**必须把错误说出来**。
        */
       console.error('[vdisplayd] tick 出错（看门狗可能没在跑）:', e?.message || String(e));
+    } finally {
+      /* **必须复位。** tick 里有很多 return（没屏、对账失败、opBusy 忙…），
+       * 不复位的话第一次 return 之后就永久跳过所有后续 tick，
+       * 表现就是「看门狗跑了一次就再也不跑了」—— 和之前那些静默失效一个样。 */
+      ticking = false;
     }
   }, 10_000).unref?.();
 }
