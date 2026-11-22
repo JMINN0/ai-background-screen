@@ -1793,6 +1793,59 @@ export async function syncRiskLevel() {
   } catch { return ''; }
 }
 
+/**
+ * **设置悬浮窗边缘光效状态。**
+ *
+ * 这是给 AI 用的视觉反馈通道：正常工作（working）和任务完成（done）由系统
+ * 自己管，AI 只需要在「出错」「需要人看一眼」「发现严重问题」时调它。
+ *
+ * @param {string} mode  idle / working / done / warning / error / critical
+ * @param {object} o     { color, intensity, ttlSec, reason }
+ *
+ * 颜色默认值按状态给，AI 不传就用默认 —— 让调用尽量简单：
+ *   working  → 青 #00C8FF（AI 在干活，冷静）
+ *   done     → 绿 #34C759（Apple 系统绿，成功）
+ *   warning  → 黄 #FFCC00（注意）
+ *   error    → 红 #FF3B30（Apple 系统红，失败）
+ *   critical → 深红 #D70015（可能已出事）
+ *
+ * 为什么用颜色 + 运动双重编码：红绿色盲占男性 8%，
+ * 只靠颜色区分「完成」和「出错」对这部分人完全失效。
+ */
+export function setEdge(mode, o = {}) {
+  const M = String(mode || '').trim().toLowerCase();
+  const DEFAULT_COLOR = {
+    working: '#00C8FF',
+    done: '#34C759',
+    warning: '#FFCC00',
+    error: '#FF3B30',
+    critical: '#D70015',
+  };
+  const DEFAULT_TTL = {
+    working: 0,        // 不自动结束，由调用方切走
+    done: 4000,        // 完成动画 4 秒后自己收
+    warning: 15000,
+    error: 20000,
+    critical: 0,       // 严重问题不自动消，等人工或 AI 明确清掉
+  };
+  if (M !== 'idle' && !(M in DEFAULT_COLOR)) {
+    return { ok: false, hint: `不认识的边缘状态「${M}」。可选：idle / working / done / warning / error / critical` };
+  }
+  const color = String(o.color || DEFAULT_COLOR[M] || '#00000000');
+  const inten = (o.intensity === undefined || o.intensity === null) ? 1 : Number(o.intensity);
+  const ttl = (o.ttlSec === undefined || o.ttlSec === null)
+    ? (DEFAULT_TTL[M] || 0)
+    : Math.max(0, Number(o.ttlSec) * 1000);
+  const at = Date.now();
+  const line = M + '|' + color + '|' + Math.max(0, Math.min(1, inten)) + '|' + at + '|' + Math.round(ttl);
+  const safe = line.replace(/["'`$\\]/g, '');
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+    + 'printf "%s" "' + safe + '" > /data/local/tmp/dshframe/edge.tmp && '
+    + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
+    .catch(() => {});
+  return { ok: true, mode: M, color, intensity: inten, ttlMs: Math.round(ttl) };
+}
+
 export function markOpMode(text) {
   /* 插件跑在 proot 里，没有设备的 /data/local/tmp，只能通过 adb 写。
    * 用 fire-and-forget：这一步只是为了给用户看状态，不能拖慢真正的操作，

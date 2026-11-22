@@ -682,6 +682,8 @@ public class OverlayService extends Service {
         int mjpegFails = 0;
 
         View root;
+        /** 边缘光效层。null 表示这个窗口还没有（老版本）。 */
+        EdgeView edge;
         ImageView img;
         TextView label;
         LinearLayout bar;      // 顶栏（最小化时隐藏，否则按钮比小预览还宽，把窗口撑大）
@@ -797,6 +799,18 @@ public class OverlayService extends Service {
             tlp2.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
             tlp2.bottomMargin = dp(2);
             box.addView(label, tlp2);
+
+            /* **边缘光效层：AI 状态的视觉反馈。**
+             *
+             * 加在 img 和 label 之上（最后加 = 最上层），但不拦截触摸 ——
+             * 它只是画，所有手势仍然落到 box / handle 上。
+             * idle 时 setWillNotDraw(true)，系统直接跳过它的绘制，零成本。
+             */
+            edge = new EdgeView(OverlayService.this);
+            FrameLayout.LayoutParams elp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+            box.addView(edge, elp);
+            try { edge.bringToFront(); } catch (Throwable t) { /* ignore */ }
 
             // **右下缩放手柄：画成斜向双箭头**，一眼就知道能拖大小
             View handle = new View(OverlayService.this) {
@@ -1444,8 +1458,74 @@ int dx = (int)(e.getRawX() - downX);
            * 数据来自 /data/local/tmp/dshframe/opmode，由插件每次操作前写入。
            * 收起状态只显示屏号。
            */
+          /**
+           * **读边缘状态文件，切换光效。**
+           *
+           * 文件：/data/local/tmp/dshframe/edge
+           * 格式：`模式|颜色HEX|强度|时间戳ms|持续ms`
+           *   模式：idle / working / done / warning / error / critical
+           *   例：`error|#FF3B30|0.9|1732278000123|8000`
+           *
+           * 为什么用文件不用 HTTP：浮窗和插件是两个进程，文件是现成的、
+           * 无连接的、写坏了也不会阻塞。和 opmode 同一套模式。
+           *
+           * 时间戳用来算「这个状态从什么时候开始」—— 浮窗可能比写入晚几秒
+           * 才读到，按剩余时长继续动画，而不是从头重播。
+           */
+          void refreshEdge() {
+              EdgeView ev = edge;
+              if (ev == null) return;
+              String line = null;
+              try {
+                  java.io.BufferedReader r = new java.io.BufferedReader(
+                          new java.io.FileReader("/data/local/tmp/dshframe/edge"));
+                  line = r.readLine();
+                  r.close();
+              } catch (Throwable t) { /* 文件不在 = idle */ }
+              if (line == null || line.trim().isEmpty()) {
+                  if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                  return;
+              }
+              String[] parts = line.trim().split("\\|", -1);
+              if (parts.length < 2) return;
+              String modeName = parts[0].trim();
+              int col;
+              try { col = android.graphics.Color.parseColor(parts[1].trim()); }
+              catch (Throwable t) { col = 0xFFFF3B30; }   // 解析不了用红，宁可多提示
+              float inten = 1f;
+              if (parts.length > 2) { try { inten = Float.parseFloat(parts[2].trim()); } catch (Throwable t) { } }
+              long startedAtMs = 0;
+              if (parts.length > 3) { try { startedAtMs = Long.parseLong(parts[3].trim()); } catch (Throwable t) { } }
+              long durMs = 0;
+              if (parts.length > 4) { try { durMs = Long.parseLong(parts[4].trim()); } catch (Throwable t) { } }
+
+              int m = EdgeView.MODE_IDLE;
+              if ("working".equals(modeName)) m = EdgeView.MODE_WORKING;
+              else if ("done".equals(modeName)) m = EdgeView.MODE_DONE;
+              else if ("warning".equals(modeName)) m = EdgeView.MODE_WARNING;
+              else if ("error".equals(modeName)) m = EdgeView.MODE_ERROR;
+              else if ("critical".equals(modeName)) m = EdgeView.MODE_CRITICAL;
+
+              if (m == EdgeView.MODE_IDLE) {
+                  if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                  return;
+              }
+              long remain = 0;
+              if (durMs > 0) {
+                  long elapsed = startedAtMs > 0 ? (System.currentTimeMillis() - startedAtMs) : 0L;
+                  remain = durMs - Math.max(0L, elapsed);
+                  if (remain <= 0) {
+                      if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                      return;
+                  }
+              }
+              ev.setMode(m, col, inten, remain);
+          }
+
+
           void refreshLabel() {
               if (label == null) return;
+              refreshEdge();
                 /* **重连中就别用正常内容覆盖它。**
                  *
                  * 2026-11-22 对抗审查抓到：setReconnecting(true) 只在连续第 3 次失败时

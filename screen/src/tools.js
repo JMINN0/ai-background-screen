@@ -539,6 +539,33 @@ export async function selfCheck(args = {}) {
   return { ok: allOk, checks, port, displayId: wantId, unmeasured };
 }
 
+/**
+ * **设置悬浮窗边缘光效 —— 给用户看 AI 的状态。**
+ *
+ * 用户 2026-11-22 要求：「这个边是悬浮窗的边不是整个手机主屏的边」，
+ * 并且「工作结束和工作中就不需要 ai 操作和控制边的颜色，只有工作时出错
+ * 或者其他情况时才有 ai 自己让这个边出现什么颜色」。
+ */
+export async function edge(args) {
+  const r = vd.setEdge(args?.state, {
+    color: args?.color,
+    intensity: args?.intensity,
+    ttlSec: args?.ttlSec,
+  });
+  if (!r.ok) return { text: r.hint };
+  const label = {
+    idle: '清除光效',
+    working: 'AI 正在操作（青色环绕）',
+    done: '任务完成（绿色横扫）',
+    warning: '需要留意（黄色呼吸）',
+    error: '出错了（红色脉冲）',
+    critical: '严重问题（粗红边高频闪）',
+  }[r.mode] || r.mode;
+  const ttl = r.ttlMs > 0 ? ('，' + Math.round(r.ttlMs / 1000) + ' 秒后自动恢复') : '，不自动恢复';
+  const why = args?.reason ? ('\n原因：' + String(args.reason).slice(0, 200)) : '';
+  return { text: `边缘光效已设为「${label}」${ttl}` + why };
+}
+
 export async function launch(args) {
   try { stream.setState('acting'); } catch { /* ignore */ }
   const pkg = String(args?.pkg || '').trim();

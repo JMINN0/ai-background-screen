@@ -66,6 +66,41 @@ export function startSpec() {
   };
 }
 
+export function edgeSpec() {
+  return {
+    name: 'vdisplay_edge',
+    description: [
+      '**给用户看「AI 现在什么状态」—— 悬浮窗边缘亮起对应光效。**',
+      '',
+      '这个边是**悬浮窗的边**，不是手机主屏的边。用户在主屏上能看到的那块小窗口。',
+      '',
+      '**什么时候该调**（重要，不要等用户提醒）：',
+      '  · 操作开始 → `working`（青色环绕，表示 AI 在干活）',
+      '  · 任务完成 → `done`（绿色横扫，表示好了）',
+      '  · 遇到阻碍但不致命 → `warning`（黄色呼吸）：比如出现验证码、按钮找不到、页面加载超时',
+      '  · 明确失败 → `error`（红色脉冲）：操作失败了，或者需要用户介入',
+      '  · **可能已经出大事** → `critical`（粗红边高频闪）：发现风控迹象、账号异常、',
+      '    支付/转账前的最后确认、任何「再操作下去可能造成不可逆后果」的时刻',
+      '',
+      '**不需要调的情况**：正常工作过程中不要反复调 working，一次就够；',
+      '结束时调一次 done 就行。用户不想看到边一直在闪。',
+      '',
+      '颜色和运动都是双编码（红绿色盲也能分辨）：',
+      '  working 青·环绕流动 / done 绿·从左扫到右 / warning 黄·慢呼吸 / error 红·快脉冲 / critical 深红·高频闪',
+      '',
+      '不传 color 就用该状态的默认色。传 `state:"idle"` 清除光效。',
+    ].join('\n'),
+    parameters: {
+      state: { type: 'string', description: 'idle / working / done / warning / error / critical。idle = 清除光效。' },
+      reason: { type: 'string', description: '为什么切到这个状态，一句话。会写进日志方便回溯，用户也能在诊断里看到。' },
+      color: { type: 'string', description: '可选，覆盖默认色。传 #RRGGBB。一般不用传。' },
+      intensity: { type: 'number', description: '可选，0~1，光效强度。默认 1。想让提示更轻可以给 0.5。' },
+      ttlSec: { type: 'number', description: '可选，多少秒后自动恢复 idle。不传用各状态默认值（done 4 秒 / warning 15 秒 / error 20 秒 / working 和 critical 不自动消）。' },
+    },
+    output: out('确认了哪个状态、用了什么颜色、多久后自动恢复。'),
+  };
+}
+
 export function launchSpec() {
   return {
     name: 'vdisplay_launch',
