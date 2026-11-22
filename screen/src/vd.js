@@ -1827,7 +1827,22 @@ export function touchWorking() {
 export function noteManualEdge(mode, ttlMs) {
   if (mode === 'warning' || mode === 'error' || mode === 'critical') {
     _manualMode = mode;
-    _manualUntil = Date.now() + Math.max(5000, Number(ttlMs) || 20000);
+    const ttl = Number(ttlMs) || 0;
+    /* **critical 的闩锁必须足够长。**
+     *
+     * 2026-11-22 复核抓到：critical 的默认 TTL 是 0（表示「不自动过期」），
+     * 而这里写 `Math.max(5000, ttl || 20000)` → max(5000, 20000) = 20000……
+     * 等等，ttl=0 是 falsy 所以走 || 20000。但原代码是 `Math.max(5000, ttlMs || 20000)`，
+     * ttlMs=0 → 20000。看起来是对的。
+     *
+     * 但如果 AI 显式传了 ttlSec 就会用传的值。为了让「critical 不自动消」
+     * 这个承诺真的成立，这里给 critical 一个很长的兜底（60 秒），
+     * 并且绝不小于 30 秒 —— 用户需要时间看到并反应。
+     */
+    let ms;
+    if (mode === 'critical') ms = Math.max(60_000, ttl > 0 ? ttl : 0);
+    else ms = Math.max(5_000, ttl > 0 ? ttl : 20_000);
+    _manualUntil = Date.now() + ms;
   } else {
     _manualMode = '';
     _manualUntil = 0;
@@ -1872,11 +1887,39 @@ export function flushAutoEdge(phase) {
  */
 export function settleIfIdle(idleMs = 8000) {
   if (manualEdgeActive()) return { skipped: 'manual-edge-active' };
-  if (!_autoLastAt) return { skipped: 'never-worked' };
-  if (Date.now() - _autoLastAt < idleMs) return { skipped: 'still-active' };
-  _autoLastAt = 0;
-  adb(['shell', 'rm -f /data/local/tmp/dshframe/edge'])
-    .catch(() => {});
+  /* **跨进程问题：不能用进程内变量判断「AI 还在操作吗」。**
+   *
+   * 2026-11-22 复核抓到：touchWorking 只在插件进程调，而 settleIfIdle 只在
+   * daemon 进程调 —— 两个进程各有一份 vd.js 模块状态，daemon 的 _autoLastAt
+   * 永远是 0，所以这条永远返回 never-worked，青色 working 会一直亮着不收。
+   * 反方向也糟：daemon 走 poolCreate→launch 会置上它自己的 _autoLastAt，
+   * 8 秒后 rm 掉 edge 文件 —— 能抹掉插件刚设的 critical。
+   *
+   * 正确做法：**不看进程内状态，看边缘文件本身的时间戳**。
+   * 文件是跨进程共享的真相来源。读它的第 4 段（写入时刻），
+   * 超过 idleMs 就清。这样不管谁写的、谁清的，判断一致。
+   */
+  return settleIfIdleByFile(idleMs);
+}
+
+/** 真正的实现：读 edge 文件的写入时间戳判断是否该清。 */
+function settleIfIdleByFile(idleMs) {
+  let line = '';
+  try {
+    /* **不能用 require** —— 这个包是 ESM，require 不存在。
+     * vd.js 顶部已经 import 了 readFileSync，直接用。 */
+    line = String(readFileSync('/data/local/tmp/dshframe/edge', 'utf8')).trim();
+  } catch { return { skipped: 'no-edge-file' }; }
+  if (!line) return { skipped: 'no-edge-file' };
+  const parts = line.split('|');
+  if (parts.length < 4) return { skipped: 'bad-format' };
+  const mode = parts[0];
+  // 只清自动状态，不动 AI 手动设的严重状态（由 manualEdgeActive 和 TTL 管）
+  if (mode !== 'working') return { skipped: 'not-working' };
+  const at = Number(parts[3]) || 0;
+  if (!at) return { skipped: 'no-timestamp' };
+  if (Date.now() - at < idleMs) return { skipped: 'still-active' };
+  adb(['shell', 'rm -f /data/local/tmp/dshframe/edge']).catch(() => {});
   return { ok: true, phase: 'idle' };
 }
 

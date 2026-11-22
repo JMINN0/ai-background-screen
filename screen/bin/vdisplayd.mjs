@@ -63,6 +63,10 @@ let mutexTail = Promise.resolve();   // 全局互斥链，串行化有副作用�
  *  期间 framesrv 还没监听是正常的，不能判死（否则重复 spawn 出两个 framesrv）。
  *  必须是模块作用域的：ACTIONS 里的 start 要用它。 */
 let opBusy = 0;
+/** 上次起推流成功的时刻。**必须模块作用域** —— ACTIONS.start 里要赋值，
+ *  写在 startIdleWatch 内部的话，模块级赋值会抛 ReferenceError 被 catch 吞掉，
+ *  60 秒宽限期永远读到 0 = 从来没生效（2026-11-22 复核抓到的同型复发）。 */
+let lastStreamStartAt = 0;
 
 const ACTIONS = {
   async start(args) {
@@ -78,9 +82,20 @@ const ACTIONS = {
      * 三个入口拿到的是同一份结果、同一段文案。
      */
     const T = await import("../src/tools.js");
+    /* **opBusy 必须 try/finally 包住。**
+     * 2026-11-22 复核抓到一个泄漏：T.start 一抛异常，opBusy 就永久 >0，
+     * 看门狗从此永久跳过判断 —— 而且没有任何日志。
+     */
     opBusy++;
-    const r = await T.start(args || {});
-    opBusy--;
+    let r;
+    try {
+      r = await T.start(args || {});
+    } finally {
+      opBusy--;
+    }
+    /* 记下「刚起过推流」。**必须是模块作用域变量** ——
+     * 写在 startIdleWatch 内部的话，这里赋值会抛 ReferenceError 被吞掉，
+     * 60 秒宽限期永远读到 0 = 从来没生效（同型 bug 第三次）。 */
     try { if (r && (r.ok || r.text)) lastStreamStartAt = Date.now(); } catch { /* ignore */ }
     return r;
   },
@@ -189,7 +204,13 @@ const ACTIONS = {
     let castPkg = '';
     try {
       const T = await import('../src/tools.js');
-      const auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
+      /* poolCreate 也要占 opBusy —— 它内部的 streamStart 要等 8 秒端口，
+       * tick 每 10 秒一次正好能插进来判死，导致重复 framesrv。 */
+      opBusy++;
+      let auto;
+      try {
+        auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
+      } finally { opBusy--; }
       try { lastStreamStartAt = Date.now(); } catch { /* ignore */ }
       const txt = String(auto?.text || '');
 
@@ -534,7 +555,6 @@ function startIdleWatch() {
   let emptyStreak = 0;        // 连续几次检测到 mHasContent=false
   let streamFailStreak = 0;   // 推流连续几次没在听
   /** 上次起推流成功的时刻。用来给启动留宽限期，避免 tick 抢在 framesrv 监听前判死。 */
-  let lastStreamStartAt = 0;
   /** **有写操作正在跑**。tick 在看门狗阶段要跳过 ——
    *  一次 start 里 framesrv 还没监听是正常的，不能判死。 */
   let tickNo = 0;
