@@ -207,6 +207,8 @@ public class OverlayService extends Service {
      *     而且用户点一下就能展开，并且这一次不会被再自动收起
      */
     private boolean watchMode = false;
+    /** 横屏提示是否已经弹过（1=弹过，0=没弹，-1=初始）。避免每次转屏都弹。 */
+    private int toastShownForWatch = -1;
 
     private void updateWatchMode() {
         boolean landscape;
@@ -242,6 +244,33 @@ public class OverlayService extends Service {
         if (watchMode) {
             try { layoutWatchThumbs(); } catch (Throwable t) { /* ignore */ }
         }
+        /* **告诉用户「它为什么变小了」。**
+         *
+         * 2026-11-22 对抗审查指出：横屏自动收起后窗口从占屏 15% 缩成 36dp，
+         * 而收起时标签是隐藏的（36dp 放不下字），用户完全不知道发生了什么。
+         * 他的原话「我最小化悬浮窗你怎么还又开了一个」说明他对窗口自己变化很敏感。
+         *
+         * 用 Toast 而不是标签：36dp 里放不下字，而 Toast 不需要空间、
+         * 自动消失、不会挡住视频。只在**进入收起**时提示，展开时不提示。
+         */
+        try {
+            if (watchMode && toastShownForWatch < 0) {
+                toastShownForWatch = 1;
+                /* Toast 必须在主线程，onConfigurationChanged 有时不在主线程上（厂商 ROM），
+                 * 所以统一 post 到 ui handler 再弹。 */
+                ui.post(new Runnable() {
+                    public void run() {
+                        try {
+                            android.widget.Toast.makeText(OverlayService.this,
+                                "横屏了，浮窗自动收起成小窗以免挡住画面，点一下可以展开",
+                                android.widget.Toast.LENGTH_SHORT).show();
+                        } catch (Throwable t) { /* 弹不出来就算了，不影响功能 */ }
+                    }
+                });
+            } else if (!watchMode && toastShownForWatch > 0) {
+                toastShownForWatch = 0;
+            }
+        } catch (Throwable t) { /* Toast 失败不影响功能 */ }
     }
 
     /** 横屏收起后，把缩略图排到顶部中间一排，别乱放。 */
