@@ -165,6 +165,17 @@ export async function start(args) {
         }
       }
       /* 总评必须把「未测」说出来，不能把没量到的当成通过。 */
+      /* **清掉僵尸窗口。** 用户在 2026-11-22 报过「最小化了怎么又开一个」——
+       * 反复建屏会留下端口已经失效的旧窗口。按当前有效端口白名单清理。 */
+      try {
+        const valid = [...screenPorts.values()].filter((x) => x > 0);
+        if (sc.port) valid.push(sc.port);
+        const co = await closeOrphanWindows([...new Set(valid)]);
+        if (co.ok && co.closed && co.closed.length) {
+          parts.push('清理了 ' + co.closed.length + ' 个失效的旧浮窗（端口 ' + co.closed.join(', ') + '）');
+        }
+      } catch { /* 清理失败不影响建屏结果 */ }
+
       const unm = sc.unmeasured || 0;
       if (sc.ok) {
         parts.push(unm ? ('创建完成并自检通过 ✅（但有 ' + unm + ' 项没量到，见 ⚠️）')
@@ -859,6 +870,46 @@ async function ensureOverlayInstalled(run, target) {
     return { ok: true, already: false };
   } catch (e) {
     return { ok: false, why: String(e?.message || e).slice(0, 80) };
+  }
+}
+
+/**
+ * **关掉「端口已经不合法」的僵尸浮窗。**
+ *
+ * 2026-11-22 用户报：「我最小化悬浮窗你怎么还又开了一个」。
+ *
+ * 根因：反复 stop/start 时新屏会拿到**新端口**（38838 → 38842 …），
+ * 于是给新端口建了新窗口，而用户最小化的旧窗口还在（收起状态仍然是个窗口）。
+ * 两个窗口叠在一起，用户看到的就是「又开了一个」。
+ *
+ * 修法：推流起来之后，把所有「端口不在当前有效列表里」的窗口关掉。
+ * 为什么不在 overlayStart 里直接 closeAll 再开：多屏时会把别的屏的窗口也关了。
+ * 所以按端口白名单清，只杀不在名单里的。
+ *
+ * @param {number[]} validPorts 当前所有应该在的端口
+ */
+export async function closeOrphanWindows(validPorts) {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const target = await adbTarget();
+    // 看现在实际有哪些端口的窗口
+    const r = await run('adb', ['-s', target, 'shell',
+      "dumpsys window windows 2>/dev/null | grep -oE 'dsh-overlay:[0-9]+' | sort -u"],
+      { timeout: 8000 }).catch(() => ({ stdout: '' }));
+    const alive = String(r.stdout || '').split('\n')
+      .map((x) => x.trim()).filter(Boolean)
+      .map((x) => Number(String(x).split(':')[1]))
+      .filter((n) => n > 0 && !Number.isNaN(n));
+    const keep = new Set((validPorts || []).filter((n) => n > 0));
+    const orphans = alive.filter((p) => !keep.has(p));
+    for (const p of orphans) {
+      try { await overlayStop(p); } catch { /* 单个失败不影响其它 */ }
+    }
+    return { ok: true, closed: orphans, kept: [...keep].filter((p) => alive.includes(p)) };
+  } catch (e) {
+    return { ok: false, hint: String(e?.message || e).slice(0, 80) };
   }
 }
 

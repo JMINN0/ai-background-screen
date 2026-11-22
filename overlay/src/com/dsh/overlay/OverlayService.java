@@ -76,6 +76,60 @@ public class OverlayService extends Service {
     private static final int CH_NUM = 4201;
 
     private WindowManager wm;
+
+    /* **转屏检测：记上一次看到的屏幕尺寸。**
+     *
+     * 为什么不只依赖 onConfigurationChanged：Service 的这个回调在进程被判定
+     * 不可见时并不保证送达（实机上踩到过不回调）。而且折叠屏展开/分屏切换
+     * 都算配置变化。所以主路径是「每 3 秒自己比对尺寸」，回调只用来立即响应。
+     */
+    private int lastScreenW = 0;
+    private int lastScreenH = 0;
+    /** 屏幕尺寸变了之后要做的重排。 */
+    private void onScreenSizeChanged(int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        if (w == lastScreenW && h == lastScreenH) return;
+        boolean first = (lastScreenW == 0);
+        lastScreenW = w;
+        lastScreenH = h;
+        if (first) return;      // 第一次只是初始化，不用重排
+        /* 转屏/折叠/分屏：所有窗口按新尺寸重算。
+         * 顺序很重要 —— 先重算尺寸（applyAspect 用新的宽高），再级联排位置。 */
+        for (Win win : wins.values()) {
+            win.appliedAspect = -1f;
+            try { win.applyAspect(); } catch (Throwable t) { /* 单个失败不影响其它 */ }
+        }
+        relayoutAuto();
+        /* 拖拽中心（hub）和左右投放条是独立窗口，位置是内联算的，
+         * 这里按新尺寸重新摆一次 —— 否则转屏后它们会停在旧坐标上，
+         * 用户拖动浮窗时找不到那个圆。 */
+        try {
+            if (hubView != null && hubLp != null) {
+                hubLp.x = hubCx() - dp(28);
+                hubLp.y = hubCy() - dp(28);
+                wm.updateViewLayout(hubView, hubLp);
+            }
+        } catch (Throwable t) { /* hub 可能还没建 */ }
+        try {
+            if (leftBar != null && leftLp != null) {
+                leftLp.x = 0;
+                leftLp.y = (int) ((long) getResources().getDisplayMetrics().heightPixels / 2 - dp(18));
+                wm.updateViewLayout(leftBar, leftLp);
+            }
+            if (rightBar != null && rightLp != null) {
+                rightLp.x = getResources().getDisplayMetrics().widthPixels - barW();
+                rightLp.y = (int) ((long) getResources().getDisplayMetrics().heightPixels / 2 - dp(18));
+                wm.updateViewLayout(rightBar, rightLp);
+            }
+        } catch (Throwable t) { /* 投放条可能还没建 */ }
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration c) {
+        super.onConfigurationChanged(c);
+        // 立即响应（比等 3 秒 tick 快），但不作为唯一依赖
+        try { onScreenSizeChanged(c.screenWidthDp, c.screenHeightDp); } catch (Throwable t) { /* ignore */ }
+    }
     private Handler ui;
     private volatile boolean running = true;
 
@@ -1279,6 +1333,16 @@ int dx = (int)(e.getRawX() - downX);
                      * 除非手动收起再展开。等级是用来判断能不能这么操作的，
                      * 显示过期值比不显示更糟。 */
                     refreshLabel();
+                    /* **主动比对屏幕尺寸 —— 这是转屏检测的主路径。**
+                     *
+                     * onConfigurationChanged 在进程被判不可见时不一定送达，
+                     * 所以每 3 秒自己看一眼：尺寸变了就全量重排（位置/尺寸/级联/边缘层）。
+                     */
+                    try {
+                        int swNow = getResources().getDisplayMetrics().widthPixels;
+                        int shNow = getResources().getDisplayMetrics().heightPixels;
+                        onScreenSizeChanged(swNow, shNow);
+                    } catch (Throwable t) { /* ignore */ }
                     new Thread(new Runnable() {
                         public void run() {
                             if (!pollStatus()) return;   // 返回 false = 已决定关闭
