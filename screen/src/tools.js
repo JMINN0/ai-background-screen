@@ -795,9 +795,24 @@ export async function overlayStop(port) {
     const { promisify } = await import('node:util');
     const run = promisify(execFile);
     const target = await adbTarget();
-    const arg = (typeof port === 'number' && port > 0)
-      ? `--ei closePort ${port}`
-      : '--ez stop true';
+    /* **端口查不到时不许关全部窗口。**
+     *
+     * 2026-11-22 复核抓到：原来 0 / null / undefined 全都走 `--ez stop true`
+     * （= closeAll）。而 screenPorts 是**进程内** Map：
+     * 插件建的屏由 daemon 去 stop 时，映射查不到 → 参数变 undefined
+     * → 本该「只关这一块」变成「关掉所有窗口」。
+     * 三处调用点的注释都写着「只关这一块」，代码却没有保证。
+     *
+     * 现在的约定：
+     *   port > 0       → 只关这个端口
+     *   port === 'all' → 明确要求全关（只有真正需要的调用方显式传）
+     *   其他（0/null/undefined）→ **什么都不做**，因为不知道要关哪一个。
+     *     宁可留一个窗口让 3 分钟超时自己清，也不能误关用户正看着的别的窗口。
+     */
+    let arg = null;
+    if (port === 'all') arg = '--ez stop true';
+    else if (typeof port === 'number' && port > 0) arg = `--ei closePort ${port}`;
+    else return { ok: false, skipped: 'unknown-port（不知道关哪个，不动）' };
     await run('adb', ['-s', target, 'shell',
       `am start -n ${OVERLAY_PKG}/.MainActivity ${arg}`], { timeout: 8000 });
     return { ok: true };
@@ -939,7 +954,10 @@ export async function streamStop(args) {
     } catch { /* 写不进去不影响停推流 */ }
     return { text: `已停掉 displayId=${oneId} 的推流` + (p ? `（端口 ${p}）` : '') };
   }
-  await overlayStop();       // 先关悬浮窗，否则它会自己发现推流没了才关（多留一会儿）
+  /* 这里是「全停」语义（调用方没指定 displayId），所以显式传 'all'。
+   * 2026-11-22：overlayStop 的约定改了 —— 不传参不再等于全关，
+   * 因为「查不到端口」和「要求全关」是两种完全不同的意图，不能共用一个默认值。 */
+  await overlayStop('all');  // 先关悬浮窗，否则它会自己发现推流没了才关（多留一会儿）
   // **真的把 framesrv 停掉。**
   // 审计发现：原来全库没有任何 framesrv.stop() 调用点 ——
   // app_process 起来了就一直在，一直编码，直到手机重启或 OOM。
