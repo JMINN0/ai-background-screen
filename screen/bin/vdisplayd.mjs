@@ -681,6 +681,12 @@ function startIdleWatch() {
       if (tickNo % 2 === 0) {
         try { await vd.syncRiskLevel(); } catch { /* 同步失败不影响守护进程 */ }
       }
+
+      /* ⑤ **操作停下来就把边缘光效收回 idle。**
+       * AI 不会主动清 working —— 用户也不该看到一块一直亮着青边的屏。
+       * 8 秒没有新操作就清掉；AI 手动设的严重状态（warning/error/critical）
+       * 由 settleIfIdle 内部判断，不会被这条清掉。 */
+      try { vd.settleIfIdle(8000); } catch { /* 光效失败不影响守护进程 */ }
     } catch (e) {
       /* **不能空吞异常。**
        *

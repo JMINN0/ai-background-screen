@@ -910,6 +910,8 @@ public class OverlayService extends Service {
         float appliedAspect = -1f;
         boolean autoPos = true;   // 用户拖过就设 false，重排时不动它
         /** 这次收起是不是「横屏自动收的」。手动收起时 false，转回竖屏不该替用户展开。 */
+        /** 边缘状态的快速轮询是否已经在跑。 */
+        boolean edgeTicking = false;
         boolean collapsedByWatch = false;
         /** 用户在这次横屏里手动展开过。展开后就不再自动收，尊重用户选择。 */
         boolean expandedInWatch = false;
@@ -1567,6 +1569,7 @@ int dx = (int)(e.getRawX() - downX);
         void startLoop() {
             if (looping || !alive) return;
             startStatusTimer();
+            startEdgeTimer();
             looping = true;
             new Thread(new Runnable() {
                 @Override public void run() {
@@ -1633,6 +1636,28 @@ int dx = (int)(e.getRawX() - downX);
             }
         }
 
+
+        /**
+         * **边缘状态的快速轮询。**
+         *
+         * 2026-11-22 复核指出：refreshEdge 原来挂在 3 秒的状态定时器上，
+         * 而 done 的 TTL 只有 4 秒 —— 最坏情况用户只能看到 1 秒绿色，
+         * 根本来不及注意到「完成了」。
+         *
+         * 这里单独开一个 500ms 的轮询，**只读一个本地小文件**（几十字节），
+         * 不跑 adb、不联网，成本可以忽略。状态变化能在半秒内反映到边框上。
+         */
+        void startEdgeTimer() {
+            if (edgeTicking) return;
+            edgeTicking = true;
+            ui.postDelayed(new Runnable() {
+                public void run() {
+                    if (!alive || !running) { edgeTicking = false; return; }
+                    try { refreshEdge(); } catch (Throwable t) { /* 单次失败不影响 */ }
+                    ui.postDelayed(this, 500);
+                }
+            }, 500);
+        }
 
         /** MJPEG 长连接：一有新帧立刻显示。返回 true 表示「连上过但断了」。 */
         boolean readMjpeg() {
@@ -1771,6 +1796,20 @@ int dx = (int)(e.getRawX() - downX);
               if (parts.length > 3) { try { startedAtMs = Long.parseLong(parts[3].trim()); } catch (Throwable t) { } }
               long durMs = 0;
               if (parts.length > 4) { try { durMs = Long.parseLong(parts[4].trim()); } catch (Throwable t) { } }
+              /* **按 displayId 过滤：不是这块屏的状态就不显示。**
+               * 2026-11-22 复核指出：edge 文件原来没有屏标识，
+               * 多屏时所有窗口会同时变成同一个颜色，用户分不清是哪块屏出事。
+               * 0 表示「不限屏」（老格式），当做通用状态处理。 */
+              long edgeDisp = 0;
+              if (parts.length > 5) { try { edgeDisp = Long.parseLong(parts[5].trim()); } catch (Throwable t) { } }
+              if (edgeDisp > 0) {
+                  /* edgeDisp 现在存的是**端口**（浮窗知道自己端口，不知道 displayId）。
+                   * 0 = 不限屏。 */
+                  if ((long) port != edgeDisp) {
+                      if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                      return;
+                  }
+              }
 
               int m = EdgeView.MODE_IDLE;
               if ("working".equals(modeName)) m = EdgeView.MODE_WORKING;

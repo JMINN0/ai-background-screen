@@ -178,6 +178,12 @@ export async function start(args) {
 
       const unm = sc.unmeasured || 0;
       if (sc.ok) {
+      /* **建屏成功 = 一次任务完成 → 自动亮绿色。**
+       * 用户要求「任务完成后来个提示完成了」，而且不用 AI 管这个颜色。
+       * 失败时不亮 done —— 失败该由 AI 自己报 error/warning。 */
+      if (sc.ok) {
+        try { vd.flushAutoEdge('done'); } catch { /* 光效失败不影响结果 */ }
+      }
         parts.push(unm ? ('创建完成并自检通过 ✅（但有 ' + unm + ' 项没量到，见 ⚠️）')
                        : '创建完成并自检通过 ✅');
       } else {
@@ -579,6 +585,7 @@ export async function edge(args) {
 
 export async function launch(args) {
   try { stream.setState('acting'); } catch { /* ignore */ }
+  try { vd.touchWorking(); vd.flushAutoEdge('working'); } catch { /* ignore */ }
   const pkg = String(args?.pkg || '').trim();
   if (!/^[a-z][\w.]*$/i.test(pkg)) return { text: 'pkg 看起来不是合法包名。' };
   const act = args?.activity ? String(args.activity).trim() : '';
@@ -602,6 +609,9 @@ export async function launch(args) {
 export async function input(args) {
   // **告诉推流「在操作」**：胶囊显示「AI 点按」，用户才知道 AI 在干活
   try { stream.setState('acting'); stream.touch(); } catch { /* 推流没开就算了 */ }
+  /* **自动边缘光效：AI 在操作 → 青色环绕。**
+   * 用户明确要求「工作中不需要 AI 操作这个边」，所以由插件自己挂。 */
+  try { vd.touchWorking(); vd.flushAutoEdge('working'); } catch { /* 光效失败不影响操作 */ }
   // **记下坐标**：推流帧上会画出十字，用户能直接看到 AI 点在哪
   try {
     const a0 = args || {};
@@ -1351,6 +1361,7 @@ export async function findText(args) {
  * 这个判据慢一点（多一次 OCR），但它判断的是「页面确实变了」，不是「像素闪了一下」。
  */
 export async function tapText(args) {
+  try { vd.touchWorking(); vd.flushAutoEdge('working'); } catch { /* ignore */ }
   const r = await findText(args);
   if (!r.found) return r;
 
@@ -1654,6 +1665,7 @@ export async function findImage(args) {
  * 现在照 tapText 的做法：点前后各取一次画面指纹，如实说变没变。
  */
 export async function tapImage(args) {
+  try { vd.touchWorking(); vd.flushAutoEdge('working'); } catch { /* ignore */ }
   const r = await findImage(args);
   if (!r.found) return r;
   const V = await import('./vision.js');
@@ -1859,6 +1871,7 @@ export async function findColor(args) {
 
 /** 找颜色并点最大的那个色块。校验同 tapImage —— 不能无条件报成功。 */
 export async function tapColor(args) {
+  try { vd.touchWorking(); vd.flushAutoEdge('working'); } catch { /* ignore */ }
   const r = await findColor(args);
   if (!r.count) return r;
   const b = r.biggest;

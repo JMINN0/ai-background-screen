@@ -1794,6 +1794,93 @@ export async function syncRiskLevel() {
 }
 
 /**
+ * **自动边缘状态：AI 不用管 working / done。**
+ *
+ * 用户 2026-11-22 明确说：「工作结束和工作中就**不需要** ai 操作和控制边的颜色，
+ * 只有工作时出错或者其他情况时才有 ai 自己让这个边出现什么颜色」。
+ *
+ * 所以这里由插件**自己挂钩子**：
+ *   · 任何一次操作（点击/滑动/投屏/截图/找图）→ 自动 working
+ *   · 操作停下来 N 秒没有新的 → 自动回 idle
+ *   · 建屏/任务完成 → 自动 done
+ *
+ * AI 只需要在「出错」「可能触发风控」时调 vdisplay_edge 覆盖。
+ * **AI 设的严重状态优先级更高，自动状态不能把它盖掉** —— 否则 AI 刚报的
+ * critical 会被下一次自动 working 冲掉，用户就看不到那个警告了。
+ */
+const AUTO_STATE_FILE = '/data/local/tmp/dshframe/autoedge';
+let _autoLastAt = 0;
+/** AI 手动设的严重状态还没过期时，记在这里，自动状态要避让。 */
+let _manualUntil = 0;
+let _manualMode = '';
+
+/**
+ * 记一次「AI 正在操作」。任何工具入口都可以调，很便宜（只是记录时间）。
+ * 真正写文件由 flushAutoEdge 做，避免每次操作都跑一次 adb。
+ */
+export function touchWorking() {
+  _autoLastAt = Date.now();
+  // 不立刻写文件：下一次真操作会调 flushAutoEdge
+}
+
+/** 记 AI 手动设的严重状态（warning/error/critical），要保护它不被自动状态冲掉。 */
+export function noteManualEdge(mode, ttlMs) {
+  if (mode === 'warning' || mode === 'error' || mode === 'critical') {
+    _manualMode = mode;
+    _manualUntil = Date.now() + Math.max(5000, Number(ttlMs) || 20000);
+  } else {
+    _manualMode = '';
+    _manualUntil = 0;
+  }
+}
+
+/** AI 手动设的严重状态现在还在生效吗？ */
+export function manualEdgeActive() {
+  return _manualMode !== '' && Date.now() < _manualUntil;
+}
+
+/**
+ * 把「AI 在操作」这个事实刷到边缘状态文件。
+ * @param {string} phase 'working' 或 'done'
+ */
+export function flushAutoEdge(phase) {
+  // AI 手动设的严重状态期间不覆盖 —— 让用户先看到那个警告
+  if (manualEdgeActive()) return { skipped: 'manual-edge-active' };
+  const now = Date.now();
+  const color = phase === 'done' ? '#34D399' : '#7FD9FF';
+  const ttl = phase === 'done' ? 2500 : 0;
+  let edgePort2 = 0;
+  try {
+    const p1 = state.port;
+    if (p1) edgePort2 = Number(p1) || 0;
+    else if (state.displayId != null) {
+      const n1 = Number(state.displayId) || 0;
+      edgePort2 = 38820 + (((n1 % 20) + 20) % 20);
+    }
+  } catch { /* ignore */ }
+  const line = phase + '|' + color + '|1|' + now + '|' + ttl + '|' + edgePort2;
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+    + 'printf "%s" "' + line + '" > /data/local/tmp/dshframe/edge.tmp && '
+    + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
+    .catch(() => {});
+  return { ok: true, phase };
+}
+
+/**
+ * 操作停下来之后回 idle。
+ * 由 daemon 的 tick 调用：超过 N 秒没操作就清掉 working，别让边一直亮着。
+ */
+export function settleIfIdle(idleMs = 8000) {
+  if (manualEdgeActive()) return { skipped: 'manual-edge-active' };
+  if (!_autoLastAt) return { skipped: 'never-worked' };
+  if (Date.now() - _autoLastAt < idleMs) return { skipped: 'still-active' };
+  _autoLastAt = 0;
+  adb(['shell', 'rm -f /data/local/tmp/dshframe/edge'])
+    .catch(() => {});
+  return { ok: true, phase: 'idle' };
+}
+
+/**
  * **设置悬浮窗边缘光效状态。**
  *
  * 这是给 AI 用的视觉反馈通道：正常工作（working）和任务完成（done）由系统
@@ -1845,8 +1932,26 @@ export function setEdge(mode, o = {}) {
   const ttl = (o.ttlSec === undefined || o.ttlSec === null)
     ? (DEFAULT_TTL[M] || 0)
     : Math.max(0, Number(o.ttlSec) * 1000);
+  /* 记一笔「这是 AI 手动设的严重状态」—— 自动的 working/done 要避让，
+   * 否则 AI 刚报的 critical 会被下一次自动 working 冲掉，用户看不到警告。 */
+  try { noteManualEdge(M, ttl); } catch { /* ignore */ }
   const at = Date.now();
-  const line = M + '|' + color + '|' + Math.max(0, Math.min(1, inten)) + '|' + at + '|' + Math.round(ttl);
+  /* **带上 displayId，多屏时才不会一起亮。**
+   * 2026-11-22 复核指出：原来的 edge 文件没有屏标识，4 个窗口会同时变成同一个颜色，
+   * 用户根本分不清是哪块屏出事了。 */
+  /* **写端口而不是 displayId** —— 浮窗知道自己连的是哪个端口，
+   * 但不知道 displayId。按端口路由最直接。0 = 不限屏（所有屏都亮）。 */
+  let edgePort = 0;
+  try {
+    const p0 = state.port;
+    if (p0) edgePort = Number(p0) || 0;
+    else if (state.displayId != null) {
+      const n0 = Number(state.displayId) || 0;
+      edgePort = 38820 + (((n0 % 20) + 20) % 20);   // 和 framesrv 的端口公式一致
+    }
+  } catch { /* ignore */ }
+  const line = M + '|' + color + '|' + Math.max(0, Math.min(1, inten)) + '|' + at + '|'
+    + Math.round(ttl) + '|' + edgePort;
   const safe = line.replace(/["'`$\\]/g, '');
   adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
     + 'printf "%s" "' + safe + '" > /data/local/tmp/dshframe/edge.tmp && '
