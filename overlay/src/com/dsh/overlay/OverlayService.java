@@ -69,7 +69,70 @@ public class OverlayService extends Service {
      *  系统返回手势从屏幕左右边缘的窄条起手（各厂商 20-40dp），
      *  @480dpi 下 96px ≈ 32dp，覆盖大部分机型。
      */
+    /**
+     * **手势安全区的兜底值（px）。**
+     *
+     * 2026-11-23 子代理查证：AOSP 手势导航的 `config_backGestureInset` 是 **30dp**，
+     * 本机 density 3.25 → 30dp = 97.5px。所以原来的 96 几乎正好，数字没错。
+     *
+     * 但错的是策略 —— 见 [edgeGuard] 的说明。这个常量现在只做兜底。
+     */
     static final int EDGE_GUARD = 96;
+
+    /**
+     * **读系统真实的边缘返回手势宽度（px）。**
+     *
+     * 为什么不能写死：AOSP 默认 30dp，但厂商会改（CTS 提交里自己承认
+     * "the value could be overlaid by different device models"）。
+     * 而且用户可以调「返回灵敏度」——对应 Settings.Secure 的
+     * `back_gesture_inset_scale_left/right`，设 0 就关掉那一侧的边缘返回。
+     *
+     * @param right true 读右侧，false 读左侧
+     * @return px，已按用户灵敏度缩放，并夹在 8~64dp 之间
+     */
+    private int gestureInsetPx(boolean right) {
+        int px = 0;
+        try {
+            int id = getResources().getIdentifier("config_backGestureInset", "dimen", "android");
+            if (id != 0) px = getResources().getDimensionPixelSize(id);
+        } catch (Throwable t) { /* 读不到就走兜底 */ }
+        if (px < dp(8) || px > dp(64)) px = dp(30);
+        try {
+            float scale = android.provider.Settings.Secure.getFloat(getContentResolver(),
+                    right ? "back_gesture_inset_scale_right" : "back_gesture_inset_scale_left", 1f);
+            if (scale > 0.05f && scale < 3f) px = Math.round(px * scale);
+        } catch (Throwable t) { /* 读不到就用 1.0 */ }
+        return Math.min(Math.max(px, dp(8)), dp(64));
+    }
+
+    /**
+     * **自动摆放时要留的手势安全区。**
+     *
+     * 注意：这个值**只用于自动级联摆放**，不用于限制用户拖动。
+     *
+     * 2026-11-23 的关键事实（子代理查 AOSP 一手源码得出）：
+     * 系统的边缘返回手势由 SystemUI 的 gesture monitor（spy 通道）实现，
+     * `InputManager.monitorGestureInput` 的注释写着它
+     * "receives all events on the display"，`pilferPointers()` 的注释写着
+     * "the foreground windows **and all other spy windows** will have those pointers
+     * canceled. Only the pilfering window will continue"。
+     *
+     * 也就是说：**系统能从任何前台窗口（包括 TYPE_APPLICATION_OVERLAY 浮窗）
+     * 把边缘滑动的触摸抢走**。所以浮窗贴在屏幕最边上，并不会让返回手势失效。
+     *
+     * 那为什么 2026-11-21 用户报过「B 站侧滑返回被浮窗抢走」？
+     * 最可能的原因不是"盖住边缘"，而是：①当时还没加 FLAG_NOT_FOCUSABLE；
+     * ②或者 B 站自己调了 setSystemGestureExclusionRects 把那条边要回去，
+     * 导致 SystemUI 不接管，触摸落进浮窗，谁都收不到。
+     *
+     * 所以现在的策略改成：
+     *   · 用户拖动 → **允许贴边**（用户的选择）
+     *   · 自动摆放 → 留安全区（避免一建屏就压在手势带上）
+     *   · 贴边时，最外侧那条手势区内的触摸**不启动拖动**（让给系统）
+     */
+    private int edgeGuard() {
+        return gestureInsetPx(false);
+    }
 
     private static final String TAG = "DshOverlay";
     private static final String CH_ID = "dsh_overlay";
@@ -181,7 +244,10 @@ public class OverlayService extends Service {
             int ww = win.collapsed ? Math.max(dp(20), win.lp.width) : Math.max(dp(40), win.curW);
             int hh = win.collapsed ? Math.max(dp(20), win.lp.height) : Math.max(dp(40), win.curH);
             try {
-                win.clampPos(ww, hh);
+                /* **用户摆过的尊重原位置（可贴边），自动摆的留手势区。**
+                 * 2026-11-23：转屏重排时不能把用户拖到最边上的窗口又拉回中间。 */
+                if (win.autoPos) win.clampPosAuto(ww, hh);
+                else win.clampPosFlush(ww, hh);
                 wm.updateViewLayout(win.root, win.lp);
             } catch (Throwable t) { /* 单个失败不影响其它 */ }
         }
@@ -288,12 +354,12 @@ public class OverlayService extends Service {
         }
         if (n == 0) return;
         int total = n * w0 + (n - 1) * gap;
-        int x0 = Math.max(EDGE_GUARD, (lastScreenW - total) / 2);
+        int x0 = Math.max(edgeGuard(), (lastScreenW - total) / 2);
         int i = 0;
         for (Win w : wins.values()) {
             if (!w.collapsed || w.lp == null || !w.autoPos) continue;
             int x = x0 + i * (w0 + gap);
-            x = Math.max(EDGE_GUARD, Math.min(x, Math.max(EDGE_GUARD, lastScreenW - w0 - EDGE_GUARD)));
+            x = Math.max(edgeGuard(), Math.min(x, Math.max(edgeGuard(), lastScreenW - w0 - edgeGuard())));
             w.lp.x = x;
             w.lp.y = Math.max(dp(8), dp(24));
             try { if (w.root != null) wm.updateViewLayout(w.root, w.lp); } catch (Throwable t) { }
@@ -510,7 +576,7 @@ public class OverlayService extends Service {
      * 从左上往下扫，步长 dp(16)（足够细，不会漏掉能放的地方但不至于太慢）。
      */
     private int[] findFreeSlot(List<Rect> placed, int ww, int wh, int screenW, int screenH) {
-        /* **必须从 EDGE_GUARD 开始，不能用 dp(6)。**
+        /* **必须从 edgeGuard() 开始，不能用 dp(6)。**
          *
          * 2026-11-22 独立审计抓到：这里原来是 dp(6)≈21px，而 EDGE_GUARD=96px ——
          * 于是级联排布把所有窗口放在离左边 21px 的地方，正好压在系统侧滑返回手势带上。
@@ -529,10 +595,10 @@ public class OverlayService extends Service {
          * 并且所有返回路径都过 clampSlot 夹一次。
          */
         boolean landscape = screenW > screenH;
-        int startX = EDGE_GUARD;
+        int startX = edgeGuard();
         int startY = landscape ? dp(28) : dp(96);
         int step = dp(16);
-        int limitX = Math.max(startX, screenW - ww - EDGE_GUARD);   // 右边也留手势带
+        int limitX = Math.max(startX, screenW - ww - edgeGuard());   // 右边也留手势带
         int limitY = screenH - wh - (landscape ? dp(24) : dp(16));
         if (limitY < startY) {
             // 放不下一整窗：直接夹进屏内，不要往屏外放
@@ -549,7 +615,7 @@ public class OverlayService extends Service {
             }
         }
         // 放不下：退到左上角（宁可重叠也别跑到屏幕外）
-        return clampSlot(EDGE_GUARD, startY, ww, wh, screenW, screenH);
+        return clampSlot(edgeGuard(), startY, ww, wh, screenW, screenH);
     }
 
     @Override
@@ -1197,7 +1263,7 @@ public class OverlayService extends Service {
             try { lp.setTitle("dsh-overlay:" + port); } catch (Throwable t) { /* 老 API 忽略 */ }
 
             // 先给个临时位置，等第一帧拿到尺寸后 relayoutAuto() 会重排
-            lp.x = EDGE_GUARD;   // 避开返回手势边缘区，见 clampPos
+            lp.x = edgeGuard();   // 避开返回手势边缘区，见 clampPos
             lp.y = dp(120) + wins.size() * dp(60);
 
             root.setOnTouchListener(new View.OnTouchListener() {
@@ -1208,6 +1274,30 @@ public class OverlayService extends Service {
                 @Override public boolean onTouch(View v, MotionEvent e) {
                     switch (e.getActionMasked()) {
                         case MotionEvent.ACTION_DOWN:
+                            /* **贴边时，最外侧那条手势区内的触摸不接管。**
+                             *
+                             * 2026-11-23：允许用户把窗口拖到屏幕最边上之后，
+                             * 如果那条边正好盖住了系统的手势起手区，用户在
+                             * 那里按下就是想侧滑返回，不该被我们拿去做"拖动窗口"。
+                             * 所以这里先判断：窗口贴边 + 落点在贴边侧的手势区内 → 放弃。
+                             *
+                             * 返回 false 的意义：这次按下不归我们。系统的手势
+                             * monitor（spy 通道 + pilferPointers）本来就优先，
+                             * 我们主动让开，它接管得更干净。
+                             */
+                            try {
+                                int gL = gestureInsetPx(false);
+                                int gR = gestureInsetPx(true);
+                                int swNow = getResources().getDisplayMetrics().widthPixels;
+                                int wNow = Math.max(dp(40), curW);
+                                boolean flushLeft = lp.x <= dp(1);
+                                boolean flushRight = (lp.x + wNow) >= (swNow - dp(1));
+                                float rawX = e.getRawX();
+                                if ((flushLeft && rawX < lp.x + gL)
+                                        || (flushRight && rawX > lp.x + wNow - gR)) {
+                                    return false;   // 让给系统手势
+                                }
+                            } catch (Throwable t) { /* 判断失败就正常接管 */ }
                             downX = e.getRawX(); downY = e.getRawY();
                             startX = lp.x; startY = lp.y;
                             moved = false; downAt = System.currentTimeMillis();
@@ -1379,7 +1469,7 @@ int dx = (int)(e.getRawX() - downX);
                                     }
                                     // 只是进过圈但没到按钮：取消，窗口留在松手处
                                     Log.i(TAG, "投放取消（未到按钮）port=" + port);
-                                    clampPos(curW, curH);
+                                    clampPosFlush(curW, curH);   // 用户拖动 → 允许贴边
                                     try { wm.updateViewLayout(root, lp); } catch (Throwable t) { }
                                     return true;
                                 }
@@ -1390,7 +1480,7 @@ int dx = (int)(e.getRawX() - downX);
                              * 整块盖住屏幕左边缘 0..96 的返回手势保护区 —— 把之前修好的
                              * 「侧滑返回被悬浮窗抢走」重新引回来。收尾必须夹一次。
                              */
-                            clampPos(curW, curH);
+                            clampPosFlush(curW, curH);   // 用户拖动 → 允许贴边
                             try { wm.updateViewLayout(root, lp); } catch (Throwable t) { }
                             /* **用户摆过位置之后，就别再自动挪它了。**
                              *
@@ -1428,23 +1518,46 @@ int dx = (int)(e.getRawX() - downX);
         }
 
         /** 把窗口位置拉回「至少一部分在屏内」。 */
-        void clampPos(int ww, int hh) {
+        /**
+         * **允许贴边**的夹取 —— 用户手动拖动之后用这个。
+         *
+         * 2026-11-23 用户报「拖到最左/最右会被弹回中间」。
+         * 根因：拖动过程其实没夹（能贴到 x=0），但一松手调用 clampPos，
+         * x 被拉回 EDGE_GUARD，肉眼看就是"弹回去"。
+         *
+         * 子代理查 AOSP 一手源码确认：系统返回手势走 SystemUI 的 spy 通道
+         * （monitorGestureInput / pilferPointers），能从任何前台窗口抢走触摸，
+         * 所以贴边**不会**让返回手势失效。用户想贴边就让他贴。
+         */
+        void clampPosFlush(int ww, int hh) {
             if (lp == null) return;
             int sw = getResources().getDisplayMetrics().widthPixels;
             int sh = getResources().getDisplayMetrics().heightPixels;
-            /* **左右各留 EDGE_GUARD 的手势安全区，不许贴边。**
-             *
-             * 用户 2026-11-21 报：主屏侧滑返回被悬浮窗抢走，B站没反应。
-             * 系统返回手势从屏幕左/右边缘的窄条起手（各厂商 20-40dp 不等，
-             * 这里取 32dp 覆盖大部分机型）。窗口只要盖住那条，手势起点就落在窗口上。
-             *
-             * 所以窗口的左右边界都必须离开屏幕边缘至少这个距离。
-             * 上下不设限：手势不从上/下边缘起手（下拉通知栏是另一套）。
-             */
-            int minX = EDGE_GUARD;
-            int maxX = Math.max(minX, sw - ww - EDGE_GUARD);
+            int maxX = Math.max(0, sw - ww);
+            lp.x = Math.max(0, Math.min(maxX, lp.x));
+            lp.y = Math.max(0, Math.min(Math.max(0, sh - hh), lp.y));
+        }
+
+        /**
+         * **自动摆放**时的夹取 —— 留手势安全区，避免一建屏就压在手势带上。
+         *
+         * 用于：级联自动定位、收起/展开、比例变化重排、全量 clampAll。
+         * 用户手动拖过之后不再走这里（走 clampPosFlush）。
+         */
+        void clampPosAuto(int ww, int hh) {
+            if (lp == null) return;
+            int sw = getResources().getDisplayMetrics().widthPixels;
+            int sh = getResources().getDisplayMetrics().heightPixels;
+            int g = edgeGuard();
+            int minX = g;
+            int maxX = Math.max(minX, sw - ww - g);
             lp.x = Math.max(minX, Math.min(maxX, lp.x));
             lp.y = Math.max(0, Math.min(Math.max(0, sh - hh), lp.y));
+        }
+
+        /** 老名字保留成 auto 语义（自动路径都在用它）。 */
+        void clampPos(int ww, int hh) {
+            clampPosAuto(ww, hh);
         }
 
         void toggle() {
