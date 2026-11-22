@@ -99,7 +99,17 @@ public class OverlayService extends Service {
                 || Math.abs(h - lastScreenH) > bigThreshH;
         lastScreenW = w;
         lastScreenH = h;
-        if (first) return;      // 第一次只是初始化，不用重排
+        if (first) {
+            /* **第一次也要判一次横竖屏。**
+             *
+             * 2026-11-22 复核指出：原来这里直接 return，于是「服务启动时手机已经是横屏」
+             * 的情况下 watchMode 永远停在初始值 false —— 用户横屏看视频、这时新建浮窗，
+             * 自动收起完全不生效，要等一次真实的竖→横转动才会醒。
+             * 这正好是用户最常见的场景（已经横屏看视频，然后叫 AI 干活）。
+             */
+            try { updateWatchMode(); } catch (Throwable t) { /* ignore */ }
+            return;
+        }
         /* **全屏进出（看视频时隐藏状态栏/导航栏）不该触发重排。**
          *
          * 2026-11-22 审计指出：全屏切换会让 getDisplayMetrics 跳 65-173px

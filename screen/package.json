@@ -1,7 +1,7 @@
 {
   "name": "dsh-go-plugin-screen",
   "version": "2026.1122.1224",
-  "description": "Give an AI agent its own invisible Android screen. VirtualDisplay + scrcpy over adb, no root. MCP server and CLI included.",
+  "description": "后台屏 · Offscreen：给 AI 一块独立的安卓虚拟屏，它在里面连续操作 App（60Hz 点击、3D 画面正常），你的主屏、焦点、键盘完全不受影响。VirtualDisplay + scrcpy over adb，无 root。MCP server + CLI + DSH Go 插件。",
   "keywords": [
     "android",
     "virtual-display",

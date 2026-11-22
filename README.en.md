@@ -34,7 +34,7 @@ Packages are split by **which subsystem they run in**:
 
 | Package | Type | Does | Installed into |
 |---|---|---|---|
-| `screen/` | Cordis plugin | creates the invisible virtual display, launches apps, taps, screenshots, streams | the profile (registers tools) |
+| `screen/` | Cordis plugin | creates the virtual display that the user does not see, launches apps, taps, screenshots, streams | the profile (registers tools) |
 | `web/` | Cordis plugin | drives the browser over CDP: read the DOM, click, fill, screenshot | the profile (same) |
 | `watch/` | dsh-go native plugin | the capsule above the composer and the frame panel | `$DSH_HOME/dsh-go/plugins/` (draws app UI) |
 
