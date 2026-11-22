@@ -1133,7 +1133,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 虚拟屏能跑 3D 游戏的那个修复只进了一边。合并后一处改一处生效。
 
 **名字的由来**：项目叫「后台屏」，因为实质是「一块用户看不见的屏」，
-不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `offscreen-android` 和包名
+不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `ai-background-screen`（旧名 `offscreen-android`）和包名
 `dsh-go-plugin-screen` **故意没改** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
 
 **配套的 adb 插件**（`dsh-go-plugin-adb`，单独仓库）：`screen/` 需要一个能连上的 adb。
