@@ -5,7 +5,7 @@
 
 ## 这是什么
 
-一个安卓**「后台屏」**实现：给 AI 一块用户看不见的虚拟屏（`VirtualDisplay`），
+一个安卓**「AI 虚拟屏」**实现：给 AI 一块用户看不见的虚拟屏（`VirtualDisplay`），
 AI 在那块屏上运行 App、点击、输入、截图，用户的物理主屏完全不受影响。
 
 **不要**把它当成"另一个 scrcpy 封装"。区别在于：scrcpy 镜像的是**主屏**，
@@ -60,7 +60,7 @@ bash framesrv/build.sh         # 取帧 dex
    如果你用 `node -e "..."` 建屏，进程一退屏就没了。要用长驻进程，或者用 MCP 工具（引擎持有的）。
 
 2. **`am start --display N` 对 `singleTask` App 会把主屏任务搬走。**
-   设置、文件管理器、微信都是 `singleTask`。想投它们到后台屏，做不到。
+   设置、文件管理器、微信都是 `singleTask`。想投它们到 AI 虚拟屏，做不到。
    测试时用闲鱼、B站、浏览器、mpv、游戏这类非 singleTask 的。
 
 3. **中文输入必须走「写剪贴板 + `KEYCODE_PASTE`」，`adb shell input text` 对中文必抛 NPE。**
@@ -78,13 +78,13 @@ bash framesrv/build.sh         # 取帧 dex
 ## 关键命令
 
 ```bash
-# 建一块后台屏（MCP 工具，推荐）
+# 建一块 AI 虚拟屏（MCP 工具，推荐）
 vdisplay_start  {orientation: "portrait"}
 
-# 投 App 到后台屏（用 --display，且 App 不能是 singleTask）
+# 投 App 到 AI 虚拟屏（用 --display，且 App 不能是 singleTask）
 adb shell am start --display <displayId> -n <pkg>/<activity>
 
-# 看后台屏在不在
+# 看 AI 虚拟屏在不在
 adb shell dumpsys display | grep "Virtual display"
 
 # 取帧服务状态
@@ -125,7 +125,7 @@ curl -s "http://127.0.0.1:38820/mark?nx=0.5&ny=0.5"
 
 | 场景 | 怎么做 |
 |---|---|
-| **后台屏上**（有 `vdisplay_*` 工具时） | `vdisplay_input { kind: "paste", text: "要输入的内容" }`<br>插件写剪贴板 + 发 `KEYCODE_PASTE`，**不弹输入法、不碰主屏** |
+| **AI 虚拟屏上**（有 `vdisplay_*` 工具时） | `vdisplay_input { kind: "paste", text: "要输入的内容" }`<br>插件写剪贴板 + 发 `KEYCODE_PASTE`，**不弹输入法、不碰主屏** |
 | **主屏上，必须输入时** | ① 先 `adb shell am broadcast` 或 `service call clipboard` 写剪贴板<br>② 让用户自己「**双击或长按输入框 → 点粘贴**」<br>③ 或者用无障碍 `ACTION_PASTE` |
 
 ### 人在手机上怎么粘贴（写进用户文档）

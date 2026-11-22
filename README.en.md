@@ -1,4 +1,4 @@
-# Offscreen · 后台屏 — let an AI use another screen while your phone stays yours
+# AI Virtual Screen — let an AI use another screen while your phone stays yours
 
 Let an AI **operate the phone in the background without taking your screen**.
 
@@ -214,7 +214,7 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 | **A CLI call creates its own display** | each node process builds a display and it dies when the process exits | must be driven from a resident process or from inside the plugin |
 | **Reading the screen is slow** | one "screenshot → look → tap" cycle is 19.4 s median | unsuitable for rapid interaction |
 | **Each screenshot costs ~1.1k tokens** | and stays in context permanently | long tasks fill the context |
-| **Coordinate taps can silently fail** | post-action verification added (returns `ok:false` when nothing changed), but 17.6% of taps still did nothing | read the return value |
+| **Coordinate taps can silently fail** | post-action verification added (returns `ok:false` when nothing changed). An earlier figure for the failure rate was withdrawn as unsound and is not restated here | read the return value |
 | **Verified on one device only** | nubia NX809J / Android 16 | other models untested |
 
 ---

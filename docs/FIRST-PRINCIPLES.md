@@ -1,4 +1,4 @@
-# 安卓后台屏 · 第一性原理白皮书
+# AI 虚拟屏 · 第一性原理白皮书
 
 > 这份文档回答三个问题：**为什么必须这样做**、**怎么做到的（别人照着能复现）**、**做不到什么**。
 >
@@ -348,7 +348,7 @@ AI/Node ──exec──> adb shell screencap -d <SFID> -p
                   合计 ≈ 15ms/帧（67fps，回调到达率）
 
   注意这里有**两块屏**：
-    ① scrcpy 建的「后台屏」—— App 跑在上面
+    ① scrcpy 建的「AI 虚拟屏」—— App 跑在上面
     ② framesrv 建的「镜像屏」—— 用 createVirtualDisplay(..., displayIdToMirror=①) 镜像①，
        它的输出 Surface 挂的是 ImageReader
   取帧的代价里包含这第二次合成，图里没画出来容易让人以为是一块屏。
@@ -518,7 +518,7 @@ Android 没有这个公开 API，因为合成器的输出目标是**显示设备
 | 悬浮窗画面与源屏一致性 | 平均像素差 3.1（同画面，属 JPEG+缩放误差） | 【实测 M5】 |
 | 空闲时 framesrv CPU | **10.3%**（悬浮窗连着 MJPEG，它就一直编码） | 【实测 `README.md:846`】 |
 
-最后一条催生了 `screen_keepalive`：**后台屏不关是有成本的，所以必须让 AI 按任务预估生命周期。**
+最后一条催生了 `screen_keepalive`：**AI 虚拟屏不关是有成本的，所以必须让 AI 按任务预估生命周期。**
 
 ### 2.6 方向问题：`FLAG_ROTATES_WITH_CONTENT` 与尺寸看门狗
 
@@ -959,7 +959,7 @@ adb shell 'dumpsys display | grep -i scrcpy'
 ### 4.6 已经有人独立复现了
 
 **【实测】** 2026-11-20 晚，一个完全独立的安卓 AI 助手（Operit，`com.ai.assistance.operit`），
-只知道"有个后台屏插件，源码在那"，读了我们的代码后，自己完成了：
+只知道"有个AI 虚拟屏插件，源码在那"，读了我们的代码后，自己完成了：
 
 1. `apt-get install android-tools-adb` 装上 adb
 2. `adb connect 127.0.0.1:5555` 拿到 uid 2000 shell
@@ -1204,7 +1204,7 @@ OCR           2000-3000ms   ← 大头，占一半以上
 |---|---|---|---|
 | 1 | **托管判据的 flags** | `screen/README.md` 说需 `FLAG_OWN_CONTENT_ONLY`+`FLAG_OWN_FOCUS`；`LIMITS.md` A-02 引**同一行** `dumpsys` 输出却是 `FLAG_PRESENTATION, FLAG_TRUSTED, FLAG_OWN_DISPLAY_GROUP, FLAG_ALWAYS_UNLOCKED` | **【不知道】**。`README.md:109-119` 自己标了这个问题。**以 `am start --display` 能否成功为准** |
 | 2 | **`canHost` 可能恒为 false** | 若 #1 中 `LIMITS.md` 为真，`vd.js:514/694` 的 flags 判据恒 false，而工具输出会把它当结论 | 代码没兜底，**待查** |
-| 3 | **17.6% 点空率** | `README.md:571` 仍在引用；`README.md:877` 与 `tool-spec.js:588` 已标**作废**（唯一推导是约 33%，修完后的白点率【不知道】） | **已作废，不要引用**（我在写作期间看着 `tool-spec.js` 被改掉） |
+| 3 | **17.6% 点空率** | 中文 README 已改掉；`README.en.md` 与 `OPERATION-PRIORITY.md` 原也仍在引用，本次一并改掉。详见 `tool-spec.js:588` 已标**作废**（唯一推导是约 33%，修完后的白点率【不知道】） | **已作废，不要引用**（我在写作期间看着 `tool-spec.js` 被改掉） |
 | 4 | **`MediaProjection` 能不能托管 App** | `LIMITS.md` A-01 断言"建出来的是镜像接收端"；同一文件 D-04 写"没试过"；`README.md:148-149` 标【推断】 | **【不知道】**，从未测过 |
 | 5 | **`FLAG_SECURE` 是不是实测** | `vdisplay_probe_secure` 描述写"无 root 硬边界"；`LIMITS.md` A-03 写"不是实测"；「明确不知道」#3 也写"没实测" | **【推断】** |
 | 6 | **无障碍能不能读虚拟屏** | `tests/ACCESSIBILITY-VS-VIRTUAL-DISPLAY.md` 结论是【不知道】，但同一文件末尾表格仍写"用无障碍树替代 OCR ❌ 对虚拟屏无效"，又写"能看到虚拟屏上的 App ✅" | **【不知道】**。原"否证"已因测试不足撤回（只证明了读屏工具读主屏） |
