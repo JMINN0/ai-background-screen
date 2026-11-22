@@ -1025,6 +1025,33 @@ export async function displayExists(displayId) {
 }
 
 /**
+ * 这块屏**当前有没有内容**（系统真值，`dumpsys display` 里的 mHasContent）。
+ *
+ * 2026-11-22 实机踩到：虚拟屏跑久了会变成「屏还在、但 mHasContent=false」——
+ * 也就是 display 对象还在，SurfaceFlinger 已经不给它合成内容了。
+ * 表现就是用户看到的黑屏，而 status() 还报 running:true、帧也能取到（全黑的图）。
+ *
+ * 判据用系统真值，不看内部状态。
+ *
+ * @returns {Promise<boolean|null>} true=有内容 / false=空的 / null=查询失败（不敢断言）
+ */
+export async function displayHasContent(displayId) {
+  const id = String(displayId || '').trim();
+  if (!id) return null;
+  try {
+    const out = await shell(
+      `dumpsys display 2>/dev/null | grep -A6 "mDisplayId=${id}" | grep -m1 "mHasContent="`
+    );
+    const t = String(out || '');
+    if (t.includes('mHasContent=true')) return true;
+    if (t.includes('mHasContent=false')) return false;
+    return null;   // 没匹配到，可能是查询抖动
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 把内部状态标记为「屏已经没了」。
  *
  * 只改状态、不动进程：真要说停，走 stop()。

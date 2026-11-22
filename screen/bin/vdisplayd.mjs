@@ -484,11 +484,22 @@ function startIdleWatch() {
 
       // ① 空闲退出：屏没在跑且确实没人用的时间够长
       if (!st.running) {
+        /* **running=false 但还留着 displayId 是脏状态，要清掉。**
+         *
+         * 2026-11-22 实机：scrcpy 服务自己死了之后 status() 报 running:false，
+         * 但 state.displayId 还留着旧值 —— 下一次建屏会以为「屏还在」而去复用
+         * 一块根本用不了的屏。清掉才会走「重新建」。
+         */
+        if (st.displayId) {
+          console.error("[vdisplayd] 状态脏了：running=false 但 displayId=" + st.displayId + " 还在，清理");
+          try { await vd.markLost(); } catch { /* 尽力而为 */ }
+        }
         if (Date.now() - lastActive >= IDLE_EXIT_MS) {
           await shutdown('idle');
           return;
         }
         streamFailStreak = 0;
+        emptyStreak = 0;
         return;
       }
       if (!st.displayId) return;
@@ -504,7 +515,43 @@ function startIdleWatch() {
         return;
       }
 
-      // ③ 推流看门狗：本地 HTTP，不花 adb
+      /* **③ 内容检测：屏还在但空了就重建。**
+       *
+       * 2026-11-22 实机：虚拟屏跑 40 多分钟后 mHasContent 变成 false ——
+       * display 对象还在、帧也能取到（全黑的图），但 SurfaceFlinger 不再给它合成内容。
+       * 用户看到黑屏，而所有状态都报正常。这就是「过一段时间黑屏」的真身。
+       *
+       * 判据：连续 3 次（30 秒）都是空 → 判定真的空了 → 重建。
+       * 为什么不是 1 次：刚建屏、刚投 App 的那几秒 mHasContent 也可能是 false，
+       * 单次误判会把好好的屏拆掉重建，比黑屏更糟。
+       */
+      const hc = await vd.displayHasContent(st.displayId).catch(() => null);
+      if (hc === false) {
+        emptyStreak++;
+        if (emptyStreak >= 3) {
+          console.error('[vdisplayd] 屏 ' + st.displayId + ' 连续 ' + emptyStreak
+            + ' 次没有内容（mHasContent=false），重建');
+          try {
+            const T = await import('../src/tools.js');
+            // 先关旧窗口和旧推流，再重建（和 autoRepair 同一套清理顺序）
+            const oldPort = T.screenPorts?.get?.(Number(st.displayId)) || 0;
+            if (oldPort) { try { await T.overlayStop(oldPort); } catch { /* 窗口不在就算了 */ } }
+            try {
+              const fsrv = await import('../src/framesrv.js');
+              await fsrv.stop(Number(st.displayId));
+            } catch { /* ignore */ }
+            await T.start({});
+          } catch (e) {
+            console.error('[vdisplayd] 重建失败：' + String(e?.message || e).slice(0, 80));
+          }
+          emptyStreak = 0;
+          return;   // 这一轮不继续看门狗逻辑，等新屏起来
+        }
+      } else {
+        emptyStreak = 0;
+      }
+
+      // ④ 推流看门狗：本地 HTTP，不花 adb
       const n = Number(st.displayId) || 0;
       const port = 38820 + (((n % 20) + 20) % 20);
       let up = false;
