@@ -97,15 +97,14 @@ function listTools() {
     try { spec = SPECS[key](); } catch { continue; }
     if (!spec?.name) continue;
     if (HIDDEN.has(spec.name)) continue;
-    /* **只广告真能调的。** 2026-11-22 实测：spec 有 39 个，排除 2 个后列 37 个，
-     * 但 callTool 只认 ACTION_MAP 的 17 条 + screen_modes 特判 = 18 个。
-     * 也就是 20 个工具向宿主广告了、一调就报「没暴露」—— 超过一半是坏的。
+    /* **全部列出。**
      *
-     * 根因是那些工具只活在插件层（tools.js），daemon（vdisplayd.mjs）没有对应 action，
-     * 而 MCP 走的是 daemon。补 20 个 action 是后续的事，现在先止血：
-     * 没映射的不列出来。宁可少给 20 个，也不能给 20 个一调就错的。
+     * 2026-11-22 的经过：spec 有 39 个，先排掉 2 个内部工具列 37 个，
+     * 而 ACTION_MAP 只映射 17 个 —— 20 个广告了却调不了。当时止血成「只列能调的」，
+     * MCP 只剩 18 个工具。后来给 daemon 加了 runTool 通用转发，
+     * 那 19 个视觉/等待类工具现在能真正执行了，所以恢复全部列出。
+     * 一个都不能少：MCP 的卖点就是「agent 能直接用的完整工具面」。
      */
-    if (spec.name !== 'screen_modes' && !ACTION_MAP[spec.name]) continue;
     out.push({
       name: spec.name,
       description: String(spec.description || '').slice(0, 4000),
@@ -239,10 +238,24 @@ async function callTool(name, args) {
 
   const action = ACTION_MAP[name];
   if (!action) {
-    return {
-      content: [{ type: 'text', text: `这个 MCP server 没暴露「${name}」。推流（vdisplay_stream）依赖 DSH 插件进程内的状态，MCP 下不可用。` }],
-      isError: true,
-    };
+    /* **没进 ACTION_MAP 的走 daemon 的通用转发。**
+     *
+     * 2026-11-22：原来这里直接返回「没暴露」。而 MCP 向宿主列了 37 个工具、
+     * ACTION_MAP 只映射 17 个 —— 另外 19 个一调就报错，超过一半是坏的。
+     * 后来给 daemon 加了 runTool（核对工具名在 tool-spec 里存在，再转给
+     * tools.js 的同名实现），这些视觉/等待类工具不用逐个补 action 就能用了。
+     */
+    const r2 = await callDaemon('runTool', { tool: name, args });
+    if (!r2.ok || r2.result?.hint) {
+      return {
+        content: [{ type: 'text', text: r2.result?.hint || r2.hint || `「${name}」执行失败` }],
+        isError: true,
+      };
+    }
+    const res = r2.result?.result ?? r2.result;
+    const txt = typeof res === 'string' ? res
+      : (res?.text != null ? String(res.text) : JSON.stringify(res));
+    return { content: [{ type: 'text', text: String(txt).slice(0, 40000) }] };
   }
 
   const r = await callDaemon(action, args);

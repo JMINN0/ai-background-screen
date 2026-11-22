@@ -223,6 +223,58 @@ const ACTIONS = {
     const pool = await import('../src/pool.js');
     return pool.destroy(String(args?.screenId || ''), args || {});
   },
+  /*
+   * **通用工具转发 —— 一次恢复 MCP 里那 19 个「广告了但调不了」的工具。**
+   *
+   * 2026-11-22：MCP 向宿主列 37 个工具，但 ACTION_MAP 只映射了 17 个，
+   * 另外 19 个（视觉/等待/探测类）只活在插件层，daemon 没有对应 action，
+   * 一调就报「这个 MCP server 没暴露」——超过一半是坏的。
+   *
+   * 当时靠「不列出没映射的」止血，但代价是 MCP 只有 18 个工具可用。
+   * 正解是让 daemon 能按名字转发到 tools.js 的对应函数：
+   *   POST /cmd {"action":"runTool","args":{"tool":"vdisplay_find","args":{...}}}
+   *
+   * 白名单而不是任意调用 —— 只允许 tool-spec 里真实存在的工具名，
+   * 而且只允许 tools.js 里有同名实现的，避免被当成任意代码执行入口。
+   */
+  async runTool(args) {
+    const tool = String(args?.tool || '').trim();
+    if (!tool) return { hint: '缺 tool 参数（工具名）' };
+
+    const T = await import('../src/tools.js');
+    const SPEC = await import('../src/tool-spec.js');
+
+    // ① 这个名字必须是 tool-spec 里真实声明过的工具
+    let known = false;
+    for (const k of Object.keys(SPEC)) {
+      if (!k.endsWith('Spec') || typeof SPEC[k] !== 'function') continue;
+      try { if (SPEC[k]()?.name === tool) { known = true; break; } } catch { /* skip */ }
+    }
+    if (!known) return { hint: `不认识的工具「${tool}」（不在 tool-spec 里）` };
+
+    // ② 工具名 → tools.js 导出函数名
+    const MAP = {
+      vdisplay_find: 'findText',
+      screen_keepalive: 'keepAlive',
+      vdisplay_probe: 'probeScreen',
+      screen_risk: 'riskCheck',
+      vdisplay_diff: 'screenDiff',
+      screen_modes: 'modes',
+    };
+    const bare = tool.replace(/^vdisplay_|^screen_/, '');
+    const guess = bare.split('_').map((x, i) => (i === 0 ? x : x[0].toUpperCase() + x.slice(1))).join('');
+    const fnName = MAP[tool] || guess;
+    const fn = T[fnName];
+    if (typeof fn !== 'function') return { hint: `工具「${tool}」没有可执行实现（找不到 ${fnName}）` };
+
+    // ③ 执行。tools.js 的函数普遍返回 {text} 或 {ok,text}
+    try {
+      const r = await fn(args?.args || {});
+      return { ok: true, result: r };
+    } catch (e) {
+      return { hint: '执行失败：' + String(e?.message || e).slice(0, 200) };
+    }
+  },
   /* ===== 租约 ===== */
   async claimApp(args) {
     const lease = await import('../src/lease.js');
