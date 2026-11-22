@@ -1,11 +1,11 @@
-# 后台屏 · 让 AI 用另一块屏，你的手机还是你的
+# AI 虚拟屏 · 让 AI 用另一块屏，你的手机还是你的
 
 **一句话**：这个项目给 AI 在安卓手机上开一块**默认不画在物理屏幕上**的虚拟屏（Android `VirtualDisplay`），
 AI 在那块屏上跑 App、点按钮、读文字、玩游戏，而你的主屏、输入法、前台应用的**焦点不会被夺走**
 
 这件事解决的是「**AI 操控手机（computer use）时，人和 AI 抢同一块屏幕**」这个问题 ——
 现有的手机自动化方案（无障碍服务、scrcpy 投屏镜像、Appium / UI Automator）都必须占用你的屏幕，
-所以它们只能「你让开、它来干」。后台屏把这条约束拆掉了：**不抢屏幕、不打扰用户**，
+所以它们只能「你让开、它来干」。AI 虚拟屏把这条约束拆掉了：**不抢屏幕、不打扰用户**，
 AI 用的是另一块屏，你还是用你原来那块。
 
 [English](README.en.md) ｜ 中文
@@ -19,9 +19,9 @@ AI 用的是另一块屏，你还是用你原来那块。
 
 | # | 能力 | 实际含义 |
 |---|---|---|
-| **1** | **后台屏（虚拟屏）** | 一块 720×1592 的 display，**不画在物理屏幕上**、**不抢焦点**、**不抢输入法**。任意 App 可以投上去，AI 用 `vdisplay_*` 那 39 个工具操作它 |
+| **1** | **AI 虚拟屏** | 一块 720×1592 的 display，**不画在物理屏幕上**、**不抢焦点**、**不抢输入法**。任意 App 可以投上去，AI 用 `vdisplay_*` 那 39 个工具操作它 |
 | **2** | **浏览器 CDP 直连** | 不点屏幕、不截图猜坐标，直接用 Chrome DevTools Protocol 读 DOM、点元素、填表单（10 个工具） |
-| **3** | **你能看见 AI 在干什么** | 一块悬浮窗（`TYPE_APPLICATION_OVERLAY`）实时显示后台屏画面，点击位置有水滴波纹。**它不抢焦点，你能同时打字** |
+| **3** | **你能看见 AI 在干什么** | 一块悬浮窗（`TYPE_APPLICATION_OVERLAY`）实时显示 AI 虚拟屏画面，点击位置有水滴波纹。**它不抢焦点，你能同时打字** |
 
 配套还有：命令行 `vdisplay`（**不装 DSH 也能用**，任何能跑 bash 的 AI Agent 都行）、
 MCP server（给 Claude Desktop / Cursor 这类宿主）、多屏池（一次跑多个 App）、
@@ -245,7 +245,7 @@ ADDVIEW_ERR IllegalStateException: Unknown pid=19074 uid=2000
 所以正确的装法是：
 
 ```bash
-dsh plugin --profile web add ./screen      # 后台屏，必需
+dsh plugin --profile web add ./screen      # AI 虚拟屏，必需
 dsh plugin --profile web add ./web         # 浏览器控制，可选
 ```
 
@@ -340,14 +340,14 @@ pip install opencv-python-headless      # 视觉，模板匹配/颜色/指纹/�
 
 ### 4.3 装插件（三种形态，选一个）
 
-**形态 A：只装后台屏（最省事，推荐第一次装）**
+**形态 A：只装 AI 虚拟屏（最省事，推荐第一次装）**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 dsh plugin --profile web add ./screen
 ```
 
-**形态 B：后台屏 + 浏览器 CDP**
+**形态 B：AI 虚拟屏 + 浏览器 CDP**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -516,7 +516,7 @@ MediaProjection 替代 screencap、多 AI broker 完整版、跨进程租约。
 
 ## 六、工具清单
 
-一共 **49 个工具**：`screen` 包 39 个（后台屏 + 视觉 + 多屏 + 租约），`web` 包 10 个（浏览器）。
+一共 **49 个工具**：`screen` 包 39 个（AI 虚拟屏 + 视觉 + 多屏 + 租约），`web` 包 10 个（浏览器）。
 
 > 子目录里的 `screen/README.md` 还写着「八个工具」，`web/README.md` 写着「工具数 8」——
 > 都是早期版本的数字，**以本表为准**（按 `tool-spec.js` 实际注册的 name 数出来）。
@@ -656,7 +656,7 @@ MediaProjection 替代 screencap、多 AI broker 完整版、跨进程租约。
 
 ```
 1. vdisplay_start {}                       → 主屏继续放 B 站
-2. vdisplay_launch { pkg: "com.xingin.xhs" }  → 小红书投到后台屏
+2. vdisplay_launch { pkg: "com.xingin.xhs" }  → 小红书投到 AI 虚拟屏
 3. vdisplay_text {}                         → 读笔记标题和评论
 4. vdisplay_input { kind: "swipe", nx1: 0.5, ny1: 0.8, nx2: 0.5, ny2: 0.2 }
 ```
@@ -735,7 +735,7 @@ node ./screen/bin/vdisplay.mjs --json status
 ### 8.1 两块屏的资源隔离
 
 ```
-┌ Display 0（物理屏） ───────┐  ┌ 后台屏 VirtualDisplay ─────┐
+┌ Display 0（物理屏） ───────┐  ┌ AI 虚拟屏 VirtualDisplay ──┐
 │ 你正在用的 App             │  │ AI 投上去的 App            │
 │ 微信 / B站 / 游戏          │  │ 小红书 / 设置 / MC         │
 │                            │  │                            │
@@ -967,7 +967,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 
 | 问题 | 根因 | 怎么发现的 |
 |---|---|---|
-| **悬浮窗里显示的是用户主屏，不是后台屏** | `createVirtualDisplay` 的第 4 个参数是 `displayIdToMirror`。我为了「修 dpi」把它改成了 dpi 值 → 镜像一个不存在的屏 → **框架静默回退到 display 0** | 用户自己看出来「这怎么是我们的对话」。用「帧 vs 主屏截图」比像素差确认：修前 6.1（就是同一画面），修后 156.8 |
+| **悬浮窗里显示的是用户主屏，不是 AI 虚拟屏** | `createVirtualDisplay` 的第 4 个参数是 `displayIdToMirror`。我为了「修 dpi」把它改成了 dpi 值 → 镜像一个不存在的屏 → **框架静默回退到 display 0** | 用户自己看出来「这怎么是我们的对话」。用「帧 vs 主屏截图」比像素差确认：修前 6.1（就是同一画面），修后 156.8 |
 | **横屏游戏画面被裁/挤成一条** | 虚拟屏带 `FLAG_ROTATES_WITH_CONTENT`，App 强制横屏时屏的**逻辑尺寸**会从 720×1592 变成 1592×720；而取帧服务的 ImageReader 尺寸建的时候定死，不跟着变 → 横屏内容被等比缩进竖屏缓冲，只占顶部约 20% | 用户截图：弹窗文字「请尝试」被切掉「试」之后所有字 |
 | **MJPEG 客户端冻在第一帧** | 重构把镜像创建抽成 `openMirror()` 时，把 `startWriter()` 的调用一起删了 → `pendingJpg` 只写不读。`/frame.jpg` 读的是另一个字段所以照常工作，只有走 MJPEG 的悬浮窗会冻 | 对抗审查子代理 grep 调用点发现。**我自己的测试只看了 `/frame.jpg`，所以没发现** |
 
@@ -981,7 +981,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 
 ## 十一、和现有方案对比
 
-| 维度 | 无障碍服务 | 投屏镜像（scrcpy 默认） | Appium / UI Automator | **本项目（后台屏）** |
+| 维度 | 无障碍服务 | 投屏镜像（scrcpy 默认） | Appium / UI Automator | **本项目（AI 虚拟屏）** |
 |---|---|---|---|---|
 | **占用户屏幕** | 是（App 必须在前台） | 是（镜像的就是主屏） | 是 | **否** |
 | **抢焦点** | 是 | 是 | 是 | **否**（`FLAG_OWN_FOCUS`） |
@@ -1132,7 +1132,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 **为什么都在一个仓库**：`screen/` 和 `web/` 以前各自单独开过仓库，结果是代码漂移了 74 行 ——
 虚拟屏能跑 3D 游戏的那个修复只进了一边。合并后一处改一处生效。
 
-**名字的由来**：项目叫「后台屏」，因为实质是「一块用户看不见的屏」，
+**名字的由来**：「AI 虚拟屏」这个名字说的是实质 —— 一块用户看不见的虚拟屏（Android `VirtualDisplay`）。
 不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `ai-background-screen`（旧名 `offscreen-android`）和包名
 `dsh-go-plugin-screen` **故意没改** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
 
