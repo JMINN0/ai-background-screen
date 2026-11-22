@@ -1808,7 +1808,11 @@ export async function syncRiskLevel() {
  * **AI 设的严重状态优先级更高，自动状态不能把它盖掉** —— 否则 AI 刚报的
  * critical 会被下一次自动 working 冲掉，用户就看不到那个警告了。
  */
-const AUTO_STATE_FILE = '/data/local/tmp/dshframe/autoedge';
+/**
+ * @deprecated 已不用于判断「AI 还在操作吗」—— settleIfIdle 现在读文件时间戳
+ * （跨进程唯一可靠的真相来源）。touchWorking 仍然写它，但没有地方读。
+ * 留着是为了兼容，别再基于它做判断。2026-11-22 独立复核指出它是死变量。
+ */
 let _autoLastAt = 0;
 /** AI 手动设的严重状态还没过期时，记在这里，自动状态要避让。 */
 let _manualUntil = 0;

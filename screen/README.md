@@ -1,9 +1,15 @@
 # dsh-go-plugin-screen
 
-在手机上开一块**用户看不见的虚拟屏**，把 App 跑上去，Agent 可以截图、点击、输入，全程不打断用户。
+在手机上开一块**独立的虚拟屏**，App 跑在那块屏上，Agent 可以点击、滑动、输入、截图，你的主屏和键盘完全不受影响。不是镜像主屏 —— 是另一块真正独立的显示设备。
 
 ```bash
-dsh plugin --profile web add dsh-go-plugin-screen
+# 当前唯一可用的方式：从本地仓库装（npm 上还没发布）
+git clone https://github.com/JMINN0/ai-background-screen.git
+cd ai-background-screen
+dsh plugin --profile web add ./screen
+
+# 发到 npm 之后才能用这条（现在 npm 上还是 404）
+# dsh plugin --profile web add dsh-go-plugin-screen
 ```
 
 ## 为什么不是镜像一块屏

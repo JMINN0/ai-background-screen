@@ -68,6 +68,49 @@ let opBusy = 0;
  *  60 秒宽限期永远读到 0 = 从来没生效（2026-11-22 复核抓到的同型复发）。 */
 let lastStreamStartAt = 0;
 
+/**
+ * **拿全局互斥锁跑一段代码 —— tick 里的自动重建也必须走这里。**
+ *
+ * 2026-11-22 独立复核抓到的 P0：tick 的「屏空了自动重建」直接调 `T.start()`，
+ * 既没取 `mutexTail` 也没 `opBusy++`。`ticking` 只能挡住「tick 撞 tick」，
+ * 挡不住「tick 重建」撞「客户端 POST /cmd {action:start}」。
+ *
+ * 后果和之前那些一样：两个 start 并发 → 都看到 displayId 为空 → 各建一块屏
+ * → `resolveScrcpySfId()` 分不清哪块是哪块 → 所有截图报歧义。
+ * 这正是 mutex 存在的理由，tick 不该绕过它。
+ *
+ * @param {Function} fn 要执行的异步函数
+ * @param {number} waitMs 最多等多久拿锁
+ * @returns {{ok:boolean, value?:any, error?:string, timeout?:boolean}}
+ */
+async function withLock(fn, waitMs = 90_000) {
+  const prev = mutexTail;
+  let release;
+  let acquired = false;
+  mutexTail = new Promise((r) => { release = r; });
+  try {
+    let timer = null;
+    const timeoutP = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), waitMs);
+      if (timer.unref) timer.unref();
+    });
+    const got = await Promise.race([prev.then(() => 'ok'), timeoutP]);
+    if (timer) clearTimeout(timer);
+    if (got === 'timeout') {
+      // 超时不破坏互斥：release 挂到前一个 tail 上，链条按原顺序继续
+      Promise.resolve(prev).finally(release);
+      return { ok: false, timeout: true, error: '等锁超时（' + Math.round(waitMs / 1000) + ' 秒）' };
+    }
+    acquired = true;
+    const value = await fn();
+    return { ok: true, value };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e).slice(0, 120) };
+  } finally {
+    if (acquired) release();
+  }
+}
+
 const ACTIONS = {
   async start(args) {
     /*
@@ -554,9 +597,6 @@ function startIdleWatch() {
    */
   let emptyStreak = 0;        // 连续几次检测到 mHasContent=false
   let streamFailStreak = 0;   // 推流连续几次没在听
-  /** 上次起推流成功的时刻。用来给启动留宽限期，避免 tick 抢在 framesrv 监听前判死。 */
-  /** **有写操作正在跑**。tick 在看门狗阶段要跳过 ——
-   *  一次 start 里 framesrv 还没监听是正常的，不能判死。 */
   let tickNo = 0;
   /** **tick 防重入。**
    * 一次重建要 60 秒，而 setInterval 每 10 秒触发 —— 期间会叠加 5-6 个 tick，
@@ -566,6 +606,10 @@ function startIdleWatch() {
     if (ticking) return;   // 上一轮还没跑完，别叠加
     ticking = true;
     tickNo++;
+    /* **边缘状态清理必须无条件执行** —— 不能等「有屏在跑」才做。
+     * 2026-11-22 实测发现：原来它在 tick 末尾，而 tick 在没有屏时
+     * 会在 !st.running 那里提前 return，于是过期的边缘状态永远留着。 */
+    try { await vd.settleIfIdle(8000); } catch { /* 光效失败不影响守护进程 */ }
     try {
       const st = await vd.status().catch(() => null);
       if (!st) return;
@@ -637,27 +681,41 @@ function startIdleWatch() {
         if (emptyStreak >= 3) {
           console.error('[vdisplayd] 屏 ' + st.displayId + ' 连续 ' + emptyStreak
             + ' 次没有内容（mHasContent=false），重建');
-          try {
-            const T = await import('../src/tools.js');
-            // 先关旧窗口和旧推流，再重建（和 autoRepair 同一套清理顺序）
-            const oldPort = T.screenPorts?.get?.(Number(st.displayId)) || 0;
-            if (oldPort) { try { await T.overlayStop(oldPort); } catch { /* 窗口不在就算了 */ } }
-            try {
-              const fsrv = await import('../src/framesrv.js');
-              await fsrv.stop(Number(st.displayId));
-            } catch { /* ignore */ }
-            /* **必须先 markLost，否则 T.start 会复用那块死屏。**
+            /* **重建必须走 withLock —— 和外部请求同一把锁。**
              *
-             * 2026-11-22 对抗审查指出：`alive()` 只检查 displayId 和 SF id 存在，
-             * **不看内容** —— 一块 mHasContent=false 的屏，在 alive() 眼里是「活着」的。
-             * 所以直接 T.start() 会走「复用」分支，返回 ok 而且什么都不做，
-             * 下一轮 tick 又判空、又重建，无限循环。
+             * 2026-11-22 独立复核抓到的 P0：这里原来直接 await T.start()，
+             * 既没取 mutexTail 也没 opBusy++。`ticking` 只挡「tick 撞 tick」，
+             * 挡不住「tick 重建」撞「客户端 POST /cmd start」——
+             * 两个 start 并发会各建一块屏，之后 SF id 分不清、截图全报歧义。
              */
-            try { await vd.markLost(); } catch { /* 尽力而为 */ }
-            await T.start({});
-          } catch (e) {
-            console.error('[vdisplayd] 重建失败：' + String(e?.message || e).slice(0, 80));
-          }
+            const rb = await withLock(async () => {
+              const T = await import('../src/tools.js');
+              // 先关旧窗口和旧推流，再重建（和 autoRepair 同一套清理顺序）
+              const oldPort = T.screenPorts?.get?.(Number(st.displayId)) || 0;
+              if (oldPort) { try { await T.overlayStop(oldPort); } catch { /* 窗口不在就算了 */ } }
+              try {
+                const fsrv = await import('../src/framesrv.js');
+                await fsrv.stop(Number(st.displayId));
+              } catch { /* ignore */ }
+              /* **必须先 markLost，否则 T.start 会复用那块死屏。**
+               *
+               * `alive()` 只检查 displayId 和 SF id 存在，**不看内容** ——
+               * 一块 mHasContent=false 的屏在 alive() 眼里是「活着」的，
+               * 直接 T.start() 会走复用分支返回 ok 但什么都不做，
+               * 下一轮 tick 又判空、又重建，无限循环。
+               */
+              try { await vd.markLost(); } catch { /* 尽力而为 */ }
+              opBusy++;
+              try {
+                await T.start({});
+              } finally {
+                opBusy--;
+              }
+              try { lastStreamStartAt = Date.now(); } catch { /* ignore */ }
+            });
+            if (!rb.ok) {
+              console.error('[vdisplayd] 重建失败：' + (rb.timeout ? '等锁超时（有别的操作在跑）' : rb.error));
+            }
           emptyStreak = 0;
           return;   // 这一轮不继续看门狗逻辑，等新屏起来
         }
@@ -734,11 +792,6 @@ function startIdleWatch() {
         try { await vd.syncRiskLevel(); } catch { /* 同步失败不影响守护进程 */ }
       }
 
-      /* ⑤ **操作停下来就把边缘光效收回 idle。**
-       * AI 不会主动清 working —— 用户也不该看到一块一直亮着青边的屏。
-       * 8 秒没有新操作就清掉；AI 手动设的严重状态（warning/error/critical）
-       * 由 settleIfIdle 内部判断，不会被这条清掉。 */
-      try { await vd.settleIfIdle(8000); } catch { /* 光效失败不影响守护进程 */ }
     } catch (e) {
       /* **不能空吞异常。**
        *
