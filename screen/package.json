@@ -49,9 +49,9 @@
     "offscreen-android-daemon": "./bin/vdisplayd.mjs",
     "offscreen-android-mcp": "./bin/mcp-server.mjs"
   },
-  "homepage": "https://github.com/JMINN0/offscreen-android#readme",
+  "homepage": "https://github.com/JMINN0/ai-background-screen#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JMINN0/offscreen-android.git"
+    "url": "git+https://github.com/JMINN0/ai-background-screen.git"
   }
 }

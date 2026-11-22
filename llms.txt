@@ -54,7 +54,7 @@ adb connect 127.0.0.1:5555
 adb tcpip 5555                # 之后 WiFi 断了也能用
 
 # 2. 克隆
-git clone https://github.com/JMINN0/offscreen-android.git
+git clone https://github.com/JMINN0/ai-background-screen.git
 cd offscreen-android
 
 # 3. 下载构建依赖（37MB，已在 gitignore 里所以不随仓库分发）

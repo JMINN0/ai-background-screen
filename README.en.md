@@ -1,4 +1,4 @@
-# offscreen-android
+# AI Background Screen — let an AI drive Android while you keep your phone
 
 Let an AI **operate the phone in the background without taking your screen**.
 
@@ -84,8 +84,8 @@ Packages are split by **which subsystem they run in**:
 ### Install `screen/`
 
 ```bash
-git clone https://github.com/JMINN0/offscreen-android.git
-cd offscreen-android
+git clone https://github.com/JMINN0/ai-background-screen.git
+cd ai-background-screen
 dsh plugin --profile web add ./screen
 ```
 

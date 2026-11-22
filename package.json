@@ -17,10 +17,10 @@
     "虚拟屏"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/JMINN0/offscreen-android#readme",
+  "homepage": "https://github.com/JMINN0/ai-background-screen#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JMINN0/offscreen-android.git"
+    "url": "https://github.com/JMINN0/ai-background-screen.git"
   },
   "workspaces": [
     "screen",

@@ -45,7 +45,7 @@ adb shell getprop ro.build.version.sdk   # 需要 >= 31（Android 12+）
 ## 装法
 
 ```bash
-git clone https://github.com/JMINN0/offscreen-android.git
+git clone https://github.com/JMINN0/ai-background-screen.git
 cd offscreen-android
 bash tools/fetch-sdk.sh        # 下载 37MB 编译依赖（不在 git 里）
 bash overlay/build.sh          # 悬浮窗 APK

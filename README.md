@@ -237,7 +237,7 @@ ADDVIEW_ERR IllegalStateException: Unknown pid=19074 uid=2000
 
 | 装什么 | `dsh plugin add` 能装吗 | 会激活插件吗 |
 |---|---|---|
-| 仓库根 `offscreen-android` | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
+| 仓库根 `ai-background-screen` | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
 | `screen/` 子目录 | ✅ 能装 | ✅ **会激活**，工具真正出现 |
 | `web/` 子目录 | ✅ 能装 | ✅ 会激活 |
 | `watch/` 子目录 | ✅ 能装 | ✅ 会激活（但要先拷到 `$DSH_HOME/dsh-go/plugins/`）|
@@ -327,8 +327,8 @@ adb -s 127.0.0.1:5555 shell getprop vendor.display.vds_allow_hwc
 
 ```bash
 cd /root/workspace
-git clone https://github.com/JMINN0/offscreen-android.git
-cd offscreen-android
+git clone https://github.com/JMINN0/ai-background-screen.git
+cd ai-background-screen
 
 # Node（插件跑在 Node 里）
 node --version          # 需要 ^22.19 或 >=24
@@ -361,7 +361,7 @@ dsh plugin --profile web add ./web
 # 这个组合包的依赖用 link: 指向两个路径，所以两个仓库要并排放
 cd /root/workspace
 git clone https://github.com/JMINN0/dsh-go-plugin-adb.git
-cd offscreen-android
+cd ai-background-screen
 dsh plugin --profile web add ./plugin
 ```
 
