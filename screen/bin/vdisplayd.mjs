@@ -318,6 +318,33 @@ function startIdleWatch() {
         await vd.syncRiskLevel();
       } catch { /* 同步失败不影响守护进程 */ }
     }, 5_000).unref?.();
+
+    /*
+     * **运行时对账：屏幕是不是真的还在。**
+     *
+     * 2026-11-22 实机抓到：daemon 的 /status 报 running:true / displayId:763 / uptime:309，
+     * 而系统里那块虚拟屏早就没了。状态是假的，于是后续所有操作都对着一个
+     * 不存在的 displayId 发，静默失败，用户只看到「黑屏」。
+     *
+     * 根因：vd.status() 读的是模块内部 state，不是系统真值。
+     * 这里每 10 秒拿一次系统真值（dumpsys 里还有没有这个 displayId），
+     * 对不上就把内部状态改成「已停止」并清掉 displayId ——
+     * 让调用方知道需要重建，而不是继续对着空气操作。
+     *
+     * 为什么不自动重建：重建要重投 App、重起 framesrv，
+     * 用户可能已经不要这块屏了。先如实报告。
+     */
+    setInterval(async () => {
+      try {
+        const st = await vd.status().catch(() => null);
+        if (!st?.running || !st.displayId) return;
+        const alive = await vd.displayExists(st.displayId).catch(() => true);
+        if (alive) return;
+        console.error('[vdisplayd] 对账：display ' + st.displayId + ' 已不存在，修正内部状态');
+        try { await vd.markLost(); } catch { /* 尽力而为 */ }
+      } catch { /* 对账失败不能拖垮守护进程 */ }
+    }, 10_000).unref?.();
+
 }
 
 /**

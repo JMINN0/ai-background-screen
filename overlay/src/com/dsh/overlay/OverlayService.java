@@ -690,6 +690,8 @@ public class OverlayService extends Service {
         int armDir = 0;                // -1 左=只关浮窗 / +1 右=关浮窗+关后台屏 / 0 未选
         boolean statusTimerStarted = false;
         int statusFails = 0;
+        /** 当前是否处于「连不上、正在重连」的显示状态。只用于避免重复刷文案。 */
+        boolean reconnecting = false;
         int curW = 0, curH = 0;   // 当前实际尺寸（relayoutAuto 要用）
         boolean collapsed = false;
         int userW = 0, userH = 0;
@@ -1477,15 +1479,26 @@ int dx = (int)(e.getRawX() - downX);
             try {
                 String st = http("http://127.0.0.1:" + port + "/status");
                 if (st == null) {
-                    // **连续 5 次（15 秒）都连不上 = 端口真的没了** → 关窗
-                    if (++statusFails >= 20) {
-                        Log.i(TAG, "端口 " + port + " 连续 " + statusFails + " 次不通，关闭窗口");
-                        ui.post(new Runnable() { public void run() { removeWin(port); } });
-                        return false;
+                    /* **连不上不等于要关窗。**
+                     *
+                     * 2026-11-22 实机：framesrv 死掉后，这里连续 20 次不通就把窗口关掉，
+                     * 之后再也不重连 —— 用户看到的就是「过一会儿黑屏，再也回不来」，
+                     * 哪怕屏后来恢复了也永远不会自己出现。这是「黑屏就再也看不到」的直接原因。
+                     *
+                     * 现在：不关窗。窗口留着，显示「重连中」，后台继续按原节奏重试。
+                     * 理由 —— 一个正被看着的窗口突然消失，比显示一句「重连中」糟糕得多；
+                     * 而且屏和推流可能只是瞬时抖动，关掉就等于放弃了恢复的机会。
+                     */
+                    statusFails++;
+                    if (statusFails == 3) {
+                        // 只提示一次，别每 3 秒刷一条
+                        Log.i(TAG, "端口 " + port + " 连不上，进入重连（窗口保留）");
+                        ui.post(new Runnable() { public void run() { setReconnecting(true); } });
                     }
-                    return true;
+                    return true;    // **继续轮询，不关窗**
                 }
                 statusFails = 0;
+                setReconnectingIfNeeded();
                 if (st.contains("\"running\":false")) {
                     ui.post(new Runnable() { public void run() { removeWin(port); } });
                     return false;
@@ -1497,6 +1510,30 @@ int dx = (int)(e.getRawX() - downX);
                 }
             } catch (Throwable t) { /* ignore */ }
             return true;
+        }
+
+        /** 切到「重连中」提示。窗口不关，只是把画面替换成一句说明。
+         *  用户看到的不再是突然消失，而是「暂时连不上，正在重试」。 */
+        void setReconnecting(boolean on) {
+            if (reconnecting == on) return;
+            reconnecting = on;
+            if (on) {
+                if (img != null) img.setImageDrawable(null);
+                labelText = "重连中";
+                labelColor = 0xFFFFC107;
+                if (label != null) {
+                    label.setText("重连中");
+                    label.setTextColor(0xFFFFC107);
+                }
+            } else {
+                labelText = "";   // 让 refreshLabel 重新写回正常内容
+                labelColor = 0;
+            }
+        }
+
+        /** 连上了就把「重连中」撤掉。已经正常时什么都不做。 */
+        void setReconnectingIfNeeded() {
+            if (reconnecting) setReconnecting(false);
         }
 
         void close() {

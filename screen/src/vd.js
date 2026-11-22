@@ -997,6 +997,40 @@ export async function status() {
 }
 
 /**
+ * 这块 displayId 现在在系统里还存不存在（真值，不是内部状态）。
+ *
+ * 为什么需要：`status()` 的 running 来自 `alive()`，而 `alive()` 看的是内部 state
+ * 和持久化文件，**不是系统真值**。daemon 被 OOM 杀掉、scrcpy server 自己退出、
+ * 或者 SurfaceFlinger 把屏收掉，state 都还写着「在跑」。
+ * 2026-11-22 实机抓到的就是这种：/status 报 displayId=763 uptime=309，
+ * 系统里那块屏早就没了，后续所有操作都对着空气发。
+ */
+export async function displayExists(displayId) {
+  const id = String(displayId || '').trim();
+  if (!id) return false;
+  const ids = await displayIds();
+  if (!ids) return true;        // 查询失败时不敢断言「没了」
+  return ids.has(id) || ids.has(Number(id));
+}
+
+/**
+ * 把内部状态标记为「屏已经没了」。
+ *
+ * 只改状态、不动进程：真要说停，走 stop()。
+ * 这里用于对账发现系统真值和内部状态不一致时，让上层知道需要重建，
+ * 而不是继续对着一个不存在的 displayId 操作。
+ */
+export async function markLost() {
+  const lost = state.displayId;
+  state.displayId = null;
+  state.sfId = null;
+  state.scid = null;
+  state.startedAt = 0;
+  try { clearPersistedState(); } catch { /* 落盘失败不影响内存状态修正 */ }
+  return { ok: true, lost };
+}
+
+/**
  * 把 App 投到虚拟屏。
  *
  * 必须先 force-stop：如果这个 App 已经跑在主屏后台，`am start --display N` 只会把

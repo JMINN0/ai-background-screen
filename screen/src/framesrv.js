@@ -110,11 +110,30 @@ async function probe(port) {
   } catch { return { ok: false }; }
 }
 
-/** 分配一个没被占用的端口。 */
-function allocPort() {
+/**
+ * 分配端口。**同一块屏必须永远拿到同一个端口。**
+ *
+ * 2026-11-22 实机踩到：原来这里是「从 BASE_PORT 往上找第一个空的」，
+ * 完全不看 displayId。结果 framesrv 死掉重建、或者进程重启后，
+ * 同一块屏拿到的是**另一个端口**，而悬浮窗是绑死旧端口的
+ * （OverlayService 里 `port` 是 final 字段），于是重试一万次也连不上 ——
+ * 用户看到「黑屏之后再也回不来」。
+ *
+ * 现在：端口由 displayId 确定性地推导（displayId % 20），
+ * 同一块屏重开多少次都是同一个端口，悬浮窗的重试才真的有意义。
+ * 撞车时往后找下一个空的 —— 20 个端口够 20 块屏。
+ */
+function allocPort(displayId) {
   const used = new Set();
   for (const s of servers.values()) used.add(s.port);
-  for (let p = BASE_PORT; p < MAX_PORT; p++) {
+  const span = MAX_PORT - BASE_PORT;
+  const id = Number(displayId) || 0;
+  // ① 优先用这块屏的「固定位置」，稳定优先
+  const preferred = BASE_PORT + (((id % span) + span) % span);
+  if (!used.has(preferred)) return preferred;
+  // ② 固定位置被别的屏占了，往后找下一个空的
+  for (let i = 1; i < span; i++) {
+    const p = BASE_PORT + ((id % span) + i) % span;
     if (!used.has(p)) return p;
   }
   return 0;
@@ -173,7 +192,7 @@ export async function start({ displayId, width, height, port, mirror } = {}) {
   const real = await realSize(target, displayId, width || 720, height || 1592);
   const size = `${real.w}x${real.h}`;
 
-  const usePort = port || allocPort();
+  const usePort = port || allocPort(displayId);   // 按屏推导，保证重建后端口不变
   if (!usePort) return { ok: false, why: `端口用完了（${BASE_PORT}-${MAX_PORT}）` };
 
   // mirror 参数：把这块屏镜像到 dsh-frames 虚拟屏（悬浮窗读它）
