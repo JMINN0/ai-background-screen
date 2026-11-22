@@ -1350,7 +1350,12 @@ int dx = (int)(e.getRawX() - downX);
               /* 三段：等级 · 操作方式 · 屏号。用户 2026-11-21 明确要这三样。
                * 收起时空间小，只留等级。缺哪段就少显示哪段，不补占位符。 */
               StringBuilder sb = new StringBuilder();
-              if (!lv.isEmpty()) sb.append(lv);
+              /* 等级不再显示 `L2`，显示「风控 中」。用户 2026-11-22 明确要求：
+               * 「不要显示 L几，要显示风控等级无、低、中、高、很高之类的写法」。 */
+              if (!lv.isEmpty()) {
+                  String w = levelWord(lv);
+                  sb.append(w.isEmpty() ? "风控" : "风控 " + w);
+              }
               if (!collapsed) {
                   if (!op.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append(op); }
                   if (!dn.isEmpty()) { if (sb.length() > 0) sb.append(" · "); sb.append("屏").append(dn); }
@@ -1362,6 +1367,31 @@ int dx = (int)(e.getRawX() - downX);
                   label.setText(sb.toString());
                   label.setTextColor(lv.isEmpty() ? 0xCCFFFFFF : levelColor(lv));
               }
+              /* **字号和背景随窗口缩放。** 用户要求：「如果装不下这么多字，
+               * 就根据虚拟屏放大缩小来同步放大缩小这些字体显示的大小以及字体后面的背景」。
+               * 窗口小 → 字小；窗口大 → 字大。以窗口宽度为基准，10sp 对应 300px 宽。 */
+              applyLabelScale();
+          }
+
+          /** 按当前窗口宽度缩放 label 的字号和背景圆角/内边距。 */
+          void applyLabelScale() {
+              if (label == null || root == null) return;
+              int w = root.getWidth();
+              if (w <= 0) return;                      // 还没布局
+              /* 以 300px 窗口宽为基准：字号 10sp、圆角 4dp、左右内边距 6dp。
+               * 缩放范围限制在 0.7~1.6 倍，太小时看不清、太大时挤爆窗口。 */
+              float k = w / 300f;
+              if (k < 0.7f) k = 0.7f;
+              if (k > 1.6f) k = 1.6f;
+              float sp = (collapsed ? 11f : 10f) * k;
+              label.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+              int padH = Math.max(dp(3), Math.round(dp(6) * k));
+              int padV = Math.max(dp(1), Math.round(dp(1) * k));
+              label.setPadding(padH, padV, padH, padV);
+              GradientDrawable bg = new GradientDrawable();
+              bg.setColor(0x88000000);
+              bg.setCornerRadius(Math.max(dp(2), dp(4) * k));
+              label.setBackground(bg);
           }
 
         void showJpeg(byte[] jpg) {
@@ -1538,14 +1568,19 @@ int dx = (int)(e.getRawX() - downX);
     }
 
     /** 等级 → 中文短词。用户要能一眼看懂这一档意味着什么。 */
+    /** 风控等级的文字说法。用户 2026-11-22：不要显示 L几，要显示「无/低/中/高/很高」这种。
+     *
+     *  L0 无风控 → 无；L1 弱 → 低；L2 中 → 中；L3 强 → 高；L4 极强 → 很高；L5 特殊 → 极高。
+     *  用「极高」而不是「很高」给 L5，因为 L5 是 DRM/活体这种根本不该碰的，和 L4 得分开。
+     */
     static String levelWord(String lv) {
         switch (lv) {
-            case "L0": return "自由";
-            case "L1": return "控频";
-            case "L2": return "拟人";
-            case "L3": return "只读";
-            case "L4": return "人工";
-            case "L5": return "不可";
+            case "L0": return "无";
+            case "L1": return "低";
+            case "L2": return "中";
+            case "L3": return "高";
+            case "L4": return "很高";
+            case "L5": return "极高";
             default:   return "";
         }
     }
