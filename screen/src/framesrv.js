@@ -89,7 +89,17 @@ async function pushDex(target) {
 }
 
 /** 探活：/status 能通就算活着。 */
-async function probe(port) {
+/**
+ * 探测某个端口上的 framesrv 是不是**属于指定这块屏**。
+ *
+ * @param {number} port
+ * @param {number} [expectDisplayId] 传了就校验；不传只看活着
+ *
+ * 2026-11-22 对抗审查 P0-2：原来只 parse JSON 就当成功，
+ * 端口碰撞时会把**别人的** server 当成本屏的 —— 两块屏共用一个 framesrv，
+ * 用户看到别人的画面，而自检全绿。现在 /status 带 displayId，能核对。
+ */
+async function probe(port, expectDisplayId) {
   try {
     const { request } = await import('node:http');
     return await new Promise((resolve) => {
@@ -99,8 +109,16 @@ async function probe(port) {
         let body = '';
         res.on('data', (d) => { body += d; });
         res.on('end', () => {
-          try { resolve({ ok: true, info: JSON.parse(body) }); }
-          catch { resolve({ ok: false }); }
+          try {
+            const info = JSON.parse(body);
+            /* 带了期望的 displayId 就必须对上，否则这是别人的 server */
+            if (expectDisplayId != null && info && info.displayId != null
+                && Number(info.displayId) !== Number(expectDisplayId)) {
+              resolve({ ok: false, wrongDisplay: true, info });
+              return;
+            }
+            resolve({ ok: true, info });
+          } catch { resolve({ ok: false }); }
         });
       });
       req.on('error', () => resolve({ ok: false }));
@@ -176,7 +194,7 @@ export async function start({ displayId, width, height, port, mirror } = {}) {
   // 已经在跑这块屏 → 复用（探活确认）
   const cur = servers.get(displayId);
   if (cur) {
-    const p = await probe(cur.port);
+    const p = await probe(cur.port, displayId);   // 校验这块 server 真的是这块屏的
     if (p.ok) {
       activeDisplayId = displayId;
       return { ok: true, port: cur.port, reused: true, fps: p.info?.fps || 0 };
@@ -217,7 +235,7 @@ export async function start({ displayId, width, height, port, mirror } = {}) {
   // 等端口起来（最多 8 秒）
   for (let i = 0; i < 16; i++) {
     await new Promise((r) => setTimeout(r, 500));
-    const p = await probe(usePort);
+    const p = await probe(usePort, displayId);   // 同上：防连到别人的 server
     if (p.ok) {
       activeDisplayId = displayId;
       return { ok: true, port: usePort, fps: p.info?.fps || 0, reused: false };
@@ -280,7 +298,7 @@ export async function info(displayId) {
   if (displayId != null) {
     const s = servers.get(displayId);
     if (!s) return { running: false, displayId };
-    const p = await probe(s.port);
+    const p = await probe(s.port, displayId);
     if (!p.ok) {
       servers.delete(displayId);
       return { running: false, displayId };
@@ -290,7 +308,7 @@ export async function info(displayId) {
   // 无参：活动那块（兼容老调用）+ 全部
   const all = [];
   for (const [id, s] of servers) {
-    const p = await probe(s.port);
+    const p = await probe(s.port, id);
     all.push({ displayId: id, port: s.port, size: s.size, running: p.ok, ...(p.ok ? (p.info || {}) : {}) });
   }
   const act = activeDisplayId != null ? all.find((x) => x.displayId === activeDisplayId) : all[0];

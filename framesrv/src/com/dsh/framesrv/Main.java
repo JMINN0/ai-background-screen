@@ -700,7 +700,21 @@ public class Main {
                     try { Thread.sleep(100); } catch (Throwable t2) { }
                     System.exit(0);
                 }
-                String j = "{\"running\":" + alive + ",\"frames\":" + frames.get()
+                /* **必须带上 displayId。**
+                 *
+                 * 2026-11-22 对抗审查 P0-2：端口是按 `38820 + displayId % 20` 推的，
+                 * 20 个端口、两块屏 displayId 相差 20 的倍数时 preferred 会撞。
+                 * 同进程靠 used 集合错开，但 servers 是模块级 Map ——
+                 * 插件和 daemon 是两个进程，跨进程碰撞检测完全失效；进程重启后
+                 * servers 为空，第二个 spawn 绑不上端口，probe 却打到第一块屏活着的
+                 * server 返回 ok → 两块屏共用一个 framesrv，用户看到别人的画面，
+                 * 而自检五项全绿。
+                 *
+                 * 根因是 /status 以前不返回 displayId，调用方没法校验「我连的这个
+                 * server 到底是不是我这块屏的」。加上之后 probe 才能核对。
+                 */
+                String j = "{\"running\":" + alive + ",\"displayId\":" + displayId
+                        + ",\"frames\":" + frames.get()
                         + ",\"fps\":" + fps + ",\"width\":" + outWidth + ",\"srcWidth\":" + srcW + ",\"srcHeight\":" + srcH
                         + ",\"aspect\":" + ((double) srcW / srcH) + "}";
                 out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "

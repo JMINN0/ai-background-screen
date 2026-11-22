@@ -201,6 +201,25 @@ export async function autoRepair(checks, ctx = {}) {
     if (only && !only.has(c.name)) { skipped.push(c.name); continue; }
     try {
       if (c.name === '虚拟屏存在') {
+        /* **重建前先把旧屏的窗口和推流关掉。**
+         *
+         * 2026-11-22 对抗审查 P0-3：原来这里直接 vd.start({}) 重建，
+         * 旧 displayId 的浮窗没人关 —— 它还在对着一个死端口重试，
+         * 屏幕上挂着「重连中」，最多 3 分钟才自己消失。
+         * 而自检只看新屏，会打印「创建完成并自检通过 ✅」。
+         * 用户看到的就是「说成功了，但有个窗口一直在转圈」——
+         * 正是他抱怨的「过一段时间黑屏」的形态。
+         */
+        try {
+          const oldId = ctx.displayId;
+          const oldPort = oldId != null ? (screenPorts.get(Number(oldId)) || 0) : 0;
+          if (oldPort) await overlayStop(oldPort).catch(() => {});
+          if (oldId != null) {
+            const fsrv = await import('./framesrv.js');
+            await fsrv.stop(Number(oldId)).catch(() => {});
+          }
+        } catch { /* 旧资源清不掉不影响重建 */ }
+
         const r = await vd.start({});
         if (r?.ok) {
           /* **重建后 displayId 变了，必须把新的带回去。**
@@ -210,7 +229,7 @@ export async function autoRepair(checks, ctx = {}) {
            * 修完还是错的 —— 比不修更误导。
            */
           ctx.newDisplayId = r.displayId;
-          repaired.push(c.name + '（已重建屏 displayId=' + r.displayId + '）');
+          repaired.push(c.name + '（已重建屏 displayId=' + r.displayId + '，旧窗口已关）');
         }
       } else if (c.name === '推流在监听' || c.name === '画面帧可取') {
         await streamStart({ displayId: ctx.displayId, fps: 2, width: 360 });
@@ -223,12 +242,16 @@ export async function autoRepair(checks, ctx = {}) {
           repaired.push(c.name + '（已重投 ' + ctx.castPkg + '）');
         } else skipped.push(c.name);
       } else if (c.name === '悬浮窗可见') {
-        const p = ctx.port || 0;
-        await overlayStop(p || undefined).catch(() => {});
+        /* 端口可能来自自检结果（ctx.port），也可能要从账本查（ctx.displayId）。
+         * 都拿不到就没法定位是哪个窗口 —— 那就跳过，不要盲目 closeAll。 */
+        let p = ctx.port || 0;
+        if (!p && ctx.displayId != null) p = screenPorts.get(Number(ctx.displayId)) || 0;
+        if (!p) { skipped.push(c.name + '（拿不到端口，不敢动窗口）'); continue; }
+        await overlayStop(p).catch(() => {});
         await new Promise((res) => setTimeout(res, 500));
-        await overlayStart(p || 0);
+        await overlayStart(p);
         await new Promise((res) => setTimeout(res, 800));
-        repaired.push(c.name + '（已重启浮窗）');
+        repaired.push(c.name + '（已重启浮窗 port=' + p + '）');
       } else skipped.push(c.name);
     } catch (e) {
       skipped.push(c.name + '（修复失败：' + String(e?.message || e).slice(0, 40) + '）');
@@ -243,25 +266,64 @@ export async function autoRepair(checks, ctx = {}) {
  * 为什么需要：空屏时 ImageReader 不出帧，自检拿不到画面。
  * 桌面是每台设备都有、不需要登录、一定渲染的 App。
  */
-async function pickHomeLike() {
+export async function pickHomeLike() {
   /*
-   * **不能投桌面。**
+   * **挑一个「投上去一定有画面、又不会打断用户」的 App。**
    *
-   * 2026-11-22 实测：`com.zte.mifavor.launcher` 的 launchMode=2，是 singleTask。
-   * 对 singleTask App 执行 `am start --display N` 只会把它在主屏的已有任务
-   * **搬**到那块屏，而不是在虚拟屏上新开一个 —— 于是「投屏成功」但虚拟屏
-   * mCurrentFocus=null，什么画面都没有，自检必然报「画面帧可取 ❌」。
-   * 这是 AGENTS.md 里那条坑，我在自动投屏里又踩了一次。
+   * 两条硬约束：
    *
-   * 改用 Settings：2026-11-22 用 aapt 验过本机
-   * `com.android.settings.Settings` 是 activity-alias、没有 launchMode 属性，
-   * 即 standard，投到虚拟屏会真的新开一个，一定有画面。
+   * ① **不能投桌面。** `com.zte.mifavor.launcher` 的 launchMode=2（singleTask），
+   *    `am start --display N` 只会把它在主屏的已有任务搬过去，不会在虚拟屏上新开 ——
+   *    于是「投屏成功」但 mCurrentFocus=null，画面全空。
+   *    （本机实测；AOSP Launcher 也普遍是 singleTask。）
+   *
+   * ② **不能 force-stop 用户正在用的 App。** vd.launch 内部会先 `am force-stop`
+   *    （不这么做，app 已在主屏后台时 am start 只会把旧任务拉到前台）。
+   *    2026-11-22 复核抓到：默认投 Settings 意味着每次无参建屏都会 force-stop 设置，
+   *    用户正在主屏看设置页就会被直接踢出去。
+   *
+   * 所以：按顺序试候选，跳过「此刻正在主屏前台」的那个；
+   * 全都正在被用就返回 null，让调用方如实说「屏是空的」，而不是硬投。
    */
   const candidates = [
-    'com.android.settings',   // 实测非 singleTask，一定渲染
+    'com.android.settings',            // activity-alias，无 launchMode = standard，一定渲染
+    'com.android.documentsui',         // 文件管理器
+    'com.android.deskclock',           // 时钟
+    'com.android.calculator2',         // 计算器
   ];
-  for (const pkg of candidates) return pkg;
-  return null;
+
+  /* **要查所有屏的焦点，不只主屏。**
+   *
+   * 2026-11-22 想到的坑：如果只看主屏焦点，多屏时会出现互相踩 ——
+   * 屏 1 上已经投着 Settings，建屏 2 时 pickHomeLike 看到主屏是 DSH Go、
+   * 于是又选 Settings，amd force-stop 直接把屏 1 上的设置杀掉。
+   * 所以把 `dumpsys window displays` 里所有 display 的 mCurrentFocus 都收进来。
+   */
+  let allFocus = '';
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const target = await adbTarget();
+    const r = await run('adb', ['-s', target, 'shell',
+      "dumpsys window displays 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'"],
+      { timeout: 8000 }).catch(() => ({ stdout: '' }));
+    allFocus = String(r.stdout || '');
+  } catch { /* 查不到就保守当「没在用」，不因此阻止建屏 */ }
+
+  for (const pkg of candidates) {
+    if (allFocus.includes(pkg)) continue;   // 任何一块屏上正在用，都别 force-stop 它
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const target = await adbTarget();
+      const r = await run('adb', ['-s', target, 'shell', 'pm list packages ' + pkg],
+        { timeout: 6000 }).catch(() => ({ stdout: '' }));
+      if (String(r.stdout || '').includes(pkg)) return pkg;
+    } catch { /* 试下一个 */ }
+  }
+  return null;   // 没有可用的 → 调用方如实报告
 }
 
 export async function selfCheck(args = {}) {
@@ -297,7 +359,21 @@ export async function selfCheck(args = {}) {
     const r = await fetch('http://127.0.0.1:' + port + '/status');
     statusText = await r.text();
   } catch (e) { statusText = 'connect-fail'; }
-  push('推流在监听', /"running"\s*:\s*true/.test(statusText), 'port=' + port + ' ' + statusText.slice(0, 60));
+  /* **还要校验这个端口上的 server 真的属于这块屏。**
+   * 2026-11-22 对抗审查 P0-2：端口公式会撞，撞了之后连到别人的 server
+   * 也返回 running:true，自检会全绿，而用户看到的是另一块屏的画面。
+   * /status 现在带 displayId，能核对。
+   */
+  let rightDisplay = true;
+  try {
+    const j = JSON.parse(statusText);
+    if (j && j.displayId != null && wantId != null) {
+      rightDisplay = String(j.displayId) === String(wantId);
+    }
+  } catch { /* 不是 JSON 就交给下一行走失败 */ }
+  const streamOk = /"running"\s*:\s*true/.test(statusText) && rightDisplay;
+  push('推流在监听', streamOk,
+    'port=' + port + (rightDisplay ? '' : ' ⚠️这个端口属于别的屏！') + ' ' + statusText.slice(0, 70));
 
   // ③ 帧能取到且是合法 JPEG
   let jpgLen = 0;

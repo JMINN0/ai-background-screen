@@ -125,6 +125,15 @@ export async function destroy(screenId, o = {}) {
     try { await T.overlayStop(p || undefined); } catch { /* 窗口本来就不在 */ }
   } catch { /* tools 加载失败不阻塞销毁 */ }
 
+  /* **停 framesrv 也要按 displayId，否则是全停。**
+   * 2026-11-22 对抗审查：池里销毁一块屏时如果不指定 displayId，
+   * 会把其它池屏的推流一起停掉。 */
+  try {
+    const fsrv = await import('./framesrv.js');
+    const dispId = s.ctx?.displayId;
+    await fsrv.stop(dispId != null ? Number(dispId) : undefined);
+  } catch { /* 推流本来就没起 */ }
+
   vd.setActive(s.ctx);
   try {
     await vd.stop({ forceStopApps: o.forceStopApps === true });

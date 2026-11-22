@@ -96,7 +96,11 @@ const ACTIONS = {
       const stopPort = disp != null ? (T.screenPorts?.get?.(Number(disp)) || 0) : 0;
       try { await T.overlayStop(stopPort || undefined); } catch { /* 窗口可能本来就不在 */ }
       const fsrv = await import('../src/framesrv.js');
-      await fsrv.stop();
+      /* **必须传 displayId，否则是全停。**
+       * 2026-11-22 对抗审查抓到：`fsrv.stop()` 不传参 = 停掉所有 framesrv
+       * （framesrv.js:250 的行为），多屏时「停一块」会把别块屏的推流一起停掉。
+       */
+      await fsrv.stop(disp != null ? Number(disp) : undefined);
       streamStopped = true;
     } catch { /* 推流本来就没起来就算了 */ }
     const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
@@ -174,11 +178,35 @@ const ACTIONS = {
      * 窗口位置由 streamStart 自己按池里第几块屏错开（见 newScreen 的注释）。
      */
     if (args?.overlay === false) return { ...r, stream: { ok: false, detail: '按参数未起浮窗' } };
+    let castPkg = '';
     try {
       const T = await import('../src/tools.js');
       const auto = await T.streamStart({ displayId: r.displayId, sfId: r.sfId, overlay: true });
       const txt = String(auto?.text || '');
-      return { ...r, stream: { ok: /悬浮窗已浮起/.test(txt), detail: txt.split('\n')[0] || '' } };
+
+      /* **池屏也要投个 App，否则浮窗里是黑的。**
+       *
+       * 2026-11-22 复核抓到：newScreen/poolCreate 只起推流不投屏，
+       * 「开多少个就带多少个悬浮窗」满足了，但每个窗里都是空的，要等 AI 自己
+       * vdisplay_launch 才有画面 —— 而用户看到的第一眼就是几个黑框。
+       * 和 start() 一样挑一个不会打断用户的 App。
+       */
+      try {
+        if (args?.pkg) {
+          const lr = await T.launch({ pkg: String(args.pkg), activity: args?.activity });
+          castPkg = String(args.pkg);
+          void lr;
+        } else {
+          const pick = await T.pickHomeLike();
+          if (pick) { await T.launch({ pkg: pick }); castPkg = pick; }
+        }
+      } catch { /* 投不上就算了，屏本身是好的 */ }
+
+      return {
+        ...r,
+        castPkg,
+        stream: { ok: /悬浮窗已浮起/.test(txt), detail: txt.split('\n')[0] || '' },
+      };
     } catch (e) {
       return { ...r, stream: { ok: false, detail: String(e?.message || e).slice(0, 120) } };
     }
@@ -462,10 +490,18 @@ function startIdleWatch() {
 
         const n = Number(st.displayId) || 0;
         const port = 38820 + (((n % 20) + 20) % 20);
+        /* **不能只看 HTTP 200 —— 还要看这个端口是不是本屏的。**
+         * 2026-11-22 对抗审查：端口碰撞时公式算出的端口可能正好是**别人**的，
+         * 探测会返回 ok，看门狗就得出「一切正常」的结论，
+         * 而真实情况是这块屏根本没有 framesrv。
+         */
         let up = false;
         try {
           const r = await fetch('http://127.0.0.1:' + port + '/status', { signal: AbortSignal.timeout(3000) });
-          up = r.ok;
+          if (r.ok) {
+            const j = await r.json().catch(() => null);
+            up = !(j && j.displayId != null && String(j.displayId) !== String(st.displayId));
+          }
         } catch { up = false; }
         if (up) { streamFailStreak = 0; return; }
         if (streamFailStreak >= 3) {
