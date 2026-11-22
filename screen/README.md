@@ -1,4 +1,4 @@
-# dsh-go-plugin-screen
+# ai-background-screen
 
 在手机上开一块**独立的虚拟屏**，App 跑在那块屏上，Agent 可以点击、滑动、输入、截图，你的主屏和键盘完全不受影响。不是镜像主屏 —— 是另一块真正独立的显示设备。
 
@@ -9,7 +9,7 @@ cd ai-background-screen
 dsh plugin --profile web add ./screen
 
 # 发到 npm 之后才能用这条（现在 npm 上还是 404）
-# dsh plugin --profile web add dsh-go-plugin-screen
+# dsh plugin --profile web add ai-background-screen
 ```
 
 ## 为什么不是镜像一块屏

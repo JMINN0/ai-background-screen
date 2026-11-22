@@ -118,7 +118,7 @@ python3 -c "
 import json
 d=json.load(open('$HOME/.dsh/profiles/web/package.json'))
 b=d['dsh']['profile']['bundles']
-print('screen:', 'dsh-go-plugin-screen' in b)
+print('screen:', 'ai-background-screen' in b)
 print('web   :', 'dsh-go-plugin-web' in b)   # only if you installed web
 print('watch :', 'local-screen-watch' in b)"
 

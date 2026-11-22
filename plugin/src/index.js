@@ -30,7 +30,7 @@ export const name = 'dsh-go-plugin-mobile';
 /** 子插件清单。用动态 import 的模块名，加载失败不影响其它。 */
 const MODULES = [
   ['adb', 'dsh-go-plugin-adb'],
-  ['screen', 'dsh-go-plugin-screen'],
+  ['screen', 'ai-background-screen'],
   ['web', 'dsh-go-plugin-web'],
   ['watch', './watch.js'],
 ];

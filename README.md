@@ -412,7 +412,7 @@ python3 -c "
 import json
 d = json.load(open('$HOME/.dsh/profiles/web/package.json'))
 b = d['dsh']['profile']['bundles']
-for n in ['dsh-go-plugin-screen', 'dsh-go-plugin-web', 'local-screen-watch', 'dsh-go-plugin-mobile']:
+for n in ['ai-background-screen', 'dsh-go-plugin-web', 'local-screen-watch', 'dsh-go-plugin-mobile']:
     print(n, ':', n in b)"
 # 预期：装了的那个 True，其余 False
 
@@ -464,7 +464,7 @@ node ./screen/bin/vdisplay.mjs daemon stop   # CLI 形态
 #   （插件形态会随引擎停止自动释放；也可以直接调用 vdisplay_stop 工具）
 
 # 2. 卸载插件（按装的时候的包名）
-dsh plugin --profile web remove dsh-go-plugin-screen
+dsh plugin --profile web remove ai-background-screen
 dsh plugin --profile web remove dsh-go-plugin-web
 dsh plugin --profile web remove dsh-go-plugin-mobile
 dsh plugin --profile web remove local-screen-watch
@@ -1194,7 +1194,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 
 **名字的由来**：「AI 虚拟屏」这个名字说的是实质 —— 一块用户看不见的虚拟屏（Android `VirtualDisplay`）。
 不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `ai-background-screen`（旧名 `offscreen-android`）和包名
-`dsh-go-plugin-screen` **故意没改** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
+`ai-background-screen` 包名 **已经统一** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
 
 **配套的 adb 插件**（`dsh-go-plugin-adb`，单独仓库）：`screen/` 需要一个能连上的 adb。
 它**不硬依赖** adb 插件 —— 没有的话回退到 `127.0.0.1:5555`；装了的话会自动跟着 adb 插件的端口迁移走。

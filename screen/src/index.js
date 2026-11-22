@@ -23,7 +23,7 @@ import {
 } from './tool-spec.js';
 import * as T from './tools.js';
 
-export const name = 'dsh-go-plugin-screen';
+export const name = 'ai-background-screen';
 export const inject = ['tools'];
 
 async function loadDefineTool() {
@@ -136,14 +136,14 @@ export async function apply(ctx) {
               };
               disposers.push(c.tools.register(defineTool({ ...spec(), execute: wrapped })));
             } catch (e) {
-              console.error('[dsh-go-plugin-screen] register failed:', e?.message || e);
+              console.error('[ai-background-screen] register failed:', e?.message || e);
             }
           }
         })
-        .catch((e) => console.error('[dsh-go-plugin-screen] apply failed, plugin disabled:', e?.message || e));
+        .catch((e) => console.error('[ai-background-screen] apply failed, plugin disabled:', e?.message || e));
     });
   } catch (e) {
-    console.error('[dsh-go-plugin-screen] inject failed:', e?.message || e);
+    console.error('[ai-background-screen] inject failed:', e?.message || e);
   }
   return async () => {
     for (const d of disposers) { try { d?.(); } catch { /* 单个工具 dispose 失败不影响其他 */ } }

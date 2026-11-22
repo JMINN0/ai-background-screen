@@ -1,6 +1,11 @@
 {
-  "name": "dsh-go-plugin-screen",
+  "name": "ai-background-screen",
   "description": "Private headless virtual display for app automation.",
-  "version": "0.1.0",
-  "entry": { "name": "dsh-go-plugin-screen", "inject": ["tools"] }
+  "version": "0.2.0",
+  "entry": {
+    "name": "ai-background-screen",
+    "inject": [
+      "tools"
+    ]
+  }
 }

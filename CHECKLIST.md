@@ -49,8 +49,10 @@
 ## 待做（本轮目标）
 
 ### 代码
-- [~] 1. multitouch 标记画不出来（子代理分析中）（tools.js 取 a0.nx/ny，但 multitouch 参数是 p1/p2/p2To）
-- [~] 2. 两套标记系统（子代理分析中）（framesrv 8个/15秒 vs stream.js 3个/60秒）—— 统一或确认不冲突
+- [x] 1. ✅ multitouch 标记 —— 改成收集所有触点（tap/swipe 起终点/p1/p2/p2To）
+- [x] 2. ✅ 两套标记 —— 审计确认**互斥不会同时生效**，AI 截图也**不受污染**（走 screencap 不走标记管线）
+- [x] 2b. ✅ 连续点击互相擦除 —— reencodeWithMark 改成遍历所有标记
+- [x] 2c. ✅ 静止画面年龄环没画过 —— 加 startMarkAnim 重绘线程（1秒内 60ms，之后 250ms，过期后推干净帧）
 - [x] 3. ✅ displayAlive 改三态（活着/死了/不知道），UNKNOWN + 长时间没人看 → 退 → 那类机型上永不退出
 - [x] 4. ✅ 删掉 3 处无用的 try/catch（第 142/257/714 行）（只会吞下次的作用域错误）
 - [x] 5. ✅ T.start 套了 5 分钟超时，opBusy 不会永久卡住（adbd 卡死时 opBusy 永久 >0 → 看门狗永久失效）
@@ -73,6 +75,6 @@
 - [ ] 16. 发 npm（发之前先确认 files 齐全）
 
 ## 不做的（已决定）
-- npm 改名：保持 dsh-go-plugin-screen / dsh-go-plugin-adb
+- ~~npm 改名~~ → **已决定统一**：ai-background-screen / android-adb-direct，版本 0.2.0
 - GitHub 仓库名不动：ai-background-screen / android-adb-direct
 - 旧包 offscreen-android 暂不 deprecate（等新包验证可用）

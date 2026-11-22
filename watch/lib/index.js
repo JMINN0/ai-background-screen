@@ -1,6 +1,6 @@
 // local-screen-watch — 在 DSH Go 里看 AI 正在虚拟屏上操作什么。
 //
-// 分工：本插件（跑在引擎里）只负责**取帧和画界面**；帧由 dsh-go-plugin-screen 的
+// 分工：本插件（跑在引擎里）只负责**取帧和画界面**；帧由 ai-background-screen 的
 // 本地回环 HTTP 服务提供（/frame.jpg、/status）。两边同一个引擎进程，走 127.0.0.1 即可，
 // 既不用改桥接协议，也不往磁盘写任何图片。
 //
