@@ -1390,6 +1390,15 @@ int dx = (int)(e.getRawX() - downX);
            */
           void refreshLabel() {
               if (label == null) return;
+                /* **重连中就别用正常内容覆盖它。**
+                 *
+                 * 2026-11-22 对抗审查抓到：setReconnecting(true) 只在连续第 3 次失败时
+                 * 调一次，而 refreshLabel 每 3 秒无条件重写 labelText/label.setText。
+                 * 于是「重连中」只显示约 3 秒就被盖回「风控 中 · 待机 · 屏 388xx」，
+                 * 然后静默重试 3 分钟后窗口自己消失 —— 用户看到的是
+                 * 「闪一下 → 正常 → 突然没了」，和注释承诺的「窗口留着，显示重连中」不一致。
+                 */
+                if (reconnecting) return;
               String[] st = readStatus();
               String lv = st == null ? "" : st[0];
               String op = st == null ? "" : st[1];

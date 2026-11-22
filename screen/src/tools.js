@@ -389,17 +389,33 @@ export async function selfCheck(args = {}) {
 
   // ④ 画面不是全黑（全黑说明 App 没起来、或还没渲染完）
   let bright = -1;
+  let contrast = -1;   // 标准差：判断「是不是一片纯色」
   if (jpgLen > 1000) {
     try {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
       const run = promisify(execFile);
       // 用 python 解码算平均亮度（已有 pillow），避免在 node 里加图像依赖
-      const py = 'import sys,io\nfrom PIL import Image\nim=Image.open(sys.argv[1]).convert("L")\nw,h=im.size\nim=im.resize((32,32))\nd=list(im.getdata())\nprint(sum(d)//len(d))\n';
-      const tmp = '/tmp/dsh-selfcheck-frame.jpg';
+      /* **不能只看平均亮度。**
+       *
+       * 2026-11-22 对抗审查：亮度 > 8 对三种坏画面同样成立 ——
+       *   · 全白页（亮度 255）
+       *   · 崩溃页（大片白底 + 几行字，亮度很高）
+       *   · 纯色错误页
+       * 真实 App 界面的特征不是「亮」，而是**有对比**：既有亮区也有暗区。
+       * 所以同时算均值和标准差：标准差太低 = 一片纯色，不管它多亮都不算正常画面。
+       *
+       * 临时文件名带 pid —— 复核提到固定文件名会让两个并发建屏互相覆盖，
+       * 亮度可能量到另一块屏的帧。
+       */
+      const py = 'import sys\nfrom PIL import Image\nim=Image.open(sys.argv[1]).convert("L").resize((32,32))\nd=list(im.getdata())\nn=len(d)\nm=sum(d)/n\nv=(sum((x-m)**2 for x in d)/n)**0.5\nprint(int(m), int(v))\n';
+      const tmp = '/tmp/dsh-selfcheck-' + process.pid + '.jpg';
       await run('bash', ['-c', 'curl -s --noproxy \'*\' -m 6 -o ' + tmp + ' http://127.0.0.1:' + port + '/frame.jpg'], { timeout: 10000 });
       const out = await run('python3', ['-c', py, tmp], { timeout: 15000 });
-      bright = Number(String(out.stdout).trim());
+      const parts = String(out.stdout).trim().split(/\s+/);
+      bright = Number(parts[0]);
+      contrast = Number(parts[1]);
+      try { await run('rm', ['-f', tmp], { timeout: 3000 }); } catch { /* ignore */ }
     } catch { /* 算不出来就跳过这一项，不误判 */ }
   }
   /* **量不了就说量不了，不能算通过。**
@@ -409,8 +425,18 @@ export async function selfCheck(args = {}) {
    * 和「真的量了亮度」在输出上完全无法区分。全黑的屏 + 解码失败 = 用户看到 ✅。
    * 现在单独记 skipped，总评里必须出现「有 N 项未测」。
    */
-  if (bright >= 0) push('画面非全黑', bright > 8, '平均亮度=' + bright);
-  else { pushUnmeasured('画面非全黑', '无法解码这一帧（PIL/curl 失败或超时）'); }
+  if (bright >= 0) {
+    /* 亮 + 有对比才算「有真实画面」。
+     * 亮度太低 = 黑屏；标准差太低 = 一片纯色（全白/全灰/崩溃页）。 */
+    const okBright = bright > 8;
+    const okContrast = contrast >= 0 ? contrast > 6 : true;   // 算不出标准差就不卡这一条
+    const why = !okBright ? '太暗（可能是黑屏）'
+      : (!okContrast ? '几乎没有对比（全白/纯色页，可能是崩溃或错误页）' : '');
+    push('画面有内容', okBright && okContrast,
+      '平均亮度=' + bright + ' 标准差=' + (contrast >= 0 ? contrast : '未测') + (why ? ' ⚠️' + why : ''));
+  } else {
+    pushUnmeasured('画面有内容', '无法解码这一帧（PIL/curl 失败或超时）');
+  }
 
   /* ⑤ 浮窗窗口在不在 —— 而且**真的在屏幕上看得见的地方**。
    *
