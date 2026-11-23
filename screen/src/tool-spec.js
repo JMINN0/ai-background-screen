@@ -93,7 +93,7 @@ export function edgeSpec() {
       '',
       '## 报完要收',
       '',
-      '  问题解决了调 `state:"idle"`，或者等超时（warning 15 秒 / error 20 秒 / critical 60 秒）。',
+      '  问题解决了调 `state:"idle"`，或者等超时（warning 15 秒 / error 20 秒 / critical **永不自动过期，必须你调 idle 清掉**）。',
       '  你设的 warning/error/critical 有闩锁：过期前自动的 working/done 不会把它盖掉。',
       '',
       '## 颜色和运动都是双编码',
@@ -107,7 +107,7 @@ export function edgeSpec() {
       reason: { type: 'string', description: '为什么报这个状态，一句话。会写进日志，用户也能在诊断里看到。' },
       color: { type: 'string', description: '可选，一般不用传 —— 颜色就是语义，覆盖它会让用户学到的映射失效。' },
       intensity: { type: 'number', description: '可选，0~1，光效强度。默认 1。想让提示轻一点可以给 0.5。' },
-      ttlSec: { type: 'number', description: '可选，多少秒后自动恢复。不传用默认值（warning 15 / error 20 / critical 60）。' },
+      ttlSec: { type: 'number', description: '可选，多少秒后自动恢复。不传用默认值（warning 15 / error 20；critical 永不自动过期）。' },
     },
     output: out('确认了哪个状态、用了什么颜色、多久后自动恢复。'),
   };

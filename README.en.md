@@ -6,7 +6,7 @@ Three packages: a display you cannot see (runs any app), a browser controller (d
 
 English ｜ [中文](README.md)
 
-> **Status: experimental (v0.1.0).** The core pipeline works and has been measured, but the known issues at the bottom are still open. **Not recommended for general use yet.**
+> **Status: experimental (v0.2.2).** The core pipeline works and has been measured, but the known issues at the bottom are still open. **Not recommended for general use yet.**
 
 ---
 
@@ -81,7 +81,18 @@ Packages are split by **which subsystem they run in**:
    apt-get update && apt-get install -y ffmpeg
    ```
 
-### Install `screen/`
+### Install from npm (recommended)
+
+```bash
+dsh plugin --profile web add ai-background-screen   # the virtual display (current 0.2.2)
+dsh plugin --profile web add android-adb-direct     # in-phone adb, optional (current 0.2.0)
+```
+
+> The npm package `ai-background-screen` **is** this repo's `screen/` package — no clone needed.
+> The old package name `offscreen-android` (0.1.2) is deprecated: "renamed to ai-background-screen".
+> `web/` and `watch/` are not on npm yet, so install those from a local clone (below).
+
+### Install `screen/` from a local clone
 
 ```bash
 git clone https://github.com/JMINN0/ai-background-screen.git
@@ -148,6 +159,9 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 
 ## 5. Tools
 
+> **This table is a subset: the 10 most-used of the 40 tools** in `screen/`.
+> The complete list (all 40, with parameters) is in the [Chinese README](README.md), section 6.
+
 | Tool | Purpose |
 |---|---|
 | `screen_modes` | lists the available approaches with their costs |
@@ -161,16 +175,18 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 | `vdisplay_stream` | push frames as 2fps JPEG to the capsule (about 0.30 core) |
 | `vdisplay_stream_stop` | stop streaming |
 
-### `web/` provides eight tools (browser control)
+### `web/` provides ten tools (browser control)
 
 | Tool | Purpose |
 |---|---|
 | `web_browser` | view or switch the target browser (Edge / Chrome / Nubia, Edge by default) |
 | `web_ensure` | check and repair the CDP channel; does **not** launch the browser by default |
 | `web_open` | open a tab, returns `targetId` |
+| `web_attach` | take over a tab the user already has open (**no navigation, no reload** — keeps the login state) |
+| `web_tabs` | list every tab and mark which ones the plugin opened |
 | `web_read` | read page text from the DOM (no image tokens) |
 | `web_click` | click by CSS selector or visible text |
-| `web_fill` | fill a field via `Input.insertText`, so React/Vue see the event |
+| `web_fill` | fill a field with per-character `dispatchKeyEvent` (Shift pairs included), so React/Vue see the keys |
 | `web_shot` | screenshot |
 | `web_close` | close only the tabs it opened |
 
@@ -204,12 +220,12 @@ This repository contains **two packages**. If you dropped them in the wrong plac
 
 ---
 
-## 7. Known issues (why this is not published yet)
+## 7. Known issues (why this is still experimental)
 
 | Issue | Current state | Impact |
 |---|---|---|
-| **Typing works only in some apps** | `input text` works in Settings and standard fields; custom-drawn search boxes (e.g. JD) ignore it | fall back to deep links that carry the query |
-| **Clipboard paste not finished** | `KEYCODE_PASTE` verified and worked on the Settings field, but not exposed as a tool | no `paste` input kind yet |
+| **Typing works only in some apps** | `input text` works in Settings and standard fields; custom-drawn search boxes (e.g. JD) ignore it | use `vdisplay_input { kind: "paste", text: "…" }` (clipboard + `KEYCODE_PASTE`, works with Chinese) |
+| **Clipboard paste works** | `vdisplay_input { kind: "paste" }` writes the clipboard and sends `KEYCODE_PASTE`; it also does not raise the IME | this is the preferred way to type Chinese; very few self-drawn fields still ignore it |
 | **Deep links are unreliable** | both attempts on Xiaohongshu were rejected (`SecurityException: not exported`) | luck, not a strategy |
 | **A CLI call creates its own display** | each node process builds a display and it dies when the process exits | must be driven from a resident process or from inside the plugin |
 | **Reading the screen is slow** | one "screenshot → look → tap" cycle is 19.4 s median | unsuitable for rapid interaction |

@@ -2184,13 +2184,28 @@ export function markOpMode(text) {
    * 所以不 await、失败也不管。 */
   try {
     const t = String(text || '').replace(/["'`$\\]/g, '').slice(0, 60);
+    /* **多屏时按端口分开写。**
+     *
+     * 2026-11-23 审查抓到：opmode 是单文件单槽，所有浮窗都读同一份 ——
+     * 开 3 块屏时，每个窗口显示的都是「最后一次操作的那块屏」的屏号，
+     * 用户根本分不清哪个窗是哪块屏。
+     *
+     * 现在同时写两份：opmode.<framesrv 端口>（精确）和 opmode（兼容旧代码）。
+     * 浮窗先读自己端口那份，读不到再退回全局。
+     */
+    const _fsPort = Number(state.framesrvPort) || 0;
     /* **原子写**：`echo >` 是「先截断再写」，浮窗正好在截断那一瞬间读就会读到空行，
      * readStatus() 返回 null，标签退回「屏 38820」—— 又是一次可见的跳变。
      * 改成写临时文件再 mv，同目录 rename 是原子的，读到的永远是完整的一行。 */
-    adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+    let opCmd = 'mkdir -p /data/local/tmp/dshframe; '
       + 'printf "%s" "' + t + '" > /data/local/tmp/dshframe/opmode.tmp && '
-      + 'mv -f /data/local/tmp/dshframe/opmode.tmp /data/local/tmp/dshframe/opmode'])
-      .catch(() => {});
+      + 'mv -f /data/local/tmp/dshframe/opmode.tmp /data/local/tmp/dshframe/opmode';
+    if (_fsPort > 0) {
+      opCmd += '; printf "%s" "' + t + '" > /data/local/tmp/dshframe/opmode.' + _fsPort + '.tmp'
+        + ' && mv -f /data/local/tmp/dshframe/opmode.' + _fsPort + '.tmp'
+        + ' /data/local/tmp/dshframe/opmode.' + _fsPort;
+    }
+    adb(['shell', opCmd]).catch(() => {});
   } catch { /* ignore */ }
 }
 

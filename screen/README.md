@@ -3,14 +3,17 @@
 在手机上开一块**独立的虚拟屏**，App 跑在那块屏上，Agent 可以点击、滑动、输入、截图，你的主屏和键盘完全不受影响。不是镜像主屏 —— 是另一块真正独立的显示设备。
 
 ```bash
-# 当前唯一可用的方式：从本地仓库装（npm 上还没发布）
+# 从 npm 装（推荐，当前 0.2.2）
+dsh plugin --profile web add ai-background-screen
+
+# 或者从本地仓库装（要改源码时）
 git clone https://github.com/JMINN0/ai-background-screen.git
 cd ai-background-screen
 dsh plugin --profile web add ./screen
-
-# 发到 npm 之后才能用这条（现在 npm 上还是 404）
-# dsh plugin --profile web add ai-background-screen
 ```
+
+本包的 npm 名就是 `ai-background-screen`（旧名 `offscreen-android` 已 deprecate，提示「已改名为
+ai-background-screen」）。装完**重启引擎**，工具才会出现。
 
 ## 为什么不是镜像一块屏
 
@@ -78,7 +81,11 @@ vdisplay（CLI）──HTTP──> vdisplayd（常驻，持有虚拟屏）
 
 查看守护进程：`vdisplay daemon`；让它退出：`vdisplay daemon stop`。
 
-## 八个工具
+## 工具（40 个）
+
+本包注册 **40 个工具**（按 `src/tool-spec.js` 实际导出的 spec 数）。
+下表是最常用的 8 个，**完整清单和参数**见主仓库
+[README.md](https://github.com/JMINN0/ai-background-screen/blob/main/README.md) 第六节。
 
 | 工具 | 作用 |
 |---|---|

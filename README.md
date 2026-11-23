@@ -33,7 +33,7 @@
 
 | # | 能力 | 实际含义 |
 |---|---|---|
-| **1** | **AI 虚拟屏** | 一块 720×1592 的 display，**不画在物理屏幕上**、**不抢焦点**、**不抢输入法**。任意 App 可以投上去，AI 用 `vdisplay_*` 那 39 个工具操作它 |
+| **1** | **AI 虚拟屏** | 一块 720×1592 的 display，**不画在物理屏幕上**、**不抢焦点**、**不抢输入法**。任意 App 可以投上去，AI 用 `vdisplay_*` 那 40 个工具操作它 |
 | **2** | **浏览器 CDP 直连** | 不点屏幕、不截图猜坐标，直接用 Chrome DevTools Protocol 读 DOM、点元素、填表单（10 个工具） |
 | **3** | **你能看见 AI 在干什么** | 一块悬浮窗（`TYPE_APPLICATION_OVERLAY`）实时显示 AI 虚拟屏画面，点击位置有水滴波纹。**它不抢焦点，你能同时打字** |
 
@@ -245,27 +245,41 @@ ADDVIEW_ERR IllegalStateException: Unknown pid=19074 uid=2000
 
 ---
 
-## 三·五、安装入口只有一个：`screen/`（别装仓库根）
+## 三·五、安装入口：npm 的 `ai-background-screen` 或本地 `screen/`（别装仓库根）
+
+**两个入口指向同一个包**：npm 上的 `ai-background-screen` 就是本仓库的 `screen/` 子包
+（当前 `0.2.2`，`dist-tags.latest` 也是 `0.2.2`）。
+
+**别装仓库根**。仓库根的 `package.json` 是 `offscreen-android@0.1.0` + `"private": true`，
+它只是 pnpm workspace 的根，用来把 `screen` / `web` / `watch` / `plugin` 四个子包串起来，
+**从来不是发布包**。所以看到版本号 `0.1.0` 不用奇怪 —— 实际发布的版本在 `screen/package.json`
+（`0.2.2`），仓库根不参与发版。
 
 **实测结论**（2026-11-20）：
 
 | 装什么 | `dsh plugin add` 能装吗 | 会激活插件吗 |
 |---|---|---|
-| 仓库根 `ai-background-screen` | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
+| npm 包 `ai-background-screen`（= `screen/`） | ✅ 能装 | ✅ **会激活**，工具真正出现 |
 | `screen/` 子目录 | ✅ 能装 | ✅ **会激活**，工具真正出现 |
+| 仓库根（`offscreen-android@0.1.0`，`private`） | ✅ 能装成依赖 | ❌ **不激活**，profile 里不会多出条目 |
 | `web/` 子目录 | ✅ 能装 | ✅ 会激活 |
 | `watch/` 子目录 | ✅ 能装 | ✅ 会激活（但要先拷到 `$DSH_HOME/dsh-go/plugins/`）|
 
-所以正确的装法是：
+正确的装法二选一（完整步骤见 4.3）：
 
 ```bash
-dsh plugin --profile web add ./screen      # AI 虚拟屏，必需
-dsh plugin --profile web add ./web         # 浏览器控制，可选
+# ① 从 npm 装，不用 clone（推荐）
+dsh plugin --profile web add ai-background-screen
+dsh plugin --profile web add android-adb-direct     # 可选：手机内 adb 直连
+
+# ② 从本地仓库装（要改源码时）
+dsh plugin --profile web add ./screen
+dsh plugin --profile web add ./web                  # 可选：浏览器控制
 ```
 
 **为什么仓库根装了不激活**：根的 `package.json` 里 `dsh.bundle.patch` 指到 `./screen/cordis.patch.yml`，
 但 `dsh plugin add` 只把它当 pnpm 依赖写进 `package.json`，patch 不会被应用。
-根 package.json 存在的意义是「让扫描工具认得出这是个 DSH 插件仓库」，不是安装入口。
+根 package.json 存在的意义是「让扫描工具认得出这是个 DSH 插件仓库」+ workspace 根，不是安装入口。
 
 > 装完必须**重启引擎**。MCP 工具是引擎启动时加载的，不重启看不到。
 
@@ -339,6 +353,8 @@ adb -s 127.0.0.1:5555 shell getprop vendor.display.vds_allow_hwc
 
 ### 4.2 克隆与依赖
 
+> 只用 npm 装（4.3 的形态 0）的话，这一节可以跳过 —— 不用 clone。
+
 ```bash
 cd /root/workspace
 git clone https://github.com/JMINN0/ai-background-screen.git
@@ -352,7 +368,19 @@ pip install rapidocr-onnxruntime        # OCR，模型 15MB，vdisplay_text/find
 pip install opencv-python-headless      # 视觉，模板匹配/颜色/指纹/差分要用
 ```
 
-### 4.3 装插件（三种形态，选一个）
+### 4.3 装插件（四种形态，选一个）
+
+**形态 0：从 npm 装（推荐，不用克隆）**
+
+```bash
+dsh plugin --profile web add ai-background-screen   # AI 虚拟屏，必需（当前 0.2.2）
+dsh plugin --profile web add android-adb-direct     # 手机内 adb 直连，可选（当前 0.2.0）
+```
+
+> `ai-background-screen` 就是本仓库的 `screen/` 子包，npm 上已发布，`latest` = `0.2.2`。
+> 旧包名 `offscreen-android`（`0.1.2`）已经 deprecate，提示「已改名为 ai-background-screen」，别装错。
+> `web/`（浏览器 CDP）、`watch/`（原生胶囊）和 `plugin/`（组合包）**还没有单独发布到 npm**，
+> 要用这三种就从本地仓库装，见下面的形态 A/B/C。
 
 **形态 A：只装 AI 虚拟屏（最省事，推荐第一次装）**
 
@@ -523,17 +551,18 @@ adb -s 127.0.0.1:5555 uninstall com.dsh.overlay
 MediaProjection 替代 screencap、多 AI broker 完整版、跨进程租约。
 
 > 其中「MCP server」一条已经过期：`screen/bin/mcp-server.mjs` 已经实现了
-> （11 个工具，手写 JSON-RPC，零依赖）。**我说的「已实现」是【实测·源码】；
+> （**38 个工具** = 40 个减掉 2 个只给 DSH Go 胶囊用的推流工具，手写 JSON-RPC，零依赖）。
+> **我说的「已实现」是【实测·源码】；
 > 它在真实宿主（Claude Desktop / Cursor）里跑通过的记录，仓库里没有 → 【不知道】。**
 
 ---
 
 ## 六、工具清单
 
-一共 **49 个工具**：`screen` 包 39 个（AI 虚拟屏 + 视觉 + 多屏 + 租约），`web` 包 10 个（浏览器）。
+一共 **50 个工具**：`screen` 包 40 个（AI 虚拟屏 + 视觉 + 多屏 + 租约），`web` 包 10 个（浏览器）。
 
-> 子目录里的 `screen/README.md` 还写着「八个工具」，`web/README.md` 写着「工具数 8」——
-> 都是早期版本的数字，**以本表为准**（按 `tool-spec.js` 实际注册的 name 数出来）。
+> 子目录里的 `web/README.md` 还写着「工具数 8」—— 那是早期版本的数字，
+> **以本表为准**（按 `tool-spec.js` 实际注册的 name 数出来）。
 
 ### 6.1 选择与安全（4）
 
@@ -812,7 +841,7 @@ node ./screen/bin/vdisplay.mjs --json status
 
 ```
 DSH 引擎（Node，跑在 proot 的 Ubuntu 里）
-├── screen 插件（39 个工具）
+├── screen 插件（40 个工具）
 │   ├── vd.js         建屏 / 注入 / 截图 / 页面探测
 │   ├── pool.js       多屏池 + dpi 金丝雀（靠 dpi 320+i 分辨哪块屏是哪块）
 │   ├── lease.js      占用租约（五级占用 + 抢占 + 默认不抢）
@@ -949,7 +978,7 @@ AI 调 vdisplay_input { kind: "tap", nx: 0.5, ny: 0.9 }
 | **息屏就断** | 虚拟屏依赖设备保持唤醒；息屏后要人脸/指纹/密码解锁，AI 无法自动恢复 | 正常的点击/滑动会自动重置息屏计时器，任务在跑就不会息屏 |
 | **虚拟屏名字固定 `scrcpy`** | `uniqueId` 里还带 `com.android.shell,2000`；普通 App 的 `getDisplays()` 默认看不到（没有 `FLAG_PUBLIC`），但 `getDisplays(DISPLAY_CATEGORY_PRESENTATION)` **能看到**【推断】 | 见 [LIMITS.md](LIMITS.md) A-02 |
 | **同一 `singleTask` App 不能双开** | 强行 `am start --display` 会把主屏任务搬走（破坏性） | 多屏时换不同 App |
-| **文档之间互相矛盾** | ① `LIMITS.md` A-02 列这块屏的 flags 时**没有** `FLAG_OWN_CONTENT_ONLY` / `FLAG_OWN_FOCUS`，而 `screen/src/vd.js` 与 `screen/README.md` 说这两个是判据 —— 两处描述的可能是不同的 flags 集合，**我没核对 AOSP 源码，所以是【推断】**；② `llms.txt` 写「取帧 53-114fps」，见 9.1 的说明；③ `screen/README.md` 说「八个工具」、`web/README.md` 说「工具数 8」，实际是 39 和 10 | 读数之前先看本节和 9.1 |
+| **文档之间互相矛盾** | ① `LIMITS.md` A-02 列这块屏的 flags 时**没有** `FLAG_OWN_CONTENT_ONLY` / `FLAG_OWN_FOCUS`，而 `screen/src/vd.js` 与 `screen/README.md` 说这两个是判据 —— 两处描述的可能是不同的 flags 集合，**我没核对 AOSP 源码，所以是【推断】**；② `llms.txt` 写「取帧 53-114fps」，见 9.1 的说明；③ `web/README.md` 说「工具数 8」，实际是 10（`screen` 包的 40 个见第六节） | 读数之前先看本节和 9.1 |
 
 ### 10.2 排查手册
 
@@ -1133,6 +1162,8 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 能。`vdisplay_stream` 推 1–15fps（默认 2）给悬浮窗或胶囊，悬浮窗是 `FLAG_NOT_FOCUSABLE` 的，
 **浮在别的 App 上但不抢焦点，你还能继续打字**。点击位置会画一个水滴波纹（900ms 扩散淡出），
 你能看出它点在哪、有没有点偏。
+**这个波纹只画在推流/悬浮窗的那一路**：AI 自己用 `vdisplay_shot` 截的图（走 `screencap`）
+**不带任何标记**，是干净的原图 —— 不用担心里面混进调试痕迹。
 
 **11. 会抢我的键盘 / 输入法吗？**
 虚拟屏上不弹输入法（`display_ime_policy=hide`），焦点永远留在主屏。
@@ -1181,7 +1212,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 
 | 包 | 类型 | 干什么 | 装在哪 |
 |---|---|---|---|
-| `screen/` | Cordis 插件 | 建看不见的虚拟屏、投 App、点击、截图、视觉识别、推流（**39 个工具**） | profile（给引擎注册工具） |
+| `screen/` | Cordis 插件 | 建看不见的虚拟屏、投 App、点击、截图、视觉识别、推流（**40 个工具**） | profile（给引擎注册工具） |
 | `web/` | Cordis 插件 | 用 CDP 操作浏览器：读 DOM、点元素、填表单、截图（**10 个工具**） | profile（同上） |
 | `watch/` | dsh-go 原生插件 | 输入框上方的胶囊 + 点开的「AI 画面」面板 | `$DSH_HOME/dsh-go/plugins/`（画 App 界面） |
 | `plugin/` | Cordis 插件（组合） | 把 `screen` + `web` + `adb` + `watch` 合成**一个**条目 | profile |
@@ -1212,7 +1243,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 | [OPERATION-PRIORITY.md](OPERATION-PRIORITY.md) | 按「对用户的打扰成本」排的四级优先级：后台+命令 → 后台+注入 → 前台+命令 → 前台+注入。以及抢了前台怎么还原 | 要动前台之前 |
 | [LIMITS.md](LIMITS.md) | **做不到什么**，**25 条**（A-01…E-03），按原因分 A–E 五类，每条带证据来源 | 想放弃某个方案之前 |
 | [llms.txt](llms.txt) | 一页速览，给把文档塞进上下文用的 AI 宿主 | 上下文不够时 |
-| [AGENTS.md](AGENTS.md) | 给编码助手读的短版说明（Codex / Cursor / Claude Code 会原生读这个名字）。**其中有两处已经过时**：① 它说 `SET_CLIPBOARD`+`KEYCODE_PASTE` 打不进中文 —— 实测能打进（见 10.1 的「打字只对部分 App 有效」与 FAQ 12）；② 里面的工具名写成 `mcp__phone__vdisplay_start`，实际是 `vdisplay_start` | 用编码助手接这个仓库时 |
+| [AGENTS.md](AGENTS.md) | 给编码助手读的短版说明（Codex / Cursor / Claude Code 会原生读这个名字）。装法、五个最容易踩的坑、边缘光效、不抢键盘的打字方式 | 用编码助手接这个仓库时 |
 | [tools/fetch-sdk.sh](tools/fetch-sdk.sh) | 下载编译依赖（`android-30.jar` 等 37MB，不在 git 里）。只有要从源码重编 APK/dex 时才需要 | 要改悬浮窗或取帧服务时 |
 | [tests/](tests/) | 1500+ 行实测记录，含我判断错了、后来自己推翻的地方 | 想知道某个数字怎么来的 |
 | [tests/risk-sim/FULL-REPORT.md](tests/risk-sim/FULL-REPORT.md) | 六个本地靶场的完整实测 | 关心风控之前 |
@@ -1227,7 +1258,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 - 说「虚拟屏跑不了 3D 游戏」→ 错，只测了默认配置（开 HWC 就能跑）
 - 说「无障碍读不到虚拟屏」→ 降级成【不知道】，那次测试没有排除其他解释
 - 在 README 写「`adb tcpip` 绑回环是优势」→ 错，那会踢掉 Shizuku 的连接
-- 本 README 早先写的两个数字已作废：`114fps`（不存在）和「工具数 8」（实际 39）
+- 本 README 早先写的两个数字已作废：`114fps`（不存在）和「工具数 8」（实际 40）
 
 ---
 

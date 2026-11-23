@@ -70,6 +70,24 @@ export async function apply(ctx) {
   // 实测不关的话 framesrv 持续 10.3% CPU —— 悬浮窗连着 MJPEG，
   // framesrv 就以为「有人在看」，一直编码。
   try { T.startIdleWatchdog(); } catch { /* ignore */ }
+
+    /* **边缘光效的收尾 —— 插件形态下也要有。**
+     *
+     * 2026-11-23 审查抓到：settleIfIdle（8 秒没操作 → 闪 4 秒绿再收回 idle）
+     * 只有 daemon 会调（vdisplayd.mjs 的 tick），插件入口从来没调过。
+     * 而用户装的就是插件 —— 于是 flushAutoEdge("working") 写的 ttl=0
+     * 让青色边框一直亮到用户手动 clear，而 tool-spec 又明确叫 AI 不要手动调。
+     * 结果就是永久青边。
+     *
+     * 这里补一个 10 秒的定时器，和 daemon 那套行为一致。
+     */
+    let edgeSettleTimer = null;
+    try {
+      edgeSettleTimer = setInterval(() => {
+        import("./vd.js").then((v) => v.settleIfIdle?.(8000)).catch(() => {});
+      }, 10_000);
+      if (edgeSettleTimer.unref) edgeSettleTimer.unref();
+    } catch { /* ignore */ }
   // Cordis 规定：没通过 ctx.inject 声明依赖之前，**碰 ctx 的任何属性都会抛**
   // （"cannot get property X without inject"）。所以所有 ctx 访问都放进 inject 回调里。
   // 这个坑让三个插件在真实引擎里全部加载失败过，工具一个都没出现。
@@ -146,6 +164,7 @@ export async function apply(ctx) {
     console.error('[ai-background-screen] inject failed:', e?.message || e);
   }
   return async () => {
+      if (edgeSettleTimer) { try { clearInterval(edgeSettleTimer); } catch { /* ignore */ } }
     for (const d of disposers) { try { d?.(); } catch { /* 单个工具 dispose 失败不影响其他 */ } }
     // **卸载时把常驻子进程关掉。** 不关的话 OCR 的 python3 会变成孤儿，
     // 带着 15MB 模型一直占内存，重载一次多一个（对抗审查第三轮 S3）。

@@ -2038,7 +2038,7 @@ int dx = (int)(e.getRawX() - downX);
                  * 「闪一下 → 正常 → 突然没了」，和注释承诺的「窗口留着，显示重连中」不一致。
                  */
                 if (reconnecting) return;
-              String[] st = readStatus();
+              String[] st = readStatus(port);
               String lv = st == null ? "" : st[0];
               String op = st == null ? "" : st[1];
               String dn = st == null ? "" : st[2];
@@ -2294,10 +2294,18 @@ int dx = (int)(e.getRawX() - downX);
      *  用户 2026-11-21 要求浮窗同时显示：风控等级、当前操作方式、后台屏编号。
      *  插件在每次操作前/守护进程定时写这一行，浮窗轮询解析。
      */
-    static String[] readStatus() {
+    static String[] readStatus(int port) {
         java.io.BufferedReader r = null;
         try {
-            r = new java.io.BufferedReader(new java.io.FileReader("/data/local/tmp/dshframe/opmode"));
+            /* **先读「本窗口端口」那份，读不到再退回全局那份。**
+             *
+             * 2026-11-23 审查抓到：opmode 是单文件单槽，所有浮窗读同一份 ——
+             * 多屏时每个窗口显示的都是「最后一次操作的那块屏」的屏号。
+             */
+            java.io.File perPort = new java.io.File("/data/local/tmp/dshframe/opmode." + port);
+            java.io.File f = perPort.exists() ? perPort
+                    : new java.io.File("/data/local/tmp/dshframe/opmode");
+            r = new java.io.BufferedReader(new java.io.FileReader(f));
             String line = r.readLine();
             if (line == null) return null;
             line = line.trim();
