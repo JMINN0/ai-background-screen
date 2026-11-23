@@ -618,7 +618,6 @@ function startIdleWatch() {
    *   · tick 后面的风控同步也从来没到过
    * 也就是说「改了没效果」，而且没有任何日志 —— 因为异常被空 catch 吃了。
    */
-  let emptyStreak = 0;        // 连续几次检测到 mHasContent=false
   let streamFailStreak = 0;   // 推流连续几次没在听
   let tickNo = 0;
   /** **tick 防重入。**
@@ -654,7 +653,6 @@ function startIdleWatch() {
           return;
         }
         streamFailStreak = 0;
-        emptyStreak = 0;
         return;
       }
       if (!st.displayId) return;
@@ -670,108 +668,27 @@ function startIdleWatch() {
         return;
       }
 
-      /* **③ 内容检测：屏还在但空了就重建。**
+      /* **③ 内容检测：已整段删除（2026-11-23）。**
        *
-       * 2026-11-22 实机：虚拟屏跑 40 多分钟后 mHasContent 变成 false ——
-       * display 对象还在、帧也能取到（全黑的图），但 SurfaceFlinger 不再给它合成内容。
-       * 用户看到黑屏，而所有状态都报正常。这就是「过一段时间黑屏」的真身。
+       * 这里原来有个看门狗：「屏空了就自动重建」。它的判据是 `mHasContent`，
+       * 后来发现对虚拟屏**恒为 false**，于是改成「mHasContent=false 且帧<12KB」。
        *
-       * 判据：连续 3 次（30 秒）都是空 → 判定真的空了 → 重建。
-       * 为什么不是 1 次：刚建屏、刚投 App 的那几秒 mHasContent 也可能是 false，
-       * 单次误判会把好好的屏拆掉重建，比黑屏更糟。
+       * 但 2026-11-23 的独立稳定性审查指出，这个"修复"比原来更危险：
+       *   · `mHasContent` 恒 false，所以双条件实际坍缩成只看「JPEG < 12KB」，
+       *     而 12KB 这个阈值没有任何实测依据；
+       *   · 这个字段的实测记录自相矛盾（一份说 31 分钟一直是 true，
+       *     另一份说五块屏全是 false）—— **证据本身不可信**；
+       *   · 误判后果比它想解决的"黑屏"更重：重建走 T.start({}) 会触发
+       *     pickHomeLike + am force-stop，**把用户屏上的 App 换成设置/时钟**；
+       *     而 markLost 只清状态不 stop，旧屏和 forward 全部泄漏，每 100 秒一块。
+       *
+       * 结论：这个机制的收益（修一个未被证实的黑屏）远小于风险（拆好屏+换App+泄漏）。
+       * 按产品意图第六节「宁可少一个功能，不能多一个会自己坏的机制」——删。
+       *
+       * 如果以后真要修黑屏，先做对照实验把「黑屏时 mHasContent / 帧大小 到底是多少」
+       * 量出来，再决定判据。不要用猜的数字。
        */
-        /* **建屏/自检进行中时，绝不能判「屏空了要重建」。**
-         *
-         * 2026-11-22 对抗审查抓到的 P0，也是用户「浮窗没了但说已创建」的真根因：
-         * 这段（③）原来**完全没有 opBusy 保护** —— opBusy 只挡住了 ④ 推流看门狗。
-         *
-         * 致命链条：
-         *   · 一次 start 要 60-120 秒（代码自己在 :668 写着）
-         *   · 建屏期间 mHasContent=false 是**正常状态**（注释 :614 自己写了）
-         *   · 连续 3 个 tick（30 秒）就判空 → 关窗口 + 停推流 + T.start 重建
-         *   · 而那个 T.start 要抢全局互斥锁，锁还在正在跑的 start 手里
-         *     → 等 90 秒 → 503
-         *   · 最终：屏被拆了、窗口关了、新的没建起来，用户看到窗凭空消失
-         *
-         * 所以这里必须先看 opBusy：只要有写操作在跑，这一轮直接跳过。
-         */
-        if (opBusy > 0) {
-          return;   // 建屏进行中，mHasContent=false 是正常的
-        }
-        /* **判据必须同时满足两条，而且要等够久。**
-         *
-         * 2026-11-23 实机踩到一次严重误判：`mHasContent` 对虚拟屏**根本不可靠** ——
-         * 实测五块虚拟屏全是 false，包括正在正常显示拼多多聊天界面的那块。
-         * 于是这个看门狗把一块好好的屏拆了，用户的画面突然从聊天页跳回首页。
-         *
-         * 所以现在改成两条都满足才动手：
-         *   ① mHasContent=false（系统说没内容）
-         *   ② 帧真的接近空白（JPEG 小于 12KB —— 纯黑画面压出来就几 KB，
-         *      有任何 UI 的都在 30KB 以上）
-         * 并且连续 10 次（100 秒）才动手。原来是 3 次 30 秒，太急。
-         */
-        let blankNow = false;
-        const hc = await vd.displayHasContent(st.displayId).catch(() => null);
-        if (hc === false) {
-          try {
-            const Tmod = await import('../src/tools.js');
-            const fsPort = Tmod.screenPorts?.get?.(Number(st.displayId)) || 0;
-            if (fsPort) {
-              const resp = await fetch('http://127.0.0.1:' + fsPort + '/frame.jpg',
-                { signal: AbortSignal.timeout(3000) });
-              if (resp.ok) {
-                const buf = await resp.arrayBuffer();
-                blankNow = buf.byteLength < 12 * 1024;   // 12KB 以下当空白
-              }
-            }
-          } catch { /* 取不到帧就不当空白（宁可不动） */ }
-        }
-      if (blankNow) {
-        emptyStreak++;
-        if (emptyStreak >= 10) {
-          console.error('[vdisplayd] 屏 ' + st.displayId + ' 连续 ' + emptyStreak
-            + ' 次确认画面空白（mHasContent=false 且帧 <12KB），重建');
-            /* **重建必须走 withLock —— 和外部请求同一把锁。**
-             *
-             * 2026-11-22 独立复核抓到的 P0：这里原来直接 await T.start()，
-             * 既没取 mutexTail 也没 opBusy++。`ticking` 只挡「tick 撞 tick」，
-             * 挡不住「tick 重建」撞「客户端 POST /cmd start」——
-             * 两个 start 并发会各建一块屏，之后 SF id 分不清、截图全报歧义。
-             */
-            const rb = await withLock(async () => {
-              const T = await import('../src/tools.js');
-              // 先关旧窗口和旧推流，再重建（和 autoRepair 同一套清理顺序）
-              const oldPort = T.screenPorts?.get?.(Number(st.displayId)) || 0;
-              if (oldPort) { try { await T.overlayStop(oldPort); } catch { /* 窗口不在就算了 */ } }
-              try {
-                const fsrv = await import('../src/framesrv.js');
-                await fsrv.stop(Number(st.displayId));
-              } catch { /* ignore */ }
-              /* **必须先 markLost，否则 T.start 会复用那块死屏。**
-               *
-               * `alive()` 只检查 displayId 和 SF id 存在，**不看内容** ——
-               * 一块 mHasContent=false 的屏在 alive() 眼里是「活着」的，
-               * 直接 T.start() 会走复用分支返回 ok 但什么都不做，
-               * 下一轮 tick 又判空、又重建，无限循环。
-               */
-              try { await vd.markLost(); } catch { /* 尽力而为 */ }
-              opBusy++;
-              try {
-                await T.start({});
-              } finally {
-                opBusy--;
-              }
-      lastStreamStartAt = Date.now();
-            });
-            if (!rb.ok) {
-              console.error('[vdisplayd] 重建失败：' + (rb.timeout ? '等锁超时（有别的操作在跑）' : rb.error));
-            }
-          emptyStreak = 0;
-          return;   // 这一轮不继续看门狗逻辑，等新屏起来
-        }
-      } else {
-        emptyStreak = 0;
-      }
+
 
       /* ③.4 **处理浮窗红色按钮的「停止请求」。**
        *
@@ -800,14 +717,28 @@ function startIdleWatch() {
               const fsMod = await import('../src/framesrv.js');
               void fsMod;
             } catch { /* ignore */ }
-            /* 真的销毁虚拟屏：先把活动屏切到这块，再 stop */
+            /* **只能停这一块，不能再 vd.stop()。**
+             *
+             * 2026-11-23 稳定性审查抓到：pool.destroy() 内部会把活动上下文
+             * 切成「剩下那块」（pool.js:137-145），之后再无条件 vd.stop()
+             * 停的是**另一块屏** —— 用户按一次红条，死两块屏。
+             *
+             * 所以：在池里就只 destroy；不在池里（插件单独建的）才直接 vd.stop()。
+             * 两者互斥。
+             */
+            let destroyedInPool = false;
             try {
               const poolMod = await import('../src/pool.js');
               const pi = poolMod.info ? poolMod.info() : null;
               const match = (pi?.screens || []).find((x) => Number(x.displayId) === Number(targetDisp));
-              if (match && poolMod.destroy) await poolMod.destroy(match.screenId);
+              if (match && poolMod.destroy) {
+                await poolMod.destroy(match.screenId);
+                destroyedInPool = true;
+              }
             } catch { /* 不在池里 */ }
-            try { await vd.stop({ forceStopApps: false }); } catch { /* ignore */ }
+            if (!destroyedInPool) {
+              try { await vd.stop({ forceStopApps: false }); } catch { /* ignore */ }
+            }
             console.error('[vdisplayd] 停止请求已执行（屏已销毁）');
           }
         }

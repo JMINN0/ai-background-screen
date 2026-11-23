@@ -66,12 +66,32 @@ async function ensureDaemon() {
   const st = await readDaemon();
   if (st && await ping(st.port)) return st;
 
-  // 拉起来：detached + stdio ignore，父进程退出它也不死
+  /* **daemon 的输出必须落到文件，不能 stdio:'ignore'。**
+   *
+   * 2026-11-23 稳定性审查抓到：这里原来是 stdio:'ignore'，
+   * 而 vdisplayd.mjs 里有 13 处 console.error —— 全部写进 /dev/null。
+   * 结果：用户报「画面乱跳」时一条日志都查不到，只能靠猜。
+   * 2026-11-22 那条「catch 不许空吞、必须打日志」的修复，在 daemon 形态下等于没做。
+   */
+  let daemonLogPath = null;
+  let stdioOut = 'ignore';
+  try {
+    const { mkdirSync, openSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const dir = join(DSH_HOME || join(homedir(), '.dsh'), 'plugin-screen');
+    mkdirSync(dir, { recursive: true });
+    daemonLogPath = join(dir, 'vdisplayd.log');
+    stdioOut = openSync(daemonLogPath, 'a');
+  } catch { /* 建不了就退回 ignore */ }
   const child = spawn(process.execPath, [DAEMON], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', stdioOut, stdioOut],
     env: { ...process.env, DSH_HOME },
   });
+  if (daemonLogPath) {
+    try { console.error('[vdisplay] daemon 日志: ' + daemonLogPath); } catch { /* ignore */ }
+  }
   child.unref();
 
   for (let i = 0; i < 40; i += 1) {

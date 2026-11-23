@@ -359,10 +359,37 @@ export async function pickHomeLike() {
       "dumpsys window displays 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'"],
       { timeout: 8000 }).catch(() => ({ stdout: '' }));
     allFocus = String(r.stdout || '');
-  } catch { /* 查不到就保守当「没在用」，不因此阻止建屏 */ }
+  } catch { /* 下面统一处理 */ }
+  /* **查不到焦点时必须放弃，不能冒险。**
+   *
+   * 2026-11-23 稳定性审查抓到：原来是「查不到就保守当没在用，不因此阻止建屏」——
+   * 保守方向反了。查不到焦点时所有候选都通过检查 → 选中 Settings →
+   * vd.launch 内部 am force-stop → **把用户后台的设置状态直接杀掉**。
+   *
+   * 正确方向：查不到就返回 null，让调用方如实说"屏是空的"，用户自己决定投什么。
+   * 宁可屏空着，不可杀掉用户的东西。
+   */
+  if (!allFocus.trim()) return null;
 
   for (const pkg of candidates) {
-    if (allFocus.includes(pkg)) continue;   // 任何一块屏上正在用，都别 force-stop 它
+    if (allFocus.includes(pkg)) continue;   // 任何一块屏上正在用，都别 force-stop
+    /* **在后台跑着的也别碰。**
+     *
+     * 2026-11-23 补充：原来只看「有没有焦点」。但用户可能把设置页切到后台
+     * （比如在设置里改到一半去看别的），这时没有焦点但进程还活着，
+     * vd.launch 的 am force-stop 会把它连同用户改到一半的状态一起杀掉。
+     * 所以再加一条：进程在跑就跳过。
+     */
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run0 = promisify(execFile);
+      const t0 = await adbTarget();
+      const pr = await run0('adb', ['-s', t0, 'shell', 'pidof ' + pkg],
+        { timeout: 5000 }).catch(() => ({ stdout: '' }));
+      if (String(pr.stdout || '').trim()) continue;   // 进程活着 → 跳过
+    } catch { /* 查不到就当没在跑，继续试下一个候选（这里是安全的：
+                 后面还有 pm list packages 检查，而且至少还有别的候选） */ }
     try {
       const { execFile } = await import('node:child_process');
       const { promisify } = await import('node:util');
