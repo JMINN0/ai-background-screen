@@ -6,7 +6,7 @@ Three packages: a display you cannot see (runs any app), a browser controller (d
 
 English ｜ [中文](README.md)
 
-> **Status: experimental (v0.2.2).** The core pipeline works and has been measured, but the known issues at the bottom are still open. **Not recommended for general use yet.**
+> **Status: experimental (v0.3.0).** The core pipeline works and has been measured, but the known issues at the bottom are still open. **Not recommended for general use yet.**
 
 ---
 
@@ -84,7 +84,7 @@ Packages are split by **which subsystem they run in**:
 ### Install from npm (recommended)
 
 ```bash
-dsh plugin --profile web add ai-background-screen   # the virtual display (current 0.2.2)
+dsh plugin --profile web add ai-background-screen   # the virtual display (current 0.3.0)
 dsh plugin --profile web add android-adb-direct     # in-phone adb, optional (current 0.2.0)
 ```
 
@@ -94,7 +94,7 @@ dsh plugin --profile web add android-adb-direct     # in-phone adb, optional (cu
 >
 > **Do not install the repository root.** Its `package.json` is `offscreen-android@0.1.0`
 > with `"private": true` — it is only the pnpm workspace root and is never published.
-> The real published package is `ai-background-screen` (= `screen/`, 0.2.2).
+> The real published package is `ai-background-screen` (= `screen/`, 0.3.0).
 
 ### Install `screen/` from a local clone
 

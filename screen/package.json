@@ -14,7 +14,7 @@
     "automation",
     "headless"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "author": "JMINNO",
   "type": "module",
   "main": "./src/index.js",

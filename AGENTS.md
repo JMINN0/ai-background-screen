@@ -90,7 +90,7 @@ adb shell getprop ro.build.version.sdk   # 需要 >= 31（Android 12+）
 `overlay/ai-overlay.apk`、`injector/inject.dex` 都已经提交进仓库，装完就能用。
 
 ```bash
-# 从 npm 装（推荐，当前 0.2.2）
+# 从 npm 装（推荐，当前 0.3.0）
 dsh plugin --profile web add ai-background-screen
 
 # 或者从本地仓库装（要改源码时）
