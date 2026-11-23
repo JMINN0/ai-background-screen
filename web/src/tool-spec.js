@@ -1,4 +1,4 @@
-/** 六个工具的契约。宿主只支持 string/number/integer/boolean/null/array/object/json/oneOf 注解。 */
+/** 10 个工具的契约。宿主只支持 string/number/integer/boolean/null/array/object/json/oneOf 注解。 */
 
 const out = (d) => ({
   schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true, description: d } } },

@@ -1,7 +1,9 @@
 # AI 虚拟屏 — 让 AI 在另一块屏上操作手机，你的手机还是你的
 
 > 仓库：https://github.com/JMINN0/ai-background-screen
-> npm 包名是历史名 `offscreen-android`，安装 id 是 `dsh-go-plugin-screen`。
+> npm 包名与 bundle id 都是 `ai-background-screen`（当前 `0.2.2`，`latest`）。
+> 旧包名 `offscreen-android`（`0.1.2`）已 deprecate，提示「已改名为 ai-background-screen」。
+> 配套的 adb 插件：`android-adb-direct`（`0.2.0`）。
 
 > 一块用户看不见的 Android 虚拟屏（VirtualDisplay）。AI 在这块屏上运行任意 App、点击、输入、截图，
 > 用户的物理主屏（Display 0）完全不受影响 —— 不抢前台、不抢键盘、不弹窗口。
@@ -30,42 +32,54 @@ SurfaceFlinger 图层、独立的窗口栈、独立的输入焦点。物理屏�
 - **输入注入**：scrcpy 控制通道 `INJECT_TOUCH_EVENT`，支持多点触控（action 必须发基础值 0/1/2，
   索引由服务端自己移位拼接 —— 客户端自己编码会被截断）
 - **实时预览**：`TYPE_APPLICATION_OVERLAY` 悬浮窗 + MJPEG（帧间隔中位 17ms）
-- **点击可视化**：水滴波纹动画（扩散圆环 + 焦点圆点，900ms 淡出），画在 JPEG 帧里
+- **点击可视化**：水滴波纹动画（扩散圆环 + 焦点圆点，900ms 淡出），画在推流/悬浮窗的 JPEG 帧里。
+  **AI 自己用 `vdisplay_shot` 截的图走 `screencap`，不带任何标记**，不是同一条管线
 
 ## 能做什么
 
 - AI 在后台跑任意 App（微信、淘宝、游戏、银行以外的都行），用户继续用主屏
-- 同时开多块AI 虚拟屏，每块独立跑不同 App，各自有悬浮窗预览
+- 同时开多块 AI 虚拟屏，每块独立跑不同 App，各自有悬浮窗预览
 - 操作过程实时可见（悬浮窗），点击位置有波纹提示
 - 截屏、找文字（OCR）、模板匹配、点击、滑动、输入、长按
 - 浏览器通过 CDP 直接操控（不点屏幕，零打扰）
+- 不依赖 DSH Go：`screen/bin/mcp-server.mjs` 是独立 MCP server（stdio），
+  暴露 38 个工具（40 个减掉 2 个只给 DSH Go 胶囊用的推流工具），可直接接 Claude Desktop / Cursor 这类宿主
 
 ## 不能做什么（重要）
 
 - **不能操作 `FLAG_SECURE` 的窗口**（银行、支付、部分视频 App）—— 截图全黑，这是 Android 硬边界
 - **不能给同一个 App 开两个实例**（`singleTask` 的限制），要开两个微信只能多用户
 - **不能完全拟人化**（`adb input` 注入的事件没有 MOVE、压力恒定），有风控的 App 需要真实输入
-- **既是 DSH Go 手机 App 的插件，也是独立 MCP server**（`screen/bin/mcp-server.mjs`，stdio 协议，
-  可直接给 Claude Desktop / Cursor 这类宿主用，不依赖 DSH Go）
 
 ## 快速开始
 
+**运行时不需要构建。** `screen/assets/` 里的 `scrcpy-server.jar`、`framesrv.dex`、
+`overlay/ai-overlay.apk`、`injector/inject.dex` 都已经提交进仓库，插件起来就能用。
+
 ```bash
-# 1. 手机开启「无线调试」，配对后固定走回环
+# 1. 手机开启「无线调试」，配对后连回环（配对细节见 android-adb-direct 的 README）
 adb pair <ip>:<port>          # 一次
 adb connect 127.0.0.1:5555
-adb tcpip 5555                # 之后 WiFi 断了也能用
 
-# 2. 克隆
+# 2. 装插件（从 npm，推荐）
+dsh plugin --profile web add ai-background-screen
+
+# 或者从本地仓库装（要改源码时）
 git clone https://github.com/JMINN0/ai-background-screen.git
 cd ai-background-screen
+dsh plugin --profile web add ./screen
 
-# 3. 下载构建依赖（37MB，已在 gitignore 里所以不随仓库分发）
+# 3. 重启引擎：App → 设置 → 引擎 → 重启引擎
+```
+
+## 只有要改悬浮窗 / 取帧服务时才构建
+
+```bash
+# 下载两个编译期 jar（android-30.jar + r8.jar，共 37MB，不在 git 里）
 bash tools/fetch-sdk.sh
 
-# 4. 构建
-bash overlay/build.sh      # 悬浮窗 APK
-bash framesrv/build.sh     # 取帧服务 dex
+bash overlay/build.sh      # 重编悬浮窗 APK → screen/assets/overlay/ai-overlay.apk
+bash framesrv/build.sh     # 重编取帧服务 dex → screen/assets/framesrv.dex
 ```
 
 ## 给用户看的视觉反馈
@@ -107,6 +121,6 @@ bash framesrv/build.sh     # 取帧服务 dex
 
 ## 许可证与状态
 
-- 状态：**实验性（v0.1.0）**，核心链路已跑通，但有多项功能是半成品
+- 状态：**实验性（v0.2.2）**，核心链路已跑通，但有多项功能是半成品
 - 平台：Android 12+（实测 Android 16 / 红魔 NX809J）
 - 许可证：见 [LICENSE](LICENSE)

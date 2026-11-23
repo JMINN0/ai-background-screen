@@ -9,7 +9,9 @@ set -euo pipefail
 cd "$(dirname "$0")/sdk"
 
 ANDROID_JAR_URL="https://raw.githubusercontent.com/Sable/android-platforms/master/android-30/android.jar"
-R8_URL="https://storage.googleapis.com/r8-releases/raw/main/r8.jar"
+# r8 用 maven.google.com 的固定版本（和 scripts/restore-toolchain.sh 一致）；
+# 原来的 storage.googleapis.com/r8-releases/raw/main/r8.jar 实测 404。
+R8_URL="https://maven.google.com/com/android/tools/r8/8.3.37/r8-8.3.37.jar"
 
 fetch() {
   local url="$1" out="$2"

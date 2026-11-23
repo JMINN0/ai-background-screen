@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * mcp-server.mjs — 把后台屏的 11 个工具暴露成 MCP server，让别的 agent 宿主能调。
+ * mcp-server.mjs — 把后台屏的 38 个工具暴露成 MCP server，让别的 agent 宿主能调。
  *
  * 为什么手写而不用 SDK：宿主里只装了 `@modelcontextprotocol/client` 和 `core`，
  * **没有 server 端包**。而 MCP 的 stdio 传输本质上就是「stdin/stdout 上跑换行分隔的
@@ -99,7 +99,7 @@ function listTools() {
     if (HIDDEN.has(spec.name)) continue;
     /* **全部列出。**
      *
-     * 2026-11-22 的经过：spec 有 39 个，先排掉 2 个内部工具列 37 个，
+     * 2026-11-22 的经过：spec 有 40 个，先排掉 2 个内部工具列 37 个，
      * 而 ACTION_MAP 只映射 17 个 —— 20 个广告了却调不了。当时止血成「只列能调的」，
      * MCP 只剩 18 个工具。后来给 daemon 加了 runTool 通用转发，
      * 那 19 个视觉/等待类工具现在能真正执行了，所以恢复全部列出。

@@ -8,7 +8,7 @@
 |---|---|
 | 版本 | 2026.1105.1908 |
 | 验证环境 | nubia REDMAGIC NX809J / Android 16 / Chromium 156（Edge & Chrome） |
-| 工具数 | 8 |
+| 工具数 | 10 |
 | 需要 root | **不需要** |
 | 需要无障碍 | 不需要 |
 
@@ -120,7 +120,7 @@ print([b for b in d['dsh']['profile']['bundles'] if 'plugin-web' in b])"
 grep -i "apply failed" ~/.dsh/dsh-app/diagnostics.md 2>/dev/null | grep web || echo "没有加载错误 ✅"
 ```
 
-两项都对、并且重启过引擎，8 个 `web_*` 工具才会出现。
+两项都对、并且重启过引擎，10 个 `web_*` 工具才会出现。
 
 ---
 

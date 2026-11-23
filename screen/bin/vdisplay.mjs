@@ -82,8 +82,57 @@ async function ensureDaemon() {
   throw new Error('守护进程拉不起来。手动跑一下 vdisplayd.mjs 看报什么错。');
 }
 
+/**
+ * **只读命令不拉 daemon。**
+ *
+ * 2026-11-23 审查抓到：`call()` 一进来就 `ensureDaemon()`，**包括 status**。
+ * 而 daemon 启动时会 `loadPersistedState()` **接管插件那块屏** ——
+ * 于是用户/AI 随手跑一句 `vdisplay status` 查状态，
+ * 就会凭空多一个 daemon 进程跟插件抢同一块屏：
+ * 它自己的 tick 会判内容/判推流/自动重建，和插件进程互不设防。
+ *
+ * 现在：只读命令先看有没有活着的 daemon，有就用；没有就直接本地查，不起进程。
+ */
+const READONLY_ACTIONS = new Set(['status', 'modes', 'apps', 'leasesList', 'poolList']);
+
 async function call(action, args = {}) {
-  const st = await ensureDaemon();
+  const isReadonly = READONLY_ACTIONS.has(action);
+  let st = null;
+  if (isReadonly) {
+    // 只读：有活 daemon 就用它，没有就本地直接算 —— 绝不 spawn
+    try {
+      const saved = await readDaemon();
+      if (saved && await ping(saved.port)) st = saved;
+    } catch { /* ignore */ }
+    if (!st) {
+      // 本地直查，不依赖 daemon
+      try {
+        const vd = await import('../src/vd.js');
+        if (action === 'status') {
+          const s = await vd.status();
+          return { ok: true, result: s };
+        }
+        if (action === 'modes') {
+          const T = await import('../src/tools.js');
+          return { ok: true, result: await T.modes() };
+        }
+        if (action === 'apps') {
+          const T = await import('../src/tools.js');
+          return { ok: true, result: await T.apps() };
+        }
+        if (action === 'poolList') {
+          const pool = await import('../src/pool.js');
+          return { ok: true, result: pool.info() };
+        }
+      } catch (e) {
+        return { ok: false, hint: '本地查询失败：' + String(e?.message || e).slice(0, 120) };
+      }
+    }
+  } else {
+    st = await ensureDaemon();
+  }
+  if (!st) return { ok: false, hint: '没有活着的 daemon，且这条命令需要它。先跑一次会写状态的命令。' };
+
   const r = await fetch(`http://127.0.0.1:${st.port}/cmd`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

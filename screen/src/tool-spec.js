@@ -1,4 +1,4 @@
-/** 六个工具的契约。 */
+/** 40 个工具的契约。 */
 const out = (d) => ({
   schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true, description: d } } },
   render(_a, v) { return [{ type: 'text', text: v.text }]; },

@@ -1,7 +1,7 @@
 /**
  * index.js — 插件入口，只做注册。
  *
- * 六个工具：web_ensure / web_open / web_read / web_click / web_fill / web_shot / web_close
+ * 10 个工具（下面只列开头几个）：web_ensure / web_open / web_read / web_click / web_fill / web_shot / web_close
  * （是七个——close 也算一个。）
  *
  * 解析 defineTool 要五级回退：插件装在 profile 的 node_modules 下，那里没有 dsh-tools，

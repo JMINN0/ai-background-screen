@@ -357,6 +357,54 @@ public class Main {
         }
     }
 
+    /**
+     * **清掉已经死掉的 MJPEG 客户端。**
+     *
+     * 2026-11-23 审查抓到：`mjpegClients` 只在「写失败」时移除（:293 / :849），
+     * 而画面静止时根本不产帧、不写 → 浮窗进程被杀之后 socket 变成 CLOSE_WAIT，
+     * **永远留在集合里** → `/status` 的 `alive` 恒为 true
+     * → 空闲自杀条件 `noViewer` 永远不成立 → 进程永不退出。
+     *
+     * 探测办法：给 socket 设 1ms 读超时试读一次。
+     *   · 返回 -1 → 对端已关（FIN 已收到）→ 移除
+     *   · SocketTimeoutException → 还开着（没数据可读是正常的）→ 保留
+     *   · 其它 IOException → 断了 → 移除
+     *
+     * SO_TIMEOUT 只影响读，不影响写，所以不会干扰推送。
+     */
+    static void pruneMjpegClients() {
+        if (mjpegClients.isEmpty()) return;
+        java.util.Iterator<Socket> it = mjpegClients.iterator();
+        while (it.hasNext()) {
+            Socket sock = it.next();
+            try {
+                if (sock.isClosed() || !sock.isConnected()) {
+                    it.remove();
+                    continue;
+                }
+                int oldTimeout = sock.getSoTimeout();
+                sock.setSoTimeout(1);
+                try {
+                    int b = sock.getInputStream().read();
+                    if (b == -1) {
+                        // 对端正常关闭
+                        it.remove();
+                    }
+                    // 读到字节说明客户端发了东西（极少见），忽略
+                } catch (java.net.SocketTimeoutException ste) {
+                    // 没数据可读 = 连接还活着，正常
+                } catch (Throwable t2) {
+                    // 其它异常 = 断了
+                    it.remove();
+                } finally {
+                    try { sock.setSoTimeout(oldTimeout); } catch (Throwable t3) { /* ignore */ }
+                }
+            } catch (Throwable t) {
+                it.remove();
+            }
+        }
+    }
+
     /** 清掉已经过期的标记。 */
     static void pruneMarks(long now) {
         synchronized (marks) {
@@ -478,6 +526,9 @@ public class Main {
                      * （由上面的 displayAlive 检查负责，那是真的没用了）。
                      * 长时间无人使用也不再自杀，因为虚拟屏本身还在，用户随时可能回来。
                      */
+                    /* **每秒清一次死连接** —— 否则静止画面下断开的浮窗永远不清理，
+                     * /status 恒报 running:true，空闲退出永远不触发（见 pruneMjpegClients）。 */
+                    try { pruneMjpegClients(); } catch (Throwable t2) { /* ignore */ }
                     long idle = System.currentTimeMillis() - Math.max(lastFetchAt, createdAt);
                     /* 只有「确定死了」或「判断不了且长时间没人看」才退。
                      * UNKNOWN 不再无条件保活 —— 那正是原来那个「永不退出」的来源。 */

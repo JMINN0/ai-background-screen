@@ -1942,8 +1942,17 @@ export function noteManualEdge(mode, ttlMs) {
      * 这个承诺真的成立，这里给 critical 一个很长的兜底（60 秒），
      * 并且绝不小于 30 秒 —— 用户需要时间看到并反应。
      */
+    /* **保护和视觉必须一样长。**
+     *
+     * 2026-11-23 审查抓到一处不一致：浮窗那边 critical 写 ttl=0（永不自动消），
+     * 但这里的保护闩锁只给了 60 秒 —— 60 秒后一次普通点击就能把红边
+     * 覆盖成青色 working，用户刚看到的「可能出事了」就没了。
+     *
+     * 所以 critical 的保护改成「除非显式 idle，否则一直有效」。
+     * 用 24 小时而不是 Infinity，避免任何序列化/比较上的意外。
+     */
     let ms;
-    if (mode === 'critical') ms = Math.max(60_000, ttl > 0 ? ttl : 0);
+    if (mode === 'critical') ms = ttl > 0 ? ttl : 24 * 3600 * 1000;
     else ms = Math.max(5_000, ttl > 0 ? ttl : 20_000);
     _manualUntil = Date.now() + ms;
   } else if (mode === 'idle') {

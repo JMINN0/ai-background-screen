@@ -68,7 +68,7 @@ Packages are split by **which subsystem they run in**:
    adb connect 127.0.0.1:5555
    adb -s 127.0.0.1:5555 shell echo ok   # must print ok
    ```
-   If that fails, follow the pairing steps in [dsh-go-plugin-adb](https://github.com/JMINN0/dsh-go-plugin-adb).
+   If that fails, follow the pairing steps in [android-adb-direct](https://github.com/JMINN0/android-adb-direct).
 
 2. **The phone needs `ADD_TRUSTED_DISPLAY`**
    ```bash
@@ -91,6 +91,10 @@ dsh plugin --profile web add android-adb-direct     # in-phone adb, optional (cu
 > The npm package `ai-background-screen` **is** this repo's `screen/` package — no clone needed.
 > The old package name `offscreen-android` (0.1.2) is deprecated: "renamed to ai-background-screen".
 > `web/` and `watch/` are not on npm yet, so install those from a local clone (below).
+>
+> **Do not install the repository root.** Its `package.json` is `offscreen-android@0.1.0`
+> with `"private": true` — it is only the pnpm workspace root and is never published.
+> The real published package is `ai-background-screen` (= `screen/`, 0.2.2).
 
 ### Install `screen/` from a local clone
 
@@ -142,11 +146,12 @@ Then ask the agent to run `vdisplay_status`. A capsule reading "AI 未操作" sh
 
 ## 4. For an AI installing this (read this section)
 
-This repository contains **two packages**. If you dropped them in the wrong place, use this table:
+This repository contains **three packages**. If you dropped them in the wrong place, use this table:
 
 | Package | How to recognise it | Correct location |
 |---|---|---|
 | `screen/` | `package.json` has a `dsh.bundle.patch` field | `dsh plugin --profile web add ./screen` |
+| `web/` | `package.json` has a `dsh.bundle.patch` field | `dsh plugin --profile web add ./web` |
 | `watch/` | `package.json` has a `dshGo` field | **must** go into `$DSH_HOME/dsh-go/plugins/<name>/`, then `dsh plugin add` that path |
 
 **The test**: look for `dshGo` in `package.json`.

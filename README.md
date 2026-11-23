@@ -251,11 +251,13 @@ ADDVIEW_ERR IllegalStateException: Unknown pid=19074 uid=2000
 （当前 `0.2.2`，`dist-tags.latest` 也是 `0.2.2`）。
 
 **别装仓库根**。仓库根的 `package.json` 是 `offscreen-android@0.1.0` + `"private": true`，
-它只是 pnpm workspace 的根，用来把 `screen` / `web` / `watch` / `plugin` 四个子包串起来，
+它只是 pnpm workspace 的根，用来把 `screen` / `web` / `watch` 三个子包（外加组合包 `plugin`）串起来，
 **从来不是发布包**。所以看到版本号 `0.1.0` 不用奇怪 —— 实际发布的版本在 `screen/package.json`
 （`0.2.2`），仓库根不参与发版。
 
-**实测结论**（2026-11-20）：
+**实测结论**（本地目录，2026-11-20）。表里 npm 那一行是**【推断】**：npm 包和 `screen/` 是同一个包
+（`package.json` 相同），`dsh plugin add` 只是把来源从路径换成 registry —— 我没有在这台机器上
+完整复现过「从 npm 装」的流程。
 
 | 装什么 | `dsh plugin add` 能装吗 | 会激活插件吗 |
 |---|---|---|
@@ -347,7 +349,7 @@ adb -s 127.0.0.1:5555 shell getprop vendor.display.vds_allow_hwc
 > ```
 >
 > 配对成功后**回环连接关 WiFi、开飞行模式都不受影响**；手机重启后要重做一次 `adb tcpip 5555`。
-> 更细的排障见 [dsh-go-plugin-adb](https://github.com/JMINN0/dsh-go-plugin-adb)。
+> 更细的排障见 [android-adb-direct](https://github.com/JMINN0/android-adb-direct)。
 > **注意**：`adb tcpip 5555` 会重启 adbd，正在用 adb 的其他工具（包括 Shizuku 的连接）会断**一次**。
 > 已经配好回环的设备**不要重复执行**。
 
@@ -380,7 +382,7 @@ dsh plugin --profile web add android-adb-direct     # 手机内 adb 直连，可
 > `ai-background-screen` 就是本仓库的 `screen/` 子包，npm 上已发布，`latest` = `0.2.2`。
 > 旧包名 `offscreen-android`（`0.1.2`）已经 deprecate，提示「已改名为 ai-background-screen」，别装错。
 > `web/`（浏览器 CDP）、`watch/`（原生胶囊）和 `plugin/`（组合包）**还没有单独发布到 npm**，
-> 要用这三种就从本地仓库装，见下面的形态 A/B/C。
+> 要用这三种就从本地仓库装，见下面的形态 A/B/C 和「原生插件」那一段。
 
 **形态 A：只装 AI 虚拟屏（最省事，推荐第一次装）**
 
@@ -402,14 +404,16 @@ dsh plugin --profile web add ./web
 ```bash
 # 这个组合包的依赖用 link: 指向两个路径，所以两个仓库要并排放
 cd /root/workspace
-git clone https://github.com/JMINN0/dsh-go-plugin-adb.git
+# 仓库名是 android-adb-direct，但本地目录必须叫 dsh-go-plugin-adb ——
+# plugin/package.json 里的 link: 路径写死了这个名字
+git clone https://github.com/JMINN0/android-adb-direct.git dsh-go-plugin-adb
 cd ai-background-screen
 dsh plugin --profile web add ./plugin
 ```
 
 > **形态 C 的安装位置有要求**：`plugin/package.json` 里写的是
 > `link:../../dsh-go-plugin-adb`、`link:../screen`、`link:../web`。
-> 所以它**必须**在仓库内执行，且 `dsh-go-plugin-adb` 要克隆在仓库的**同级目录**。
+> 所以它**必须**在仓库内执行，且 adb 仓库要克隆在仓库的**同级目录**、目录名用 `dsh-go-plugin-adb`。
 > 少一个，pnpm 会找不到依赖而失败。**【推断】** 依据是 `plugin/package.json` 里的依赖写法，
 > 我没有在干净环境里复现过失败。
 
@@ -978,7 +982,7 @@ AI 调 vdisplay_input { kind: "tap", nx: 0.5, ny: 0.9 }
 | **息屏就断** | 虚拟屏依赖设备保持唤醒；息屏后要人脸/指纹/密码解锁，AI 无法自动恢复 | 正常的点击/滑动会自动重置息屏计时器，任务在跑就不会息屏 |
 | **虚拟屏名字固定 `scrcpy`** | `uniqueId` 里还带 `com.android.shell,2000`；普通 App 的 `getDisplays()` 默认看不到（没有 `FLAG_PUBLIC`），但 `getDisplays(DISPLAY_CATEGORY_PRESENTATION)` **能看到**【推断】 | 见 [LIMITS.md](LIMITS.md) A-02 |
 | **同一 `singleTask` App 不能双开** | 强行 `am start --display` 会把主屏任务搬走（破坏性） | 多屏时换不同 App |
-| **文档之间互相矛盾** | ① `LIMITS.md` A-02 列这块屏的 flags 时**没有** `FLAG_OWN_CONTENT_ONLY` / `FLAG_OWN_FOCUS`，而 `screen/src/vd.js` 与 `screen/README.md` 说这两个是判据 —— 两处描述的可能是不同的 flags 集合，**我没核对 AOSP 源码，所以是【推断】**；② `llms.txt` 写「取帧 53-114fps」，见 9.1 的说明；③ `web/README.md` 说「工具数 8」，实际是 10（`screen` 包的 40 个见第六节） | 读数之前先看本节和 9.1 |
+| **文档之间互相矛盾** | ① `LIMITS.md` A-02 列这块屏的 flags 时**没有** `FLAG_OWN_CONTENT_ONLY` / `FLAG_OWN_FOCUS`，而 `screen/src/vd.js` 与 `screen/README.md` 说这两个是判据 —— 两处描述的可能是不同的 flags 集合，**我没核对 AOSP 源码，所以是【推断】**；② `web/README.md` 说「工具数 8」，实际是 10（`screen` 包的 40 个见第六节） | 读数之前先看本节和 9.1 |
 
 ### 10.2 排查手册
 
@@ -1227,7 +1231,7 @@ grep -i "apply failed" "$HOME/.dsh/dsh-app/diagnostics.md"
 不是「把手机屏幕一分为二的第二块屏幕」。仓库名 `ai-background-screen`（旧名 `offscreen-android`）和包名
 `ai-background-screen` 包名 **已经统一** —— 已安装的插件是软链接，改包名会让现有安装全部失效。
 
-**配套的 adb 插件**（`dsh-go-plugin-adb`，单独仓库）：`screen/` 需要一个能连上的 adb。
+**配套的 adb 插件**（`android-adb-direct`，单独仓库）：`screen/` 需要一个能连上的 adb。
 它**不硬依赖** adb 插件 —— 没有的话回退到 `127.0.0.1:5555`；装了的话会自动跟着 adb 插件的端口迁移走。
 两者不合并的原因是依赖单向：adb 插件的其他使用者不需要虚拟屏这一套。
 

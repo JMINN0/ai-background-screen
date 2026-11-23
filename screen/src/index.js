@@ -1,7 +1,7 @@
 /**
  * index.js — 插件入口，只做注册。
  *
- * 六个工具：screen_modes / vdisplay_start / vdisplay_launch / vdisplay_input /
+ * 40 个工具（下面只列开头几个）：screen_modes / vdisplay_start / vdisplay_launch / vdisplay_input /
  *          vdisplay_shot / screen_shot_main / vdisplay_status / vdisplay_stop
  *
  * defineTool 要五级回退：插件装在 profile 的 node_modules 下，那里没有 dsh-tools，

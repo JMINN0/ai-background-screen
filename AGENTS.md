@@ -1,5 +1,11 @@
 # AGENTS.md — 给 AI agent 的使用说明
 
+> **先读 [`docs/产品意图.md`](docs/产品意图.md)。** 那份文件是唯一需求源头 ——
+> 用户要的只有一件事：他在主屏刷视频，AI 在另一块屏后台干活，
+> 他随时能瞄一眼、不想看能缩到最小、两边互不干扰。
+> 跟那条对不上的功能就是跑偏了。
+
+
 > 这个文件是给 **CLI agent / 编码助手** 读的，不是给人看的。
 > Codex、Cursor、Copilot、Zed、Aider、Claude Code 会原生读 `AGENTS.md`。
 
@@ -44,15 +50,28 @@ adb shell getprop ro.build.version.sdk   # 需要 >= 31（Android 12+）
 
 ## 装法
 
+**运行时不需要构建。** `screen/assets/` 里的 `scrcpy-server.jar`、`framesrv.dex`、
+`overlay/ai-overlay.apk`、`injector/inject.dex` 都已经提交进仓库，装完就能用。
+
 ```bash
+# 从 npm 装（推荐，当前 0.2.2）
+dsh plugin --profile web add ai-background-screen
+
+# 或者从本地仓库装（要改源码时）
 git clone https://github.com/JMINN0/ai-background-screen.git
 cd ai-background-screen
-bash tools/fetch-sdk.sh        # 下载 37MB 编译依赖（不在 git 里）
-bash overlay/build.sh          # 悬浮窗 APK
-bash framesrv/build.sh         # 取帧 dex
+dsh plugin --profile web add ./screen
 ```
 
 装完必须**重启引擎**才生效（MCP 工具是启动时加载的）。
+
+**只有要改悬浮窗 / 取帧服务时才需要构建**（`tools/sdk/` 下两个 jar 不在 git 里，共 37MB）：
+
+```bash
+bash tools/fetch-sdk.sh        # 下载 android-30.jar + r8.jar
+bash overlay/build.sh          # 重编悬浮窗 APK
+bash framesrv/build.sh         # 重编取帧 dex
+```
 
 ## 五个最容易踩的坑
 
@@ -97,6 +116,9 @@ curl -s http://127.0.0.1:38820/status
 # 点击位置可视化（水滴波纹）
 curl -s "http://127.0.0.1:38820/mark?nx=0.5&ny=0.5"
 ```
+
+> 这个波纹只画在**推流 / 悬浮窗**的帧里。AI 自己用 `vdisplay_shot` 截的图走 `screencap`，
+> **不带任何标记**，是干净的原图。
 
 ## 强制规则
 

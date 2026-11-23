@@ -698,12 +698,39 @@ function startIdleWatch() {
         if (opBusy > 0) {
           return;   // 建屏进行中，mHasContent=false 是正常的
         }
+        /* **判据必须同时满足两条，而且要等够久。**
+         *
+         * 2026-11-23 实机踩到一次严重误判：`mHasContent` 对虚拟屏**根本不可靠** ——
+         * 实测五块虚拟屏全是 false，包括正在正常显示拼多多聊天界面的那块。
+         * 于是这个看门狗把一块好好的屏拆了，用户的画面突然从聊天页跳回首页。
+         *
+         * 所以现在改成两条都满足才动手：
+         *   ① mHasContent=false（系统说没内容）
+         *   ② 帧真的接近空白（JPEG 小于 12KB —— 纯黑画面压出来就几 KB，
+         *      有任何 UI 的都在 30KB 以上）
+         * 并且连续 10 次（100 秒）才动手。原来是 3 次 30 秒，太急。
+         */
+        let blankNow = false;
         const hc = await vd.displayHasContent(st.displayId).catch(() => null);
-      if (hc === false) {
+        if (hc === false) {
+          try {
+            const Tmod = await import('../src/tools.js');
+            const fsPort = Tmod.screenPorts?.get?.(Number(st.displayId)) || 0;
+            if (fsPort) {
+              const resp = await fetch('http://127.0.0.1:' + fsPort + '/frame.jpg',
+                { signal: AbortSignal.timeout(3000) });
+              if (resp.ok) {
+                const buf = await resp.arrayBuffer();
+                blankNow = buf.byteLength < 12 * 1024;   // 12KB 以下当空白
+              }
+            }
+          } catch { /* 取不到帧就不当空白（宁可不动） */ }
+        }
+      if (blankNow) {
         emptyStreak++;
-        if (emptyStreak >= 3) {
+        if (emptyStreak >= 10) {
           console.error('[vdisplayd] 屏 ' + st.displayId + ' 连续 ' + emptyStreak
-            + ' 次没有内容（mHasContent=false），重建');
+            + ' 次确认画面空白（mHasContent=false 且帧 <12KB），重建');
             /* **重建必须走 withLock —— 和外部请求同一把锁。**
              *
              * 2026-11-22 独立复核抓到的 P0：这里原来直接 await T.start()，
