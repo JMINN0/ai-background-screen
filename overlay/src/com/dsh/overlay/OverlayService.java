@@ -1109,6 +1109,31 @@ public class OverlayService extends Service {
 
             img = new ImageView(OverlayService.this);
             img.setScaleType(ImageView.ScaleType.FIT_XY);
+            /* **画面也做成圆角，和边缘光效贴合。**
+             *
+             * 用户 2026-11-24 反馈：边缘光效是圆角的（EdgeView 里
+             * inset=dp(4) + 半径 dp(10)），而画面是直角的 ——
+             * 于是四个角上画面会露出光效外面，看着「没盖住」。
+             *
+             * 半径取 dp(14) = 光效半径 dp(10) + 光效内缩 dp(4)，
+             * 这样画面圆角的弧线正好和光效外沿重合，不会露缝。
+             *
+             * **不能更大**：用户明确说「不能很圆，不然四个角的信息就被吞掉挺多了」。
+             * 现在窗口宽度约 486dp-ness 下，14dp 只吃掉角落很小一块。
+             *
+             * 用 OutlineProvider + clipToOutline，不依赖 SurfaceView ——
+             * 这里显示画面的是 ImageView，能裁剪。
+             */
+            try {
+                final int cornerPx = dp(14);
+                img.setOutlineProvider(new android.view.ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(android.view.View v, android.graphics.Outline o) {
+                        o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), cornerPx);
+                    }
+                });
+                img.setClipToOutline(true);
+            } catch (Throwable t) { /* 圆角失败不影响显示 */ }
             // **给一个初始占位尺寸。**
             // 原来 WRAP_CONTENT + 没有 bitmap = 宽高 0，
             // 帧还没到时整个窗口只剩「✕ — 端口」一条细线，
