@@ -5,6 +5,42 @@
 > 他随时能瞄一眼、不想看能缩到最小、两边互不干扰。
 > 跟那条对不上的功能就是跑偏了。
 
+---
+
+## 你是「用」它，还是「改」它
+
+**用** → 继续读下面「这是什么」「装法」「关键命令」。
+    这份文件是操作手册。
+
+**改** → 按这个顺序读：
+
+| 顺序 | 文件 | 为什么 |
+|---|---|---|
+| 1 | [`docs/产品意图.md`](docs/产品意图.md) | 需求源头，改功能前先对一遍 |
+| 2 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 模块划分、数据流、**最容易踩坑的 5 个地方** |
+| 3 | [`docs/HISTORY.md`](docs/HISTORY.md) | 试过什么、推翻过什么、为什么变成现在这样 |
+| 4 | [`LIMITS.md`](LIMITS.md) | 25 条做不到的事，**很多「没实现」是客观限制** |
+| 5 | [`CHECKLIST.md`](CHECKLIST.md) | 当前进度、待办、已验证/未验证 |
+
+**改之前必须知道的四件事**（都是踩过坑的）：
+
+```
+① proot 里读不到设备路径
+   readFileSync('/data/local/tmp/...')  → ENOENT，而且静默失败
+   必须走 adb shell cat，而且是异步的
+
+② catch {} 会吞掉 ReferenceError
+   这个项目有 4 次「代码看着对但从来没执行」都是这个原因
+
+③ 变量作用域写错会出现 3 次以上
+   跨调用要保持的状态必须放模块作用域，不能放函数里
+
+④ 「静态正确」不等于「真机可用」
+   改完必须建屏→投 App→截图→点击→关掉，全流程走一遍
+```
+
+**改完必须做的验证**见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第六节。
+
 
 > 这个文件是给 **CLI agent / 编码助手** 读的，不是给人看的。
 > Codex、Cursor、Copilot、Zed、Aider、Claude Code 会原生读 `AGENTS.md`。

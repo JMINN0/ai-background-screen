@@ -14,7 +14,7 @@
  *   "mcpServers": {
  *     "background-screen": {
  *       "command": "node",
- *       "args": ["/root/workspace/offscreen-android/screen/bin/mcp-server.mjs"]
+ *       "args": ["<你的路径>/ai-background-screen/screen/bin/mcp-server.mjs"]
  *     }
  *   }
  * }

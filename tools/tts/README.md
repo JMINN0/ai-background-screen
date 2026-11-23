@@ -9,7 +9,7 @@
 ## 二、我这边启动代理
 
 ```bash
-cd /root/workspace/tts-server
+cd tts-server
 export MIMO_API_KEY=sk-你复制的那个
 nohup python3 mimo_tts_proxy.py 8766 > /tmp/mimo-proxy.log 2>&1 &
 ```

@@ -59,9 +59,28 @@ function moduleCandidates(relFromRepoRoot, pkgName) {
     const repoRoot = new URL('../../', here);  // file:///.../
     out.push(new URL(relFromRepoRoot, repoRoot).href);
   } catch { /* import.meta.url 不可用（bundle 加载） */ }
-  // ② 兜底：常见的并排克隆位置
-  out.push('/root/workspace/' + relFromRepoRoot);
-  out.push(new URL('../../' + relFromRepoRoot, 'file:///root/workspace/offscreen-android/plugin/src/index.js').href);
+  /* ② 兜底：兄弟目录。
+   *
+   * 原来这里写死了 /root/workspace/... —— 那是开发机上的路径，
+   * 别人 clone 到别处全部失效。现在从环境变量和 cwd 推。
+   */
+  try {
+    /* moduleCandidates 是同步函数，不能 await —— 用 node:path 的同步 API。
+     * 这里只需要拼路径，不需要异步。 */
+    const sep = '/';
+    const bases = [];
+    if (process.env.DSH_WORKSPACE) bases.push(process.env.DSH_WORKSPACE);
+    try { bases.push(process.cwd()); } catch { /* ignore */ }
+    const norm = (b) => String(b).replace(/\\/g, sep).replace(/\/+$/, '');
+    for (const b of bases) {
+      const nb = norm(b);
+      try { out.push('file://' + nb + sep + relFromRepoRoot); } catch { /* ignore */ }
+      try {
+        const parent = nb.split(sep).slice(0, -1).join(sep) || sep;
+        out.push('file://' + parent + sep + relFromRepoRoot);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
   return out;
 }
 
