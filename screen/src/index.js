@@ -83,8 +83,50 @@ export async function apply(ctx) {
      */
     let edgeSettleTimer = null;
     try {
-      edgeSettleTimer = setInterval(() => {
-        import("./vd.js").then((v) => v.settleIfIdle?.(8000)).catch(() => {});
+      edgeSettleTimer = setInterval(async () => {
+        try {
+          const v = await import("./vd.js");
+          await v.settleIfIdle?.(8000);
+        } catch { /* ignore */ }
+        /* **处理浮窗红色按钮的「停止请求」。**
+         *
+         * 2026-11-23 产品审查抓到：这个逻辑原来只写在 bin/vdisplayd.mjs 里，
+         * 而**插件从不启动 daemon** —— 所以装机配置下用户按红条根本没反应，
+         * 那个「关闭并停后台屏」一直是假的（修在了一个不运行的组件上）。
+         *
+         * 现在接到这个 10 秒定时器上，插件形态也能真停。
+         */
+        try {
+          const v = await import("./vd.js");
+          const reqPort = await v.takeStopRequest?.();
+          if (!reqPort) return;
+          const T = await import("./tools.js");
+          // 按 framesrv 端口反查 displayId
+          let targetDisp = null;
+          try {
+            for (const [disp, pt] of (T.screenPorts || new Map())) {
+              if (Number(pt) === Number(reqPort)) { targetDisp = Number(disp); break; }
+            }
+          } catch { /* ignore */ }
+          console.error("[dsh-screen] 收到停止请求 port=" + reqPort
+            + " displayId=" + (targetDisp ?? "?"));
+          if (targetDisp) {
+            try { await T.overlayStop(reqPort); } catch { /* 窗口可能已经没了 */ }
+            try {
+              const f = await import("./framesrv.js");
+              await f.stop(targetDisp);
+            } catch { /* ignore */ }
+            try {
+              const poolMod = await import("./pool.js");
+              const pi = poolMod.info ? poolMod.info() : null;
+              const match = (pi?.screens || []).find(
+                (x) => Number(x.displayId) === Number(targetDisp));
+              if (match && poolMod.destroy) await poolMod.destroy(match.screenId);
+              else await v.stop({ forceStopApps: false });
+            } catch { /* ignore */ }
+            console.error("[dsh-screen] 停止请求已执行");
+          }
+        } catch { /* 处理失败不影响定时器 */ }
       }, 10_000);
       if (edgeSettleTimer.unref) edgeSettleTimer.unref();
     } catch { /* ignore */ }
@@ -174,8 +216,31 @@ export async function apply(ctx) {
     try { const vis = await import('./vision.js'); vis.shutdown(); } catch { /* 没加载过就算了 */ }
     try {
       const vd = await import('./vd.js');
-      const st = await vd.status().catch(() => null);
-      if (st?.running) await vd.stop({ forceStopApps: false }).catch(() => {});
+      /* **卸载时只停推流，不销毁虚拟屏。**
+       *
+       * 2026-11-23 产品审查抓到：这里原来调 vd.stop()，把屏连同上面的 App 一起销毁。
+       * 后果：引擎重启、插件热重载、DSH 升级 —— 任何一次都会让用户的屏和任务消失。
+       * 而 vd.js 里明明有完整的「复用已有屏 + 重连控制通道」逻辑（reconnectControl），
+       * **因为这里先 stop 了，那条路径永远走不到**。
+       *
+       * 产品意图要求「随时能瞄一眼」「不打断用户」—— 插件重启不该把任务清掉。
+       * 所以：只停浮窗推流（省 CPU），屏留着，下个进程能直接复用。
+       * 真要销毁，用户/AI 显式调 vdisplay_stop。
+       */
+      try {
+        const vd = await import('./vd.js');
+        const st = await vd.status().catch(() => null);
+        if (st?.running) {
+          /* **只停推流和浮窗，不动屏。**
+           * streamStop 在 tools.js，不在 vd.js —— 写 vd.streamStop 是个不存在的函数，
+           * 用 `?.` 调它会静默什么都不做（这类「看着对实际没生效」是本项目最常见的坑）。
+           */
+          try {
+            const T = await import('./tools.js');
+            await T.streamStop({});
+          } catch { /* ignore */ }
+        }
+      } catch { /* 清理失败不阻塞卸载 */ }
     } catch { /* 清理失败不阻塞卸载 */ }
   };
 }

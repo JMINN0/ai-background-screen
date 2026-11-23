@@ -1196,6 +1196,21 @@ export async function launch(pkg, activity) {
    */
   const _onVdL = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -c "${pkg}"`);
   const _alreadyOnDisplay = Number(String(_onVdL).trim()) > 0;
+  /* **绝对不能 force-stop 用户正在主屏用的那个 App。**
+   *
+   * 2026-11-23 产品审查抓到：`mainBefore` 算出来只用于事后播报，**不拦**。
+   * 而这里的 force-stop 是无条件的（只排除了「已经在这块虚拟屏上」）——
+   * 于是用户在剪映里剪视频，AI 投剪映到虚拟屏 → **进程被杀、草稿丢失**。
+   *
+   * 正确做法：发现目标就是主屏前台 → 直接拒绝，如实告诉调用方。
+   * 不杀、也不投（投了也会把主屏任务搬走）。
+   */
+  const _mainPkg = String(mainBefore || '').split('/')[0].trim();
+  if (_mainPkg && _mainPkg === pkg) {
+    return { ok: false, hint: `「${pkg}」现在正在用户主屏前台使用，投到虚拟屏会杀掉它`
+      + `（用户可能正在里面编辑东西，比如剪视频）。先让用户切到别的 App，`
+      + `或者换一个不冲突的目标。` };
+  }
   if (!_alreadyOnDisplay) {
     await shell(`am force-stop ${pkg}`);
     await sleep(600);

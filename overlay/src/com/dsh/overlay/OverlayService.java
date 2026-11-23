@@ -2192,12 +2192,29 @@ int dx = (int)(e.getRawX() - downX);
                     }
                     return true;    // **继续轮询，不关窗**
                 }
-                statusFails = 0;
                 setReconnectingIfNeeded();
+                /* **running:false 不能立即关窗。**
+                 *
+                 * 2026-11-23 产品审查抓到一个自证死的循环：
+                 * framesrv 的 alive 判据是「120 秒内有人取帧」，而浮窗被系统
+                 * 限制（省电策略 / 后台限制）时取帧变慢 → framesrv 判 alive=false
+                 * → 浮窗收到 running:false 立刻关窗 → 用户看到窗口凭空消失，
+                 * 而屏和 App 其实都还在。
+                 *
+                 * 推流挂了 ≠ 屏没了。所以改成和「端口不通」同一条路：
+                 * 计入 statusFails，连续多次才关窗。
+                 */
                 if (st.contains("\"running\":false")) {
-                    ui.post(new Runnable() { public void run() { removeWin(port); } });
-                    return false;
+                    statusFails++;
+                    Log.i(TAG, "端口 " + port + " 报 running:false（第 " + statusFails + " 次），继续等");
+                    if (statusFails >= 60) {
+                        Log.i(TAG, "端口 " + port + " 连续 " + statusFails + " 次报 running:false，关窗");
+                        ui.post(new Runnable() { public void run() { removeWin(port); } });
+                        return false;
+                    }
+                    return true;
                 }
+                statusFails = 0;
                 float a = parseAspect(st);
                 if (a > 0.15f && Math.abs(a - aspect) > 0.01f) {
                     aspect = a;
