@@ -428,7 +428,8 @@ const ACTIONS = {
   },
   async input(args) {
     const kind = String(args?.kind || '');
-    if (!['tap', 'swipe', 'hold', 'text', 'key', 'paste'].includes(kind)) {
+    /* multitouch 也要在名单里 —— 2026-11-23 审查抓到漏了它，MCP 路径直接拒 */
+    if (!['tap', 'swipe', 'hold', 'multitouch', 'text', 'key', 'paste'].includes(kind)) {
       return { hint: `不认识的输入类型「${kind}」。可选：tap / swipe / hold / text / key / paste` };
     }
     return vd.input(kind, args);
@@ -744,6 +745,47 @@ function startIdleWatch() {
       } else {
         emptyStreak = 0;
       }
+
+      /* ③.4 **处理浮窗红色按钮的「停止请求」。**
+       *
+       * 2026-11-23 审查抓到：那个红条一直是假的 —— framesrv 的 /quit
+       * 只退取帧进程，虚拟屏和 App 属于 scrcpy server，跟它没父子关系，
+       * 所以「关闭并停后台屏」实际只关了窗，屏继续在后台占 75-185MB。
+       *
+       * 浮窗是独立 APK，不知道 displayId 也没法调 adb，只能写请求文件；
+       * 真停屏在这里做。
+       */
+      try {
+        const reqPort = await vd.takeStopRequest();
+        if (reqPort) {
+          const T = await import('../src/tools.js');
+          let targetDisp = null;
+          try {
+            for (const [disp, pt] of (T.screenPorts || new Map())) {
+              if (Number(pt) === Number(reqPort)) { targetDisp = Number(disp); break; }
+            }
+          } catch { /* ignore */ }
+          console.error('[vdisplayd] 收到停止请求 port=' + reqPort + ' displayId=' + (targetDisp ?? '?'));
+          if (targetDisp) {
+            try { await T.overlayStop(reqPort); } catch { /* 窗口可能已经没了 */ }
+            try { const f = await import('../src/framesrv.js'); await f.stop(targetDisp); } catch { /* ignore */ }
+            try {
+              const fsMod = await import('../src/framesrv.js');
+              void fsMod;
+            } catch { /* ignore */ }
+            /* 真的销毁虚拟屏：先把活动屏切到这块，再 stop */
+            try {
+              const poolMod = await import('../src/pool.js');
+              const pi = poolMod.info ? poolMod.info() : null;
+              const match = (pi?.screens || []).find((x) => Number(x.displayId) === Number(targetDisp));
+              if (match && poolMod.destroy) await poolMod.destroy(match.screenId);
+            } catch { /* 不在池里 */ }
+            try { await vd.stop({ forceStopApps: false }); } catch { /* ignore */ }
+            console.error('[vdisplayd] 停止请求已执行（屏已销毁）');
+          }
+        }
+      } catch { /* 处理失败不影响 tick */ }
+
 
       // ④ 推流看门狗：本地 HTTP，不花 adb
       const n = Number(st.displayId) || 0;

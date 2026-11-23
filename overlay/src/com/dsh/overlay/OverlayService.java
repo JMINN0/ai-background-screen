@@ -1463,6 +1463,29 @@ int dx = (int)(e.getRawX() - downX);
                                                 }
                                             }).start();
                                         } catch (Throwable t) { /* ignore */ }
+                                          /* **真的停屏 —— 但浮窗自己停不了。**
+                                           *
+                                           * 2026-11-23 审查抓到这个一直是假的：
+                                           * framesrv 的 /quit 只是 System.exit(0)，退的是**取帧进程**；
+                                           * 虚拟屏和上面的 App 属于 **scrcpy server 进程**（另一个进程），
+                                           * 跟 framesrv 没有任何父子关系。所以屏原封不动继续跑，
+                                           * 还在后台占 75-185MB，AI 侧 status 仍报 running:true。
+                                           *
+                                           * 浮窗是独立 APK，它不知道 screenId / adb 怎么调。
+                                           * 所以改成写一个「停止请求」文件，由插件/daemon 侧执行真停屏。
+                                           */
+                                          try {
+                                              final String stopCmd = "mkdir -p /data/local/tmp/dshframe; "
+                                                  + "echo " + p4 + " > /data/local/tmp/dshframe/stop-request";
+                                              new Thread(new Runnable() {
+                                                  public void run() {
+                                                      try {
+                                                          Runtime.getRuntime().exec(
+                                                              new String[]{"sh", "-c", stopCmd}).waitFor();
+                                                      } catch (Throwable t) { /* 写不进去也不能拖住 UI */ }
+                                                  }
+                                              }).start();
+                                          } catch (Throwable t) { /* ignore */ }
                                         notifyUserDeleted(p4, true, -1);
                                         ui.post(new Runnable() { public void run() { removeWin(p4); } });
                                         return true;

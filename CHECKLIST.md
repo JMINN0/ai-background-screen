@@ -116,3 +116,46 @@
 - [ ] 推 GitHub（2 个提交待推）
 - [ ] 发 npm（0.2.0 → 0.2.1）
 - [ ] 子代理找出问题直到完全没问题
+
+## 2026-11-23 下午：两个子代理审查后修的（共 10 条）
+
+### 🔴 级
+- [x] **边缘光效全灭**：setEdge 写的 state.port 是 scrcpy forward 端口(28xxx)，
+      浮窗比的是 framesrv 端口(388xx) → 永远不等 → 永远 idle
+      修：加 framesrvPort，streamStart 时记下，边缘文件写它
+- [x] **riskCheck 对任何 App 都「未知」**：插件传字符串、daemon 传对象，
+      String(pkg) 得到 "[object Object]"。修：两种都接受
+- [x] **unknown_level 读错层级**：数据在 rules 下面，代码读顶层
+- [x] **npm 包缺 docs/risk.json** → 风控闸门空转。修：复制进 assets + 候选路径
+- [x] **「一条装全部」装完 0 个工具**：link: 依赖 pnpm 只建软链不装依赖；
+      相对路径在 bundle 加载时也解析不到。修：运行时算绝对路径
+- [x] **红条「关闭并停后台屏」实际没停屏**：/quit 只退 framesrv，
+      虚拟屏属于 scrcpy server。修：浮窗写停止请求文件，daemon 执行真停屏
+
+### 🟡 级
+- [x] multitouch 漏出 CLI/MCP 白名单
+- [x] 关窗口会弹「悬浮窗已启动」（语义反了）
+- [x] screen_pool（只读工具）会把活动屏切走 → 加 try/finally 还原
+- [x] vdisplay_stop 停掉所有屏的推流 → 只停当前这块
+- [x] 横屏屏每次 start() 误报配置不一致（拿旋转前的尺寸比）
+- [x] activity 参数没校验（命令注入面）→ 加正则白名单
+- [x] tap/hold 部分失败会把手指留在按下状态 → 补发 UP 帧
+- [x] 引擎重启后控制通道不重连 → hold/多指/中文 paste 全废 → 加 reconnectControl()
+- [x] vdisplay / vdisplay-daemon / vdisplay-mcp 命令不存在（文档全在用）
+
+### 验证状态
+- [x] JS 语法全过（11 个文件）
+- [x] Java 编译过（overlay 30 class / framesrv 10 class）
+- [x] APK + dex 打包成功
+- [x] 本地功能验证：注入拦截、riskCheck 两种调用、插件四模块加载零失败
+- [ ] **设备实测：没做**（用户在用高德导航，不能碰）
+
+### 还没修（🟡 剩余）
+- [ ] CLI 调用会拉起 daemon 和插件抢同一块屏
+- [ ] critical TTL 三份文档两个答案（代码 0=永不，tool-spec/README 写 60 秒）
+- [ ] 插件形态下 settleIfIdle 没人调 → 青色 working 会一直亮
+- [ ] opmode/edge 单文件单槽 → 多屏时所有浮窗显示同一个屏号
+- [ ] framesrv /status 的 mjpegClients 不修剪 → 恒报 running:true
+- [ ] stop() 不清持久化状态
+- [ ] 文档：工具数 39 vs 40、两个 README 都说「还没发 npm」、llms.txt 版本包名全错、
+      fetch-sdk 的 r8 URL 404、GitHub 无 tag/release

@@ -603,12 +603,27 @@ export async function edge(args) {
   return { text: `边缘光效已设为「${label}」${ttl}` + why };
 }
 
+/** activity 名合法性校验（防命令注入）。
+ *
+ * 2026-11-23 审查抓到：pkg 有 /^[a-z][\w.]*$/i 校验，activity 没有 ——
+ * 直接拼进 `am start -n pkg/activity` 交给 adb shell。
+ * AI 被网页内容诱导时可能传 `.Main; rm -rf /sdcard/Download` 这种。
+ */
+function safeActivity(a) {
+  const t = String(a || '').trim();
+  if (!t) return '';
+  return /^[A-Za-z_$][\w.$]*$/.test(t) ? t : '';
+}
+
 export async function launch(args) {
   try { stream.setState('acting'); } catch { /* ignore */ }
   try { vd.touchWorking(); void vd.flushAutoEdge('working')?.catch?.(() => {}); } catch { /* ignore */ }
   const pkg = String(args?.pkg || '').trim();
   if (!/^[a-z][\w.]*$/i.test(pkg)) return { text: 'pkg 看起来不是合法包名。' };
-  const act = args?.activity ? String(args.activity).trim() : '';
+  const act = safeActivity(args?.activity);
+  if (args?.activity && !act) {
+    return { text: 'activity 名不合法（只允许字母数字下划线和点，不能有分号空格等）。' };
+  }
   const r = await vd.launch(pkg, act);
   if (!r.displayId) return { text: `投屏失败：${r.hint}` };
   const lines = [
@@ -839,11 +854,26 @@ export async function stop(args) {
   const stopPort = stopDisp != null ? (screenPorts.get(Number(stopDisp)) || 0) : 0;
   await overlayStop(stopPort || undefined).catch(() => {});
   // **屏关了就停 framesrv** —— 用户的要求：「关闭就跟着自动关闭推流屏」
+  /* **只停这一块屏的推流，不要全停。**
+   *
+   * 2026-11-23 审查抓到：原来 `fsrv.stop()` 不带 displayId = 全停，
+   * 于是开着 3 块屏时对当前这块调 vdisplay_stop，另外两块的 framesrv
+   * 也被杀掉 → 它们的窗口进「重连中」→ 3 分钟后自动关窗，而屏和 App 还活着。
+   */
   try {
     const fsrv = await import('./framesrv.js');
-    await fsrv.stop();
+    const curDisp = Number(stopDisp) || 0;
+    if (curDisp) await fsrv.stop(curDisp);        // 只停这一块
+    else await fsrv.stop();                        // 没有 displayId 才全停（收尾用）
   } catch { /* 没起来就算了 */ }
-  await stream.stop().catch(() => {});
+  // 只有池里没有别的屏了，才停全局 stream
+  let otherAlive = 0;
+  try {
+    const poolMod = await import('./pool.js');
+    const pi = poolMod.info ? poolMod.info() : null;
+    otherAlive = Number(pi?.count ?? pi?.screens?.length ?? 0) || 0;
+  } catch { /* ignore */ }
+  if (otherAlive <= 0) await stream.stop().catch(() => {});
   const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
   const lines = ['虚拟屏已销毁。'];
   if (r.killed?.length) lines.push(`已清理后台 App：${r.killed.join('、')}`);

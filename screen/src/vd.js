@@ -507,7 +507,14 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
         ? lastReuseResult.fl
         : await shell('dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1');
       if (!reuseFresh) lastReuseResult.fl = fl;
-      const wantW = width; const wantH = height;
+      /* **要用旋转后的尺寸比，不是请求的原始尺寸。**
+       *
+       * 2026-11-23 审查抓到：state.width/height 存的是 finalWidth/finalHeight
+       * （已经按 orientation 换过），但这里拿 width/height（旋转前）去比 ——
+       * 于是横屏屏每次 start() 都误报「请求 720x1592，实际 1592x720」，
+       * 用户看到一个不存在的配置不一致警告，以为屏坏了。
+       */
+      const wantW = finalWidth || width; const wantH = finalHeight || height;
       const diff = [];
       if (wantW && wantH && (wantW !== state.width || wantH !== state.height)) {
         diff.push(`请求 ${wantW}x${wantH}，实际 ${state.width}x${state.height}`);
@@ -519,7 +526,13 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
         diff.push(`请求 hwc=${hwc}，实际 ${state.hwc}`);
       }
       savePersistedState();   // 复用也刷新一下，保证文件里的值是最新的
+      /* **复用路径必须补连控制通道。**
+       * 新进程（引擎重启/插件热重载）第一次调工具会走到这里，
+       * 而 sockets 是进程内状态 —— 不重连的话 hold/multitouch/中文 paste 全废。 */
+      let ctrlOk = false;
+      try { ctrlOk = await reconnectControl(); } catch { /* ignore */ }
     return {
+        controlChannel: ctrlOk,
         ok: true, displayId: state.displayId, sfId: state.sfId, reused: true,
         width: state.width, height: state.height,
         canHost: /FLAG_OWN_CONTENT_ONLY/.test(fl) && /FLAG_OWN_FOCUS/.test(fl),
@@ -1083,6 +1096,70 @@ export async function markLost() {
  * 那个已有任务拉到前台（实测踩过：计算器就是这么跑到主屏、把用户的视频顶掉的）。
  * 投完还要**校验主屏焦点没变**，变了立刻切回去——「不影响主屏」是硬要求。
  */
+/**
+ * **取走「停止请求」—— 浮窗的红色按钮写下的。**
+ *
+ * 2026-11-23：浮窗是完全独立的 APK，它不知道 screenId，也没法直接调 adb。
+ * 所以它只能把「用户要求停这块屏（按帧服务端口标识）」写进一个文件，
+ * 由插件/daemon 侧读到后执行真正的停屏。
+ *
+ * @returns {Promise<number|null>} framesrv 端口；没有请求返回 null
+ */
+export async function takeStopRequest() {
+  try {
+    const r = await adb(['shell', 'cat /data/local/tmp/dshframe/stop-request 2>/dev/null']);
+    const txt = String(r.out || '').trim();
+    if (!txt) return null;
+    const p = Number(txt);
+    await adb(['shell', 'rm -f /data/local/tmp/dshframe/stop-request']).catch(() => {});
+    return Number.isFinite(p) && p > 0 ? p : null;
+  } catch { return null; }
+}
+
+/**
+ * **给一块已经存在的屏重连控制通道。**
+ *
+ * 2026-11-23 审查抓到：复用分支直接 return，从不重连 socket ——
+ * 而 socket 只在 start() 的新建路径里建立（`state.sockets[1]` 是控制通道）。
+ * 持久化只存 displayId/sfId/scid/宽高，不存 socket。
+ *
+ * 后果：DSH 引擎重启、插件热重载之后，屏还在、start() 报 reused:true 一切正常，
+ * 但 hold / multitouch / 中文 paste 全部静默失效 —— 再点普通 tap 会回落 adb input，
+ * 看着「还能用」，进一步掩盖问题。用户感受是「昨天还能用今天坏了」。
+ *
+ * @returns {Promise<boolean>} 重连成功了吗
+ */
+export async function reconnectControl() {
+  try {
+    if (!state.displayId || !state.scid || !state.port) return false;
+    if ((state.sockets?.length || 0) >= 2) return true;   // 已经连着
+    const target = await adbTarget();
+    await adb(['forward', `tcp:${state.port}`, `localabstract:scrcpy_${state.scid}`]);
+    const net = await import('node:net');
+    const videoMod = await import('./video.js');
+    if (!state.videoReader) state.videoReader = videoMod.createReader();
+    const connectOne = (isVideo) => new Promise((res) => {
+      const s = net.connect(state.port, '127.0.0.1', () => res(s));
+      s.on('error', () => res(null));
+      if (isVideo) {
+        s.on('data', (d) => { try { videoMod.push(state.videoReader, d); } catch { /* ignore */ } });
+      } else {
+        s.on('data', () => {});
+      }
+    });
+    const a1 = await connectOne(true);
+    await new Promise((r) => setTimeout(r, 500));
+    const a2 = await connectOne(false);
+    const socks = [a1, a2].filter(Boolean);
+    if (socks.length < 2) {
+      for (const sk of socks) { try { sk.destroy(); } catch { /* ignore */ } }
+      return false;
+    }
+    state.sockets = socks;
+    return true;
+  } catch { return false; }
+}
+
 export async function launch(pkg, activity) {
   // 投完 App 立刻把它的风控等级同步给浮窗（不等下一次 input）
   setTimeout(() => { try { syncRiskLevel(); } catch { /* ignore */ } }, 2500);
@@ -2229,6 +2306,16 @@ export async function input(kind, a = {}) {
         cmd = null;   // 已经注入完，不再走 adb
       } else {
         cmd = `input -d ${d} tap ${toX()} ${toY()}`;
+          /* **部分失败必须补一帧 UP，否则设备侧手指停在按下状态。**
+           * 2026-11-23 审查抓到：循环里任一帧发失败就 break，DOWN 已发、UP 没发
+           * → 指针永久按下；再叠一个 adb tap，轻则双击，重则 UI 卡在长按状态。 */
+          if (sent > 0) {
+            try {
+              sendControl(inj.buildTouch({ action: inj.ACTION.UP, pointerId: -1,
+                x: toX(), y: toY(), screenW: state.width, screenH: state.height,
+                pressure: 1, actionButton: 0, buttons: 0 }));
+            } catch { /* 补不了也只能继续 */ }
+          }
         state.lastInjectVia = 'adb-input-fallback';
       }
     } else {
@@ -2265,6 +2352,16 @@ export async function input(kind, a = {}) {
       if (k < h.delays.length) await sleep(h.delays[k]);
     }
     // 和 tap/swipe 一致：直接 return，不设外层变量
+      /* **hold 中途失败也必须补一帧 UP。**
+       * 2026-11-23 审查抓到：和 tap 同一个问题但更严重 ——
+       * hold 本来就是长按，不补 UP 设备侧会一直按着，用户看到「卡住了」。 */
+      if (sentH > 0 && sentH < h.bufs.length) {
+        try {
+          sendControl(inj.buildTouch({ action: inj.ACTION.UP, pointerId: -1,
+            x: 0, y: 0, screenW: state.width, screenH: state.height,
+            pressure: 1, actionButton: 0, buttons: 0 }));
+        } catch { /* ignore */ }
+      }
     return { ok: sentH > 0, displayId: d, out: `hold ${sentH} 帧（${h.bufs.length - 2} 个 MOVE @60Hz, ${h.totalMs}ms）`, changed: null };
   } else if (kind === 'multitouch') {
     /*

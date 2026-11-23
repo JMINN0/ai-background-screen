@@ -92,8 +92,16 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(sv);
         else startService(sv);
 
-        Toast.makeText(this, port > 0 ? ("悬浮窗已启动，端口 " + port) : "悬浮窗已启动",
-                Toast.LENGTH_SHORT).show();
+        /* **只有在「建窗口」时才提示，关窗口不该弹。**
+         *
+         * 2026-11-23 审查抓到：`am start --ei closePort N` 关窗口时也走这条路，
+         * 用户点 ✕ 会先看到「悬浮窗已启动」，然后窗口才消失 —— 语义完全反了。
+         * 而 closePort 的反馈就是「画面消失」，本身足够清楚。
+         */
+        if (closePort <= 0) {
+            Toast.makeText(this, port > 0 ? ("悬浮窗已启动，端口 " + port) : "悬浮窗已启动",
+                    Toast.LENGTH_SHORT).show();
+        }
         finish();
     }
 }

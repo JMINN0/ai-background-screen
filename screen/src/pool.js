@@ -155,6 +155,14 @@ export async function destroy(screenId, o = {}) {
  */
 export async function list() {
   const out = [];
+  /* **查完必须还原活动屏。**
+   *
+   * 2026-11-23 审查抓到：list() 逐块 setActive() 去查状态，查完不还原 ——
+   * 于是调一次 screen_pool（只读工具）就把活动屏切到列表最后一块，
+   * 之后 vdisplay_launch / input / shot 全作用在错的屏上，且没有任何提示。
+   */
+  const prevActive = vd.getActive ? vd.getActive() : null;
+  try {
   for (const [id, s] of screens) {
     let alive = false;
     let actualDpi = null;
@@ -173,6 +181,10 @@ export async function list() {
       alive,
       ageSec: Math.round((Date.now() - s.createdAt) / 1000),
     });
+  }
+  } finally {
+    // 还原原活动屏（setActive 传 null 表示不切）
+    try { if (prevActive) vd.setActive(prevActive); } catch { /* ignore */ }
   }
   return { ok: true, count: out.length, screens: out };
 }
