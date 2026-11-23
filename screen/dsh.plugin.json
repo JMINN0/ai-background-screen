@@ -1,7 +1,7 @@
 {
   "name": "ai-background-screen",
   "description": "Private headless virtual display for app automation.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "entry": {
     "name": "ai-background-screen",
     "inject": [
