@@ -1711,6 +1711,7 @@ let lastToolCallAt = Date.now();
 let idleTimer = null;
 let idleStoppedStream = false;
 let idleStoppedDisplay = false;
+let idleLogged = false;   // 只提示一次，不重复刷日志
 
 /** 每次工具调用时调一下，重置空闲计时。 */
 export function touchActivity() {
@@ -1727,24 +1728,29 @@ export function startIdleWatchdog() {
     const limitMs = idleTimeoutMin * 60 * 1000;
     if (idle <= limitMs) return;
     try {
-      // **到点：推流和屏一起关。**
-      // 先关推流（关悬浮窗 + framesrv，立刻省掉编码的 CPU），
-      // 再销毁屏（释放 ImageReader/镜像屏/端口）。
-      if (!idleStoppedStream) {
-        idleStoppedStream = true;
-        await import('./tools.js').then((m) => m.streamStop()).catch(() => {});
+      /* **到点了，但什么都不销毁。**
+       *
+       * 2026-11-23 稳定性审查指出这条和产品意图直接冲突：
+       *   · `lastToolCallAt` 是**进程内**变量，只有插件自己的工具包装器刷新。
+       *     MCP / CLI 路径不刷新 → 5 分钟后它以为「AI 空闲」→
+       *     streamStop()（关所有浮窗）+ vd.stop()（销毁屏）。
+       *   · 但产品意图是「用户随时能瞄一眼」，AI 在等聊天回复的那几分钟里
+       *     屏和窗口就被拆了 —— 用户回来看到的是全空。
+       *   · 而且 CPU 早就不是问题了：framesrv 的 IDLE_PAUSE_MS（15 秒没人取帧
+       *     就停编码）已经在管这件事，这个看门狗省不了多少。
+       *
+       * 按「宁可少一个功能，不能多一个会自己坏的机制」——销毁那一步删掉。
+       * 只留一行日志，让用户知道「AI 很久没动了」（信息有价值，破坏没有）。
+       * 真要释放内存/电量，用户显式调 vdisplay_stop。
+       */
+      if (!idleLogged) {
+        idleLogged = true;
+        try {
+          console.error('[dsh-screen] AI 已空闲 ' + Math.round(idle / 60000)
+            + ' 分钟（上限 ' + idleTimeoutMin + ' 分钟）。屏和浮窗保持不动，'
+            + '要释放请显式调 vdisplay_stop。');
+        } catch { /* ignore */ }
       }
-      if (!idleStoppedDisplay) {
-        idleStoppedDisplay = true;
-        const vdMod = await import('./vd.js');
-        const st2 = await vdMod.status();
-        if (st2 && st2.running) {
-          await vdMod.stop({ forceStopApps: false }).catch(() => {});
-        }
-      }
-      try {
-        console.error('[dsh-screen] 空闲 ' + Math.round(idle / 60000) + ' 分钟（上限 ' + idleTimeoutMin + '），已自动关闭后台屏');
-      } catch { /* ignore */ }
     } catch { /* 看门狗自己不能崩 */ }
   }, 60 * 1000);   // 每分钟检查一次
   // 不阻止进程退出

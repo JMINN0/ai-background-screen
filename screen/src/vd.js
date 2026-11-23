@@ -966,9 +966,24 @@ async function alive() {
   if (!hasDisplay) return false;                 // 逻辑屏真没了 → 确实死了
   if (state.sfId && sf.has(String(state.sfId))) return true;   // 缓存的 SF id 还有效
   // 逻辑屏在、但缓存的 SF id 不在列表里 → **多半是转屏换了 id**，重新解析而不是判死
+  /* **逻辑屏在、但 SF id 认不出来时，绝不能判死。**
+   *
+   * 2026-11-23 稳定性审查抓到一个会拆屏的路径：
+   * 转屏会换 SF id（本文件注释自己记过）。换完 id 后走到这里，
+   * resolveScrcpySfId() 在多屏（设备上有 2 个 scrcpy display）时
+   * 恒返回 null（见 :867 `if (ids.length !== 1) return null`）——
+   * 于是 alive() 判 false → start() 走 forget() → state.child.kill('SIGKILL')
+   * → **屏和上面的 App 当场消失**。而 start() 是 input/shot/launch 的第一步，
+   * 也就是说「多屏 + 一次转屏 = 下次截图就拆屏」。
+   *
+   * 正确判断：前面已经确认逻辑屏还在（ids.has(displayId)），那它就没死，
+   * 只是我们认不出它的 SF id。认不出不是死亡证据。
+   * 所以解析不到就保守判活 —— 代价最多是 screencap 用过期 sfId 失败一次，
+   * 比把用户正在用的屏 SIGKILL 掉好得多。
+   */
   const fresh = await resolveScrcpySfId();
   if (fresh) { state.sfId = fresh; return true; }
-  return false;
+  return true;   // 逻辑屏在，认不出 SF id 不代表死了
 }
 
 /** 状态不一致时，把内存状态清干净，免得后面每个工具都报假消息。 */
