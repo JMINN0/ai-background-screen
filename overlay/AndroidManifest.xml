@@ -30,6 +30,15 @@
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- 探针：以 App 身份打印 DisplayManager 视角，用来验证虚拟屏对别的 App 可不可见。
+             只在排查时用，不参与正常运行。 -->
+        <activity android:name=".ProbeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service android:name=".OverlayService"
             android:exported="false" />
     </application>

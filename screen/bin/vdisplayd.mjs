@@ -883,7 +883,7 @@ async function reconcileLeftovers() {
     )).trim();
     if (Number(n) > 0) return;   // 还有虚拟屏在用，别动
 
-    await vd.shell('setprop debug.sf.enable_hwc_vds 0');
+    // 不再 setprop：HWC 属性我们从没设过（2026-11-24 删除，见 vd.js start() 说明）
     console.error('[vdisplayd] 对账：清掉了上次异常退出残留的 debug.sf.enable_hwc_vds=1');
   } catch { /* 对账失败不能拖垮启动 */ }
 }

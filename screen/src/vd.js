@@ -574,18 +574,30 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   //   2. 记下原值，stop() 时只恢复我们自己改过的那种；
   //   3. 任何一步失败都静默降级，不能因为开不了 HWC 就建不了屏。
   // 它是 debug.* 属性，重启设备自动复原，不会留下永久改动。
-  if (hwc !== 'off') {
-    const allow = (await shell('getprop vendor.display.vds_allow_hwc')).trim();
-    if (allow === '1' || hwc === 'on') {
-      const prev = (await shell('getprop debug.sf.enable_hwc_vds')).trim() || '0';
-      state.hwcPrev = prev;
-      if (prev !== '1') {
-        await shell('setprop debug.sf.enable_hwc_vds 1');
-        const now = (await shell('getprop debug.sf.enable_hwc_vds')).trim();
-        state.hwcChanged = now === '1';
-      }
+    /* **不设 debug.sf.enable_hwc_vds。**（2026-11-24 彻底删除）
+     *
+     * 这里原来会在 vendor.display.vds_allow_hwc=1 的设备上 setprop
+     * debug.sf.enable_hwc_vds 1，号称能让 3D 游戏在虚拟屏正常渲染。
+     *
+     * 2026-11-24 实测证明**它根本没用，而且是最危险的暴露面**：
+     *
+     *   ① 没用：SurfaceFlinger 已连续运行 17 天 12 小时（从未重启），
+     *      而这个属性在 AOSP 里是 SF **构造函数里读一次**。
+     *      实测把它置 1 后，dumpsys SurfaceFlinger 里相关状态变化 = 0 处。
+     *      （早期那句「置 1 后王者荣耀正常」的记录，中间大概率还变了别的变量。）
+     *
+     *   ② 危险：**普通 App 零权限就能读它**。实测用 com.dsh.overlay
+     *      （普通 App uid 10895）反射 SystemProperties.get 直接读到 0→1 的变化。
+     *      这个属性名里直接写着 vds（virtual displays）——
+     *      QQ 这类反作弊读一眼就知道「这台机器在开虚拟屏」。
+     *
+     * 一个没用的属性，换来 App 可读的铁证，不值得。
+     * 真要开 HWC（且确认 SF 支持运行期切换），再作为显式选项加回来，
+     * 并且必须先证明它对渲染真的有作用。
+     */
+    if (hwc === 'off') {
+      // 只保留「用户明确要求关闭」的语义，不做任何 setprop
     }
-  }
 
   const scid = (1 + Math.floor(Math.random() * 0x7ffffffe)).toString(16).padStart(8, '0');
   const port = 28000 + Math.floor(Math.random() * 900);
@@ -755,8 +767,8 @@ export function restoreHwcSync() {
 
   const ADBBIN = process.env.ADB_BIN || 'adb';
   try {
-    execFileSync(ADBBIN, ['-s', target, 'shell',
-      `setprop debug.sf.enable_hwc_vds ${state.hwcPrev || '0'}`], { timeout: 5000 });
+    /* **不再 setprop。** 我们从来没设过 HWC 属性（见 start() 里的说明），
+       所以这里也没有需要恢复的东西。保留函数是因为调用方还在等一个结果。 */
     state.hwcChanged = false;
     return true;
   } catch {
@@ -813,7 +825,7 @@ export async function stop({ forceStopApps = false } = {}) {
   // 恢复 HWC 属性。只恢复这次由我们改成的那个值——
   // 如果开机时它本来就是 1，说明用户或别的工具故意开着，我们不去动它。
   if (state.hwcChanged) {
-    await shell(`setprop debug.sf.enable_hwc_vds ${state.hwcPrev || '0'}`);
+    // 不再 setprop：我们从没设过（见 start() 里的说明）
     state.hwcChanged = false;
   }
   state.hwcPrev = null;
