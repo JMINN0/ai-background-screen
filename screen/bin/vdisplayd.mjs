@@ -432,7 +432,18 @@ const ACTIONS = {
     if (!['tap', 'swipe', 'hold', 'multitouch', 'text', 'key', 'paste'].includes(kind)) {
       return { hint: `不认识的输入类型「${kind}」。可选：tap / swipe / hold / text / key / paste` };
     }
-    return vd.input(kind, args);
+    /* **走 tools.input，不要直接调 vd.input。**
+     *
+     * 用户 2026-11-24 报：「如果是拟人化操作我怎么没看到你点击的位置反馈？」
+     *
+     * 根因就在这里：tools.input 里有画点击标记的逻辑
+     * （stream.markTap + framesrv.markTap，浮窗上会画出十字/波纹），
+     * 而 vd.input 只是发事件、不画标记。
+     * daemon 直接调 vd.input 就绕过了标记 —— 用户只看到画面变了，
+     * 不知道 AI 点在哪。
+     */
+    const T = await import('../src/tools.js');
+    return T.input({ kind, ...args });
   },
 };
 

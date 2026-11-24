@@ -39,6 +39,17 @@
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Surface 直通实验（2026-11-24）。
+             验证「普通 App 能不能把 shell 拥有的虚拟屏镜像到自己的 SurfaceView」。
+             如果成立，framesrv + ImageReader + JPEG + HTTP 整条管线可以删掉。
+             用可见主题（要显示 SurfaceView），只在实验时启动，不参与正常运行。 -->
+        <activity android:name=".SurfaceProbeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
         <service android:name=".OverlayService"
             android:exported="false" />
     </application>
