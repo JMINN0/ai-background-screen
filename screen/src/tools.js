@@ -114,18 +114,52 @@ export async function start(args) {
      * 投桌面（launcher）而不是别的：它是每台设备都有的、不需要登录的、
      * 一定渲染出画面的 App。用户随后用 vdisplay_launch 换掉就行。
      */
-    const castPkg = args?.pkg || await pickHomeLike();
-    if (castPkg) {
+    /* **投屏候选 + 浮窗可见性检测（2026-11-24 审查建议）。**
+     *
+     * 背景：有些 App 的窗口带 `SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS`
+     * （实测 `com.android.documentsui` 确定有），它一出现在虚拟屏上，
+     * 系统就把我们的悬浮窗强制隐藏。
+     *
+     * 静态候选表扛不住这件事 —— 所以改成动态：投上去 → 查浮窗还在不在 →
+     * 被藏了就排除这个包、换下一个候选重试。
+     *
+     * 最多试 3 轮，避免无限循环。
+     */
+    let castPkg = args?.pkg || null;
+    const _tried = [];
+    if (!castPkg) {
+      for (let round = 0; round < 3; round += 1) {
+        const cand = await pickHomeLike({ exclude: _tried });
+        if (!cand) break;
+        _tried.push(cand);
+        try {
+          const lr = await launch({ pkg: cand });
+          await new Promise((res) => setTimeout(res, 900));
+          /* 查浮窗有没有被这个 App 藏掉 */
+          const w = await windowState();
+          if (w.exists && w.shown === false) {
+            parts.push(`${cand} 会把悬浮窗藏掉（HIDE_NON_SYSTEM_OVERLAY），换下一个`);
+            continue;   // 试下一个候选
+          }
+          castPkg = cand;
+          parts.push('已把 ' + castPkg + ' 投到这块屏：' + String(lr?.text || '').split('\n')[0]);
+          break;
+        } catch (e) {
+          parts.push('⚠️ 投 ' + cand + ' 失败：' + String(e?.message || e).slice(0, 50));
+        }
+      }
+      if (!castPkg && _tried.length) {
+        parts.push('⚠️ 试过 ' + _tried.join(' / ') + ' 都不合适，屏是空的');
+      }
+    } else if (castPkg) {
       try {
-        const lr = await launch({ pkg: castPkg, activity: args?.pkg ? args.activity : undefined });
+        const lr = await launch({ pkg: castPkg, activity: args.activity });
         parts.push('已把 ' + castPkg + ' 投到这块屏：' + String(lr?.text || '').split('\n')[0]);
         // 给它一点时间渲染出第一帧，自检才有东西可查
         await new Promise((res) => setTimeout(res, 1200));
       } catch (e) {
         parts.push('⚠️ 投屏失败：' + String(e?.message || e).slice(0, 60));
       }
-    } else {
-      parts.push('⚠️ 没找到可投的桌面 App，屏是空的（自检会报画面帧可取失败）');
     }
 
     /* **快速自检 + 自动修复。**
@@ -316,7 +350,13 @@ export async function autoRepair(checks, ctx = {}) {
  * 为什么需要：空屏时 ImageReader 不出帧，自检拿不到画面。
  * 桌面是每台设备都有、不需要登录、一定渲染的 App。
  */
-export async function pickHomeLike() {
+/**
+ * @param {{exclude?:string[]}} [opts]
+ *   `exclude` —— 已经试过、会隐藏浮窗的包名，跳过它们。
+ *   由 `start()` 在检测到浮窗被藏之后传进来，换下一个候选。
+ */
+export async function pickHomeLike(opts = {}) {
+  const exclude = new Set((opts && opts.exclude) || []);
   /*
    * **挑一个「投上去一定有画面、又不会打断用户」的 App。**
    *
@@ -351,6 +391,19 @@ export async function pickHomeLike() {
     'com.android.settings',            // activity-alias，无 launchMode = standard，一定渲染
     'com.android.deskclock',           // 时钟
     'com.android.calculator2',         // 计算器
+    /* **下面三个是 2026-11-24 实测新增的。**
+     *
+     * 审查指出：删掉 documentsui 之后只剩 settings/deskclock/calculator，
+     * 而这台 ZTE ROM 上 deskclock 和 zte/zui calculator **都没装**，
+     * settings 又经常在跑（会被跳过）→ pickHomeLike 返回 null → 屏永远是空的。
+     *
+     * 实测这台机器上「已安装 + 不带 HIDE_OVERLAY_WINDOWS」的有：
+     *   settings / calculator2 / gallery3d / contacts / calendar
+     * 只有 documentsui 带那个会藏浮窗的权限。
+     */
+    'com.android.gallery3d',           // 图库
+    'com.android.contacts',            // 联系人
+    'com.android.calendar',            // 日历
   ];
 
   /* **要查所有屏的焦点，不只主屏。**
@@ -383,6 +436,7 @@ export async function pickHomeLike() {
   if (!allFocus.trim()) return null;
 
   for (const pkg of candidates) {
+    if (exclude.has(pkg)) continue;         // 上一轮试过会藏浮窗，跳过
     if (allFocus.includes(pkg)) continue;   // 任何一块屏上正在用，都别 force-stop
     /* **在后台跑着的也别碰。**
      *
@@ -1268,36 +1322,65 @@ export async function returnToMain(args = {}) {
   const pkg = String(args.pkg || '').trim();
   if (!pkg) return { text: '要给 pkg，比如 com.microsoft.emmx' };
 
-  /* ① 记下用户原来的前台。mainFocus 返回的是 "pkg/activity" 形式。 */
+  /* **shell 引用：必须包成单引号并转义内部的单引号。**
+   *
+   * 审查抓到（2026-11-24）：`mainFocus()` 的正则显式允许 activity 名里带 `$`
+   * （内部类 Activity，比如 `...Settings$TopLevelSettingsActivity`）。
+   * 直接 `am start -n ${prev}` 拼进 shell，设备上的 sh 会把 `$TopLevelSettingsActivity`
+   * 当变量展开成空 → 实际启动的是错误组件，用户被扔到别的界面。
+   * 这是**确定性 bug**，不是偶发。
+   */
+  const shq = (v) => "'" + String(v == null ? '' : v).replace(/'/g, "'\\''") + "'";
+
+  /* ① 记下用户原来的前台 */
   let prev = '';
   try { prev = await vd.mainFocus(); } catch { /* ignore */ }
 
   /* ② 找这个包的入口 component */
-  let comp = args.activity ? `${pkg}/${args.activity}` : '';
-  if (!comp) {
+  let comp = '';
+  if (args.activity) {
+    comp = `${pkg}/${args.activity}`;
+  } else {
     const res = await vd.shell(
-      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${pkg} 2>/dev/null | tail -1`
+      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${shq(pkg)} 2>/dev/null | tail -1`
     );
     const m = String(res || '').trim().match(/^([\w.]+)\/([\w.$]+)$/);
-    comp = m ? `${m[1]}/${m[2]}` : pkg;
+    comp = m ? `${m[1]}/${m[2]}` : '';
   }
+  if (!comp) return { text: `找不到 ${pkg} 的启动入口。可以显式传 activity。` };
 
-  /* ③ 搬回主屏（这一步会到前台） */
-  const out = await vd.shell(`am start --display 0 -n ${comp} 2>&1`);
-  await new Promise((r) => setTimeout(r, 800));
+  /* ③ 搬回主屏。**用 -W 等它真的起来**，不要盲等固定毫秒。
+   *
+   * 审查指出：原来固定 800ms 不够 —— 冷启动浏览器要 1.5~3 秒，
+   * 第二发会在它起来之前执行，最后仍被浏览器顶上来，工具却谎报「已拉回」。 */
+  const out = await vd.shell(`am start -W --display 0 -n ${shq(comp)} 2>&1`);
 
-  /* ④ 立刻把用户原来的 App 拉回前台 */
+  /* ④ 把用户原来的 App 拉回前台，并且**轮询确认真的成了** */
   let restored = false;
+  let tries = 0;
   if (prev && prev.includes('/') && !prev.startsWith(pkg + '/')) {
-    const r2 = await vd.shell(`am start -n ${prev} 2>&1`);
-    restored = !/Error|Exception/.test(String(r2 || ''));
+    const [pp, pa] = prev.split('/');
+    for (let i = 0; i < 12; i += 1) {
+      tries = i + 1;
+      await vd.shell(`am start -n ${shq(pp + '/' + pa)} 2>&1`).catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
+      let now = '';
+      try { now = await vd.mainFocus(); } catch { /* ignore */ }
+      if (now === prev) { restored = true; break; }
+    }
+  } else if (!prev) {
+    restored = false;   // 没测到原前台，不谎报
+  } else {
+    restored = true;    // 原前台就是目标包，不用拉
   }
 
   const lines = [
-    `${pkg} 已还回主屏。`,
-    `你原来的 App：${prev || '(没测到)'} → ${restored ? '已拉回前台 ✅' : '没能拉回（你可能要手动切一下）'}`,
+    `${pkg} 已还回主屏（后台）。`,
+    prev
+      ? `你原来的 App：${prev} → ${restored ? `已拉回前台 ✅（试了 ${tries} 次）` : '**没能确认拉回**，你可能要手动切一下'}`
+      : '没测到你原来的前台 App，请自己确认一下现在停在哪。',
     '',
-    '目标 App 现在在主屏后台，不会挡着你。',
+    '如果看到的是目标 App，说明拉回失败 —— 按一次 Home 或切回你原来的 App 即可。',
   ];
   return { text: lines.join('\n'), restored };
 }
@@ -1323,30 +1406,49 @@ export async function returnToMain(args = {}) {
 export async function windowState(port) {
   const out = { exists: false, shown: false, collapsed: null, x: null, y: null, w: null, h: null, port: null };
   try {
-    const pat = port ? `dsh-overlay:${port}` : 'dsh-overlay:';
+    /* **按 `Window #` 切块，只取包含目标端口的那一块。**
+     *
+     * 审查抓到（2026-11-24）：原来用 `grep -A25` 取后 25 行，
+     * 而一个 window block 有 30~50 行 —— 25 行不够，
+     * 会串到**下一个窗口**的 `Surface: shown=`，于是误报「浮窗被藏」。
+     */
+    const pat = port ? `dsh-overlay:${port}[^0-9]` : 'dsh-overlay:';
     const d = await vd.shell(
-      `dumpsys window windows 2>/dev/null | grep -A25 '${pat}' | head -30`
+      `dumpsys window windows 2>/dev/null | grep -E 'Window #|dsh-overlay:|Surface: shown=|mAttrs='`
     );
-    const t = String(d || '');
-    if (!t.trim()) return out;
+    const all = String(d || '');
+    if (!all.trim()) return out;
+
+    /* 切块：每块以 `Window #` 开头 */
+    const blocks = all.split(/(?=Window #)/);
+    const target = blocks.find((b) => new RegExp(pat).test(b));
+    if (!target) return out;
     out.exists = true;
 
-    // 端口
-    const mp = t.match(/dsh-overlay:(\d+)/);
+    /* 端口：用 `[^0-9]` 边界，避免查 4123 命中 41234 */
+    const mp = target.match(/dsh-overlay:(\d+)/);
     if (mp) out.port = Number(mp[1]);
 
-    // 可见性
-    out.shown = /Surface: shown=true/.test(t);
+    out.shown = /Surface: shown=true/.test(target);
 
-    // 位置和尺寸：mAttrs={(x,y)(WxH)
-    const ma = t.match(/mAttrs=\{\((-?\d+),(-?\d+)\)\((\d+)x(\d+)\)/);
+    const ma = target.match(/mAttrs=\{\((-?\d+),(-?\d+)\)\((\d+)x(\d+)\)/);
     if (ma) {
       out.x = Number(ma[1]); out.y = Number(ma[2]);
       out.w = Number(ma[3]); out.h = Number(ma[4]);
-      /* **最小化判定看宽度。**
-       * 展开时宽 = 屏幕宽 * 0.46 左右（这台机器上 486px），
-       * 最小化时 36dp ≈ 117px。用 200px 当分界线足够宽松。 */
-      out.collapsed = out.w < 200;
+
+      /* **最小化判定用「相对屏幕宽度的比例」，不用绝对像素。**
+       *
+       * 原来写死 `w < 200`：这台机器（密度 520）展开 486px、收起 117px，能用。
+       * 但换台 1080p/密度 1.25 的手机，展开可能只有 192px → 恒判收起。
+       * 收起时宽约是屏幕宽的 9~10%，展开时约 40~46%，用 20% 当分界线两头都安全。
+       */
+      let sw = 0;
+      try {
+        const sz = await vd.shell('wm size 2>/dev/null | head -1');
+        const m = String(sz || '').match(/(\d+)x(\d+)/);
+        if (m) sw = Number(m[1]);
+      } catch { /* 拿不到就退回绝对阈值 */ }
+      out.collapsed = sw > 0 ? (out.w < sw * 0.20) : (out.w < 200);
     }
   } catch { /* 查不到就当不存在 */ }
   return out;

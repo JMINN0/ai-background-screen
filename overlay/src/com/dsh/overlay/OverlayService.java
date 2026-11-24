@@ -1326,7 +1326,10 @@ public class OverlayService extends Service {
                                 int gL = gestureInsetPx(false);
                                 int gR = gestureInsetPx(true);
                                 int swNow = getResources().getDisplayMetrics().widthPixels;
-                                int wNow = Math.max(dp(40), curW);
+                                /* 收起态要用真实宽度，否则贴边判定永远算成「没贴边」。 */
+                                int wNow = collapsed
+                                        ? Math.max(dp(20), lp.width)
+                                        : Math.max(dp(40), curW);
                                 boolean flushLeft = lp.x <= dp(1);
                                 boolean flushRight = (lp.x + wNow) >= (swNow - dp(1));
                                 float rawX = e.getRawX();
@@ -1401,7 +1404,19 @@ int dx = (int)(e.getRawX() - downX);
                                 kw2 = Math.max(dp(40), curW);
                                 kh2 = Math.max(dp(40), curH);
                             }
-                            int kx2 = Math.max(dp(72), kw2 / 2);
+                            /* **kx2 必须 ≤ kw2/2，否则左边界变成正数。**
+                             *
+                             * 审查抓到（2026-11-24）：收起时 kw2 = 117px，
+                             * 而 `Math.max(dp(72), kw2/2)` = max(234, 58) = 234 > 117，
+                             * 于是 `-(kw2 - kx2)` = -(117-234) = **+117**（正数！）
+                             * → lp.x 被钉在 [117, sw-234]，最小化的窗左右各留一条缝，
+                             * 而且下面 flushLeft/flushRight 的贴边让手势逻辑永久失效。
+                             *
+                             * 展开态保留 dp(72) 的最小半宽（窗口够宽，留点余量没关系）；
+                             * 收起态直接用 kw2/2（窗口才 36dp，再留 72dp 就倒挂了）。
+                             */
+                            int kHalf = Math.max(dp(20), kw2 / 2);
+                            int kx2 = collapsed ? kHalf : Math.max(dp(72), kHalf);
                             lp.x = Math.max(-(kw2 - kx2), Math.min(sw2 - kx2, startX + dx));
                             lp.y = Math.max(0, Math.min(Math.max(0, sh2 - kh2), startY + dy));
                             try { wm.updateViewLayout(root, lp); } catch (Throwable t) { }
