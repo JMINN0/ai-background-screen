@@ -649,6 +649,48 @@ export function userStateSpec() {
 }
 
 /** 查某个 App 的风控等级（读 docs/risk.json，44 个 App 已标注）。 */
+export function returnSpec() {
+  return {
+    name: 'vdisplay_return',
+    description: [
+      '**把一个 App 从虚拟屏还回主屏，但不拉到前台。**',
+      '',
+      '用 `am start --display 0` 直接还回去会把 App 顶到用户面前，打断他正在做的事。',
+      '这个工具会记下用户原来的前台 App，搬完立刻把它拉回来 —— 目标 App 落在主屏后台。',
+      '',
+      '什么时候用：任务做完了，把投上去的 App 还给用户（比如浏览器），',
+      '让他自己决定什么时候点开，而不是啪一下糊在他脸上。',
+    ].join('\n'),
+    parameters: {
+      pkg: { type: 'string', required: true, description: '包名，比如 com.microsoft.emmx' },
+      activity: { type: 'string', description: '可选。不传会自动查启动入口。' },
+    },
+    output: { text: 'string' },
+  };
+}
+
+export function windowStateSpec() {
+  return {
+    name: 'vdisplay_window',
+    description: [
+      '**查悬浮窗现在的状态：还在不在、最小化没有、在哪、多大。**',
+      '',
+      '为什么需要：用户经常把浮窗最小化来少挡主屏。以前插件不知道最小化和「窗口没了」的区别，',
+      '调工具看到没窗口就以为要重建 —— 其实用户只是收起来了。',
+      '',
+      '返回里关键看两个字段：',
+      '  · collapsed=true  → 用户缩到最小了，**不要去展开或重建**，它还在正常工作',
+      '  · shown=false     → 被系统或某个 App 藏了（比如文件管理器带 HIDE_NON_SYSTEM_OVERLAY）',
+      '',
+      '什么时候调：不确定浮窗状态时；用户说「浮窗不见了」时先调这个再决定要不要重建。',
+    ].join('\n'),
+    parameters: {
+      port: { type: 'number', description: '可选。不传就查第一个浮窗。' },
+    },
+    output: { text: 'string' },
+  };
+}
+
 export function riskSetSpec() {
   return {
     name: 'vdisplay_risk',

@@ -1380,8 +1380,27 @@ int dx = (int)(e.getRawX() - downX);
                               /* ═══ 1. 先跟手拖动（窗口跟手指走）═══ */
                             int sw2 = getResources().getDisplayMetrics().widthPixels;
                             int sh2 = getResources().getDisplayMetrics().heightPixels;
-                            int kw2 = Math.max(dp(40), curW);
-                            int kh2 = Math.max(dp(40), curH);
+                            /* **最小化时要用「当前真实尺寸」，不能用 curW/curH。**
+                             *
+                             * 用户 2026-11-24 报的 bug：「最小化后拖拽删除时，
+                             * 悬浮窗下降到屏幕三分之一就不能再往下拖了，
+                             * 但实际是可以拖到删除位置的，只是显示跟实际位置有偏差」。
+                             *
+                             * 根因：`curW/curH` 是**展开时**的尺寸（约 486x1074），
+                             * `toggle()` 只改了 lp.width/height，没同步它们。
+                             * 于是下面的 `sh2 - kh2` 用 1074 去算边界，
+                             * 窗口其实只有 208 高 → 显示被卡在 60% 位置，
+                             * 而手指（和删除判定用的 fy）还能继续往下。
+                             *
+                             * 修法：收起状态用 lp 里的真实小尺寸。 */
+                            int kw2, kh2;
+                            if (collapsed) {
+                                kw2 = Math.max(dp(20), lp.width);
+                                kh2 = Math.max(dp(20), lp.height);
+                            } else {
+                                kw2 = Math.max(dp(40), curW);
+                                kh2 = Math.max(dp(40), curH);
+                            }
                             int kx2 = Math.max(dp(72), kw2 / 2);
                             lp.x = Math.max(-(kw2 - kx2), Math.min(sw2 - kx2, startX + dx));
                             lp.y = Math.max(0, Math.min(Math.max(0, sh2 - kh2), startY + dy));

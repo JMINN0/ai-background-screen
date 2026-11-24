@@ -1245,6 +1245,113 @@ async function overlayStart(port) {
  *
  * **多窗口后必须支持单关**：一块屏停止推流时，不该把别的屏的窗口也关了。
  */
+/**
+ * **把一个 App 从虚拟屏还回主屏 —— 但不要拉到前台。**
+ *
+ * 用户 2026-11-24 的原始要求：「你浏览器用完给回我时放后台就行了，
+ * 不需要把浏览器直接在我主屏打开，不然太影响我操作了」。
+ *
+ * 为什么不能简单 `am start --display 0`：那会把 App 拉到前台，
+ * 用户正在看的视频/正在打的字全被打断。
+ *
+ * 做法（`am stack move-task` 在 Android 14+ 被拒，实测报
+ * 「Attempt to move task ... to rootTask ...」，所以走这条路）：
+ *   ① 记下用户现在主屏前台是哪个 component
+ *   ② `am start --display 0` 把目标 App 搬回主屏（它会短暂到前台）
+ *   ③ 立刻把 ① 记下的 App 拉回前台
+ * 结果：目标 App 在 display 0 的后台，用户原来的 App 还在前台。
+ * 中间会闪一下，但比「直接被顶走」好得多。
+ *
+ * @param {{pkg?:string, activity?:string}} args
+ */
+export async function returnToMain(args = {}) {
+  const pkg = String(args.pkg || '').trim();
+  if (!pkg) return { text: '要给 pkg，比如 com.microsoft.emmx' };
+
+  /* ① 记下用户原来的前台。mainFocus 返回的是 "pkg/activity" 形式。 */
+  let prev = '';
+  try { prev = await vd.mainFocus(); } catch { /* ignore */ }
+
+  /* ② 找这个包的入口 component */
+  let comp = args.activity ? `${pkg}/${args.activity}` : '';
+  if (!comp) {
+    const res = await vd.shell(
+      `cmd package resolve-activity --brief -c android.intent.category.LAUNCHER ${pkg} 2>/dev/null | tail -1`
+    );
+    const m = String(res || '').trim().match(/^([\w.]+)\/([\w.$]+)$/);
+    comp = m ? `${m[1]}/${m[2]}` : pkg;
+  }
+
+  /* ③ 搬回主屏（这一步会到前台） */
+  const out = await vd.shell(`am start --display 0 -n ${comp} 2>&1`);
+  await new Promise((r) => setTimeout(r, 800));
+
+  /* ④ 立刻把用户原来的 App 拉回前台 */
+  let restored = false;
+  if (prev && prev.includes('/') && !prev.startsWith(pkg + '/')) {
+    const r2 = await vd.shell(`am start -n ${prev} 2>&1`);
+    restored = !/Error|Exception/.test(String(r2 || ''));
+  }
+
+  const lines = [
+    `${pkg} 已还回主屏。`,
+    `你原来的 App：${prev || '(没测到)'} → ${restored ? '已拉回前台 ✅' : '没能拉回（你可能要手动切一下）'}`,
+    '',
+    '目标 App 现在在主屏后台，不会挡着你。',
+  ];
+  return { text: lines.join('\n'), restored };
+}
+
+/**
+ * **查浮窗现在的状态：在不在、最小化没有、在哪、多大。**
+ *
+ * 用户 2026-11-24 说：「有时候我看浮窗太挡主屏我最小化后你能感觉出来吗？
+ * 会不会让你误以为浮窗没了……有时候我都不敢动浮窗」。
+ *
+ * 以前确实不知道 —— `overlayStop` 查过一次可见性就完了，没有「当前状态」这个概念。
+ * 用户一最小化，我就只能看到浮窗尺寸变了，没有任何接口能读。
+ *
+ * 判定依据：
+ *   · 有没有 `dsh-overlay:<port>` 窗口
+ *   · `Surface: shown=true/false`（被系统藏了没）
+ *   · mAttrs 的宽高：展开约 486x1074，最小化约 117x208（差一个数量级）
+ *
+ * @param {number} [port] 不传就查第一个浮窗
+ * @returns {Promise<{exists:boolean, shown:boolean, collapsed:boolean|null,
+ *   x:number|null, y:number|null, w:number|null, h:number|null, port:number|null}>}
+ */
+export async function windowState(port) {
+  const out = { exists: false, shown: false, collapsed: null, x: null, y: null, w: null, h: null, port: null };
+  try {
+    const pat = port ? `dsh-overlay:${port}` : 'dsh-overlay:';
+    const d = await vd.shell(
+      `dumpsys window windows 2>/dev/null | grep -A25 '${pat}' | head -30`
+    );
+    const t = String(d || '');
+    if (!t.trim()) return out;
+    out.exists = true;
+
+    // 端口
+    const mp = t.match(/dsh-overlay:(\d+)/);
+    if (mp) out.port = Number(mp[1]);
+
+    // 可见性
+    out.shown = /Surface: shown=true/.test(t);
+
+    // 位置和尺寸：mAttrs={(x,y)(WxH)
+    const ma = t.match(/mAttrs=\{\((-?\d+),(-?\d+)\)\((\d+)x(\d+)\)/);
+    if (ma) {
+      out.x = Number(ma[1]); out.y = Number(ma[2]);
+      out.w = Number(ma[3]); out.h = Number(ma[4]);
+      /* **最小化判定看宽度。**
+       * 展开时宽 = 屏幕宽 * 0.46 左右（这台机器上 486px），
+       * 最小化时 36dp ≈ 117px。用 200px 当分界线足够宽松。 */
+      out.collapsed = out.w < 200;
+    }
+  } catch { /* 查不到就当不存在 */ }
+  return out;
+}
+
 export async function overlayStop(port) {
   /* **服务没在跑就别发停止指令。**
    *
