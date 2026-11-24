@@ -276,99 +276,23 @@ public class OverlayService extends Service {
     /** 横屏提示是否已经弹过（1=弹过，0=没弹，-1=初始）。避免每次转屏都弹。 */
     private int toastShownForWatch = -1;
 
+    /** **横屏自动收起：已移除（2026-11-25 用户反馈）。**
+     *
+     * 原来横屏时会把浮窗自动缩到 36dp，理由是「横屏多半在看视频，别挡着」。
+     * 但判断依据只有 `Configuration.ORIENTATION_LANDSCAPE`，
+     * 分不清「在看视频」和「横屏用别的 App」，用户体感是被系统动了他的窗口。
+     *
+     * 产品意图只要求「随时能缩到最小」（用户主动），没要求「横屏自动缩」。
+     * 所以整段删除。方法名保留，只为不动那些调用点（onConfigurationChanged /
+     * 屏幕尺寸变化回调），它们本来也只是在尽一个「跟着屏幕变」的义务。
+     *
+     * 2026-11-25 对抗审查指出：上一版我只在函数开头加了个
+     * `autoCollapseLandscape = false` 就 return，后面几十行全成了不可达代码 ——
+     * 那正是 AGENTS.md 里记的「看着对但从来没执行」，比不修更坑后来人。
+     * 所以这次直接删干净。
+     */
     private void updateWatchMode() {
-        /* **横屏自动收起：默认关闭（2026-11-24 用户反馈）。**
-         *
-         * 用户原话：「我横屏状态下悬浮窗会被最小化，虽然点击能放大但这算是个小bug吧」。
-         *
-         * 这个行为是 2026-11-22 动效审计时加的：横屏时把浮窗缩到 36dp，
-         * 理由是「横屏多半在看视频，别挡着」。但：
-         *   ① 判断依据只有 `Configuration.ORIENTATION_LANDSCAPE`，
-         *      分不清「看视频」和「横屏用别的 App」；
-         *   ② 产品意图只要求「随时能缩到最小」，没要求「横屏自动缩」；
-         *   ③ 用户体感是被系统动了他的窗口。
-         *
-         * 所以默认关。想开的话把这里改成 true（或者以后做成设置项）。
-         */
-        boolean autoCollapseLandscape = false;
-        if (!autoCollapseLandscape) {
-            /* 兜底：如果之前被自动收起过，这里恢复展开 */
-            if (watchMode) {
-                watchMode = false;
-                for (Win w : wins.values()) {
-                    if (w.root == null) continue;
-                    try {
-                        if (w.collapsedByWatch && w.collapsed && !w.expandedInWatch) {
-                            w.collapsedByWatch = false;
-                            w.toggle();
-                        } else {
-                            w.collapsedByWatch = false;
-                        }
-                    } catch (Throwable t) { /* 单个失败不影响其它 */ }
-                }
-            }
-            return;
-        }
-        boolean landscape;
-        try {
-            landscape = getResources().getConfiguration().orientation
-                    == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-        } catch (Throwable t) {
-            landscape = lastScreenW > lastScreenH;
-        }
-        if (landscape == watchMode) return;
-        watchMode = landscape;
-        for (Win w : wins.values()) {
-            if (w.root == null) continue;
-            try {
-                if (watchMode) {
-                    if (!w.collapsed) { w.collapsedByWatch = true; w.toggle(); }
-                } else if (w.collapsedByWatch && !w.expandedInWatch) {
-                    w.collapsedByWatch = false;
-                    w.toggle();     // 恢复展开
-                } else {
-                    w.collapsedByWatch = false;
-                }
-                /* **不要每次转屏都清空「用户手动展开过」这个记忆。**
-                 * 2026-11-22 对抗审查指出：原来这里无条件清，
-                 * 于是用户横屏手动展开看细节 → 转竖屏 → 再转回横屏，
-                 * 又会被自动收起一次。用户的感受是「点开了又被收起来」。
-                 * 只在**回到竖屏**时清（那时候 watchMode 本来就不起作用），
-                 * 横屏期间一直记着用户的选择。
-                 */
-                if (!watchMode) w.expandedInWatch = false;
-            } catch (Throwable t) { /* 单个失败不影响其它 */ }
-        }
-        if (watchMode) {
-            try { layoutWatchThumbs(); } catch (Throwable t) { /* ignore */ }
-        }
-        /* **告诉用户「它为什么变小了」。**
-         *
-         * 2026-11-22 对抗审查指出：横屏自动收起后窗口从占屏 15% 缩成 36dp，
-         * 而收起时标签是隐藏的（36dp 放不下字），用户完全不知道发生了什么。
-         * 他的原话「我最小化悬浮窗你怎么还又开了一个」说明他对窗口自己变化很敏感。
-         *
-         * 用 Toast 而不是标签：36dp 里放不下字，而 Toast 不需要空间、
-         * 自动消失、不会挡住视频。只在**进入收起**时提示，展开时不提示。
-         */
-        try {
-            if (watchMode && toastShownForWatch < 0) {
-                toastShownForWatch = 1;
-                /* Toast 必须在主线程，onConfigurationChanged 有时不在主线程上（厂商 ROM），
-                 * 所以统一 post 到 ui handler 再弹。 */
-                ui.post(new Runnable() {
-                    public void run() {
-                        try {
-                            android.widget.Toast.makeText(OverlayService.this,
-                                "横屏了，浮窗自动收起成小窗以免挡住画面，点一下可以展开",
-                                android.widget.Toast.LENGTH_SHORT).show();
-                        } catch (Throwable t) { /* 弹不出来就算了，不影响功能 */ }
-                    }
-                });
-            } else if (!watchMode && toastShownForWatch > 0) {
-                toastShownForWatch = 0;
-            }
-        } catch (Throwable t) { /* Toast 失败不影响功能 */ }
+        // 什么都不做。保留这个空方法是为了不动调用点。
     }
 
     /** 横屏收起后，把缩略图排到顶部中间一排，别乱放。 */
@@ -1716,7 +1640,13 @@ int dx = (int)(e.getRawX() - downX);
             if (label != null) {
                 // **始终显示「屏 N」**：只显示数字会被误认为窗口坏了
                 refreshLabel();
-                label.setTextSize(TypedValue.COMPLEX_UNIT_SP, collapsed ? 11 : 10);
+                /* **不要在这里写死字号。**
+                 * 2026-11-25 对抗审查抓到：applyLabelScale() 会量出 7~9sp，
+                 * 但 toggle() 这里又把字号设回固定 10/11sp —— 两个机制互相打脸，
+                 * 结果是「屏909 被截成 屏9…」那个老问题在每次收起/展开后复发。
+                 * 改成调自适应重算，让字号始终由「文字多宽 / 可用宽度」决定。
+                 */
+                applyLabelScale();
             }
             if (!collapsed) {
                 if (bar != null) bar.setVisibility(View.VISIBLE);

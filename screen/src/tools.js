@@ -823,9 +823,15 @@ export async function input(args) {
              *
              * 标记只是给用户看的视觉反馈，晚一帧、少一个点都不影响动作本身。
              */
+            /* 取一次当前屏 id，给 markTap 用（异步，拿不到就不传）。 */
+            let _markDispId = (verStatus && verStatus.displayId) || null;
             import('./framesrv.js').then((fsrv) => {
               for (const pt of pts) {
-                try { fsrv.markTap(pt[0], pt[1]).catch(() => {}); } catch (e) { /* ignore */ }
+                /* **必须传 displayId。**
+                 * 2026-11-25 对抗审查抓到：不传就走 framesrv 的 activeDisplayId，
+                 * 多屏时点 A 屏、波纹画到 B 屏上 —— 用户看到的是错的位置。
+                 */
+                try { fsrv.markTap(pt[0], pt[1], _markDispId).catch(() => {}); } catch (e) { /* ignore */ }
               }
             }).catch(() => {});
         } catch { /* 快路径失败不影响慢路径 */ }

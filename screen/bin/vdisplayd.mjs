@@ -799,6 +799,12 @@ function startIdleWatch() {
         streamFailStreak = 0;
       } else if (streamFailStreak >= 3) {
         console.error('[vdisplayd] 推流连续 3 次拉不起来（port ' + port + '），停止重试');
+
+        /* **放弃重试时必须让用户看见。**
+         * 产品意图要求「状态能看出」。原来这里只写 stderr 就完事，
+         * 用户和 AI 都不知道推流已经断了（截图还走 screencap，看起来一切正常）。
+         * 写进 opmode 的第二段（操作方式），浮窗会显示出来。 */
+        try { vd.markOpMode("?|推流中断|" + (st.displayId || "-")); } catch { /* ignore */ }
       } else {
         /* **启动宽限期：刚起过推流就别急着判死。**
          *
@@ -857,6 +863,11 @@ function startIdleWatch() {
              * 窗口该不该存在，由用户和 AI 决定，不该由看门狗决定。
              */
             await T.streamStart({ displayId: st.displayId, fps: 2, overlay: false });
+            /* **必须更新宽限时间戳。**
+             * 2026-11-25 审查抓到：lastStreamStartAt 只在 start/poolCreate 里更新，
+             * 看门狗这条路从不更新 → 上面那个 60 秒宽限对它从来没生效，
+             * 于是一旦进入重试就每 10 秒打一次，连打 3 次就放弃。 */
+            lastStreamStartAt = Date.now();
         } catch (e) {
           console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
         }
