@@ -158,6 +158,40 @@ curl -s "http://127.0.0.1:38820/mark?nx=0.5&ny=0.5"
 
 ## 强制规则
 
+### 🔴 绝对不许动用户的主屏（2026-11-24 血的教训）
+
+**我在一天之内误操作了用户主屏三次**，每次都造成了真实困扰（打断视频、打断聊天）。
+三次都不是代码 bug，都是**我自己临时敲的命令**：
+
+```
+❌ am start -n com.android.settings/.Settings        ← 没带 --display，开在主屏
+❌ input swipe 117 268 117 2400                      ← 想拖浮窗，坐标没命中，划走了用户的视频
+```
+
+**硬规则，任何情况下不许违反：**
+
+```bash
+# ① 启动任何 App 必须带 --display
+am start --display <虚拟屏id> -n pkg/activity       ✅
+am start -n pkg/activity                            ❌ 会开在主屏，绝对不行
+
+# ② 注入任何输入必须带 -d
+input -d <虚拟屏id> tap/swipe/text/keyevent         ✅
+input tap/swipe/text/keyevent                       ❌ 会打到主屏，绝对不行
+
+# ③ 浮窗的位置不要靠「注入触摸」去测
+#    浮窗是 TYPE_APPLICATION_OVERLAY，注入的触摸不一定被它接收，
+#    坐标一偏就落到主屏上。要测浮窗状态用 `vdisplay_window` 工具查，
+#    要测拖拽让用户自己试。
+```
+
+**判断标准**：这条命令会不会让用户看到任何东西变化？
+会，就不要跑，或者先问他。
+
+**唯一的例外**：用户明确要求你操作主屏。
+
+---
+
 - **不要碰 `accelerometer_rotation`**（用户 2026-11-05 明确禁止）
 - **不要在没有确认前台的情况下 `am force-stop`**
 - **操作浏览器只能进 Edge 的「AI操作」标签组**（用户 2026-11-05 定）
