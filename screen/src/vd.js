@@ -1228,7 +1228,27 @@ export async function launch(pkg, activity, mode = 'move') {
    * 正确做法：发现目标就是主屏前台 → 直接拒绝，如实告诉调用方。
    * 不杀、也不投（投了也会把主屏任务搬走）。
    */
+  /* **fail-closed：测不到主屏焦点就拒绝 move，不许赌运气。**
+   *
+   * 第一性原理审查（2026-11-24）抓到：这里原来是 fail-open ——
+   * `mainFocus()` 返回空串时（建屏/销毁瞬间、adb 抖动、dumpsys 超时），
+   * 上面那个 `if (_mainPkg && ...)` 直接跳过守卫，
+   * 而 move 模式会把主屏上该 App 的任务 reparent 走 ——
+   * **用户正看着的 App 会当场消失**。
+   *
+   * 「不打扰用户」这种硬约束不能靠"恰好测到了"来保证。
+   * 测不到就拒绝，让 AI 重试一次或者改用 fresh 模式（fresh 会 force-stop，
+   * 反而更明确：用户能看到 App 被重启，而不是凭空被搬走）。
+   */
   const _mainPkg = String(mainBefore || '').split('/')[0].trim();
+  if (!_mainPkg && mode === 'move') {
+    return {
+      ok: false,
+      hint: '测不到主屏当前焦点，不能安全接管已有实例（move 模式会把主屏上这个 App 的任务搬走）。'
+        + ' 重试一次；还是测不到就改用 mode:"fresh"（会先 force-stop，行为更明确），'
+        + ' 或者用 vdisplay_launch 前先调 vdisplay_status 确认状态。',
+    };
+  }
   if (_mainPkg && _mainPkg === pkg) {
     return { ok: false, hint: `「${pkg}」现在正在用户主屏前台使用，投到虚拟屏会杀掉它`
       + `（用户可能正在里面编辑东西，比如剪视频）。先让用户切到别的 App，`
@@ -2137,7 +2157,18 @@ export async function flushAutoEdge(phase) {
   } catch { /* 读不到就当没有，往下走 */ }
   const now = Date.now();
   const color = phase === 'done' ? '#34D399' : '#7FD9FF';
-  const ttl = phase === 'done' ? 4000 : 0;
+  /* **working 也要给 TTL，不能是 0（永不过期）。**
+   *
+   * 第一性原理审查（2026-11-24）抓到：原来 working 的 ttl=0，
+   * 而 EdgeView 里 `endsAt == 0` 表示永不结束 ——
+   * 于是**插件进程一死，青环就一直亮到引擎重启**。
+   * 用户看到的是「AI 还在干活」，实际上什么都没在干。
+   *
+   * 15 秒的依据：插件每个操作都会重新 flush 一次 working
+   * （5 条工具路径都调），真实操作间隔远小于 15 秒；
+   * 只有「真的停了」才会自然灭掉。
+   */
+  const ttl = phase === 'done' ? 4000 : 15000;
   let edgePort2 = 0;
   try {
     const fsP2 = Number(state.framesrvPort) || 0;
@@ -2150,7 +2181,7 @@ export async function flushAutoEdge(phase) {
     }
   } catch { /* ignore */ }
   const line = phase + '|' + color + '|1|' + now + '|' + ttl + '|' + edgePort2;
-  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; chmod 777 /data/local/tmp/dshframe 2>/dev/null; '
     + 'printf "%s" "' + line + '" > /data/local/tmp/dshframe/edge.tmp && '
     + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
     .catch(() => {});
@@ -2216,7 +2247,7 @@ async function settleIfIdleByFile(idleMs) {
    */
   const now2 = Date.now();
   const green = 'done|#34D399|1|' + now2 + '|4000|' + (line.split('|')[5] || '0');
-  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; chmod 777 /data/local/tmp/dshframe 2>/dev/null; '
     + 'printf "%s" "' + green + '" > /data/local/tmp/dshframe/edge.tmp && '
     + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
     .catch(() => {});
@@ -2309,7 +2340,7 @@ export function setEdge(mode, o = {}) {
   const line = M + '|' + color + '|' + Math.max(0, Math.min(1, inten)) + '|' + at + '|'
     + Math.round(ttl) + '|' + edgePort;
   const safe = line.replace(/["'`$\\]/g, '');
-  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; '
+  adb(['shell', 'mkdir -p /data/local/tmp/dshframe; chmod 777 /data/local/tmp/dshframe 2>/dev/null; '
     + 'printf "%s" "' + safe + '" > /data/local/tmp/dshframe/edge.tmp && '
     + 'mv -f /data/local/tmp/dshframe/edge.tmp /data/local/tmp/dshframe/edge'])
     .catch(() => {});
@@ -2335,7 +2366,7 @@ export function markOpMode(text) {
     /* **原子写**：`echo >` 是「先截断再写」，浮窗正好在截断那一瞬间读就会读到空行，
      * readStatus() 返回 null，标签退回「屏 38820」—— 又是一次可见的跳变。
      * 改成写临时文件再 mv，同目录 rename 是原子的，读到的永远是完整的一行。 */
-    let opCmd = 'mkdir -p /data/local/tmp/dshframe; '
+    let opCmd = 'mkdir -p /data/local/tmp/dshframe; chmod 777 /data/local/tmp/dshframe 2>/dev/null; '
       + 'printf "%s" "' + t + '" > /data/local/tmp/dshframe/opmode.tmp && '
       + 'mv -f /data/local/tmp/dshframe/opmode.tmp /data/local/tmp/dshframe/opmode';
     if (_fsPort > 0) {

@@ -109,7 +109,7 @@ IME 的 `InputConnection` 从用户的输入框上 detach —— 用户正在拼
 ```
 给 AI 建一块 VirtualDisplay ——
   物理上存在（合成器真的在合成它）
-  用户看不见（虚拟屏没有物理输出设备接；不带 FLAG_PUBLIC 所以也枚举不到）
+  用户看不见（虚拟屏没有物理输出设备接）。**但「枚举不到」是错的 —— 已实测证伪**：普通 App 的 `getDisplays()` 能看到这块屏（`count=2`，`name=scrcpy`，`owner=com.android.shell`），见 [QQ掉线调查.md](QQ掉线调查.md) 第 87/147 行。不带 `FLAG_PUBLIC` 只影响「能不能被当成 presentation display 用」，不影响枚举。
   焦点独立（FLAG_OWN_FOCUS）
   输入法不进来（display_ime_policy=hide）
 ```
@@ -295,6 +295,11 @@ const canHost = /FLAG_OWN_CONTENT_ONLY/.test(flags) && /FLAG_OWN_FOCUS/.test(fla
 作为它的 `DisplayDevice`。虚拟屏的输出目标是创建者给的 Surface / 内部 buffer。
 
 **条件二：没有 `FLAG_PUBLIC`。** 这块屏不进公共可见集合，只属于创建它的 uid。
+
+> ⚠️ **实测更正（2026-11-24）**：上面这句话在「能不能被别的 App 枚举到」这一点上是**错的**。
+> 普通 App 调 `getDisplays()` 确实能看到这块屏（`count=2`、`name=scrcpy`、`owner=com.android.shell`）。
+> `FLAG_PUBLIC` 影响的是「能不能当 presentation display 用」，不是「能不能被看到」。
+> 实测细节见 [QQ掉线调查.md](QQ掉线调查.md)。这对风控暴露面是**坏消息**，不要按「安全」来推理。
 
 两个条件都成立才"看不见"。**只看其中一条会得出错误结论** —— 比如以为"虚拟屏天然不可见"，
 于是自己写 display host 时忘了 flag，屏就可能被别的东西枚举出来。
@@ -516,7 +521,7 @@ Android 没有这个公开 API，因为合成器的输出目标是**显示设备
 | 单帧编码 | 约 10–20ms（400px 宽 q70） | 【实测·报告 `llms.txt`】 |
 | 悬浮窗最小化尺寸 | 117×208（dp(36)×3.25） | 【实测 M3】 |
 | 悬浮窗画面与源屏一致性 | 平均像素差 3.1（同画面，属 JPEG+缩放误差） | 【实测 M5】 |
-| 空闲时 framesrv CPU | **10.3%**（悬浮窗连着 MJPEG，它就一直编码） | 【实测 `README.md:846`】 |
+| 空闲时 framesrv CPU | **10.3%**（悬浮窗连着 MJPEG，它就一直编码） | 【实测：`top` 采样，2026-11-19；原引用指向的 README 行号已失效（README 现 467 行），数据本身来自当时的 top 输出】 |
 
 最后一条催生了 `screen_keepalive`：**AI 虚拟屏不关是有成本的，所以必须让 AI 按任务预估生命周期。**
 
@@ -1167,7 +1172,7 @@ OCR           2000-3000ms   ← 大头，占一半以上
 | 指标 | 数值 | 出处 | 等级 |
 |---|---|---|---|
 | 每块虚拟屏内存 | **75–185MB**（取决于上面跑的 App） | `README.md:847` | 【实测·报告：`dumpsys meminfo`】 |
-| 悬浮窗开着时 framesrv CPU | **10.3%** | `README.md:846` | 【实测：top，2026-11-19】 |
+| 悬浮窗开着时 framesrv CPU | **10.3%** | 当时的 top 输出（原引用行号已失效）| 【实测：top，2026-11-19】 |
 | 推流成本 | 360×640 @2fps ≈ **0.30 核、29KB/s**，不写文件 | `tool-spec.js` | 【实测·报告】 |
 | 悬浮窗 APK 安装 | **1094ms**（自动 push→install→appops→启动） | `README.md:230` | 【实测·报告】 |
 | APK 体积 | 24KB | `README.md:229` | 【实测·报告】 |

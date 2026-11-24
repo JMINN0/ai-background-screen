@@ -108,6 +108,54 @@ public class Main {
         if (w < 64 || h < 64 || w > 4096 || h > 4096) return false;
         if ((long) w * h > 4_000_000L) return false;
 
+        /* **硬守卫：绝不允许镜像 display 0。**
+         *
+         * 第一性原理审查（2026-11-24）指出：`createVirtualDisplay(name,w,h,displayId,surface)`
+         * 的第 4 个参数一旦无效（屏被销毁、转屏换了 id、传错），框架**不报错**，
+         * 而是静默回退去镜像 display 0 —— 也就是用户的主屏。
+         *
+         * 后果极具迷惑性：进程活着、帧数在涨、画面在动，但浮窗里显示的是
+         * 用户自己的屏幕（DSH Go 对话、微信聊天…）。2026-11-20 实测踩过。
+         *
+         * 所以这里先把不可能正确的情况全部拒掉，宁可让镜像建不起来
+         * （浮窗显示「重连中」），也绝不能把用户主屏投上浮窗。
+         */
+        if (displayId <= 0) return false;
+        if (displayId == 0) return false;
+        /* 屏必须真的存在，而且必须是我们认识的那块虚拟屏 */
+        try {
+            Object dmg = null;
+            Class<?> dmc = Class.forName("android.hardware.display.DisplayManager");
+            /* 用静态 getDisplay(int)（API 30+ 存在）或通过 DisplayManagerGlobal 查 */
+            java.lang.reflect.Method getDisplay =
+                    dmc.getMethod("getDisplay", int.class);
+            /* 静态方法：第一个参数是 int。老版本是实例方法，兜底用反射兼容。 */
+            Object disp = null;
+            try {
+                disp = getDisplay.invoke(null, displayId);
+            } catch (Throwable t1) {
+                /* 实例方法：拿系统 Context 的 DisplayManager */
+                try {
+                    Class<?> atCls = Class.forName("android.app.ActivityThread");
+                    Object at = atCls.getMethod("systemMain").invoke(null);
+                    Object ctx = atCls.getMethod("getSystemContext").invoke(at);
+                    Object dmInst = ctx.getClass().getMethod("getSystemService", String.class)
+                            .invoke(ctx, "display");
+                    disp = dmInst.getClass().getMethod("getDisplay", int.class)
+                            .invoke(dmInst, displayId);
+                } catch (Throwable t2) { /* 查不到就按下一道防线处理 */ }
+            }
+            if (disp == null) return false;
+            /* 再确认一次它确实是虚拟屏（type == TYPE_VIRTUAL = 5） */
+            try {
+                int type = (Integer) disp.getClass().getMethod("getType").invoke(disp);
+                if (type != 5) return false;   // 5 = Display.TYPE_VIRTUAL
+            } catch (Throwable ignore) { /* 拿不到 type 就不再收紧 */ }
+        } catch (Throwable ignore) {
+            /* 连反射都失败：说明环境异常，直接拒绝，不赌 */
+            return false;
+        }
+
         startWriter();   // 幂等；写线程从 pendingJpg 取帧发 MJPEG
 
         ImageReader nr = null;

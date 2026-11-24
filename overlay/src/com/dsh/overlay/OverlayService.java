@@ -2195,14 +2195,34 @@ int dx = (int)(e.getRawX() - downX);
         void showJpeg(byte[] jpg) {
             long now = System.currentTimeMillis();
             int n = Math.max(1, wins.size());
-            int capFps = n <= 1 ? 30 : (n <= 3 ? 15 : 8);
+            /* **收起时降到 5fps。**
+             *
+             * 第一性原理审查（2026-11-24）：36dp 的小窗里放 400px 的 JPEG，
+             * 按 30fps 解码 = 每秒 30 次 Bitmap 分配。用户收起是为了少挡屏幕，
+             * 不是为了看 30fps —— 5fps 足够「瞄一眼知道在动」。
+             */
+            int capFps = collapsed ? 5 : (n <= 1 ? 30 : (n <= 3 ? 15 : 8));
             if (now - lastFrameAt < (1000 / capFps)) { dropped++; return; }
             lastFrameAt = now;
             try {
                 // **收起时也解码**：用户要的是「很小的实时画面」，不是冻结帧。
                 // 只是不解码到不可见窗口（被 ✕ 隐藏那种）。
                 if (root == null || root.getVisibility() != View.VISIBLE) return;
-                Bitmap bm = BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
+                /* **收起时降采样解码（inSampleSize=4 → 宽约 100px）。**
+                 *
+                 * 审查算过：400px 宽的 JPEG 全尺寸解出来约 1.3MB，
+                 * 30fps 就是每秒 40MB 分配，主线程 GC 抖动。
+                 * 小窗根本用不上那个分辨率，降 4 倍省 16 倍内存和时间。
+                 */
+                Bitmap bm;
+                if (collapsed) {
+                    BitmapFactory.Options o = new BitmapFactory.Options();
+                    o.inSampleSize = 4;
+                    o.inPreferredConfig = android.graphics.Bitmap.Config.RGB_565;
+                    bm = BitmapFactory.decodeByteArray(jpg, 0, jpg.length, o);
+                } else {
+                    bm = BitmapFactory.decodeByteArray(jpg, 0, jpg.length);
+                }
                 if (bm == null) return;
                 final Bitmap fb = bm;
                 // 更新比例（用解码出来的真实尺寸）
