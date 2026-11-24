@@ -170,16 +170,56 @@ function allocPort(displayId) {
  * 优先 app，取不到退 real，都没有才用调用方给的兜底值。
  */
 async function realSize(target, displayId, fallbackW, fallbackH) {
-  try {
-    const r = await run('adb', ['-s', target, 'shell',
-      `dumpsys display 2>/dev/null | grep -A8 "Display ${displayId}:" | grep -oE "(app|real) [0-9]+ x [0-9]+" | head -2`],
-      { timeout: 8000 });
-    const out = String(r.stdout || '');
-    let m = out.match(/app (\d+) x (\d+)/);         // 跟随旋转，首选
-    if (!m) m = out.match(/real (\d+) x (\d+)/);    // 物理兜底
-    if (m) return { w: Number(m[1]), h: Number(m[2]) };
-  } catch { /* 查不到就用传入值 */ }
+  /* **三条路依次试，任何一条拿到都行 —— 以前只有一条，拿不到就用传入值。**
+   *
+   * 2026-11-24 踩到：`grep "Display <id>:"` 在 dumpsys display 里根本不匹配
+   * （实际格式是 `mDisplayId=956`），于是永远走兜底，而调用方传进来的
+   * width 是**推流输出宽度 360**，不是源屏宽度 720 ——
+   * 结果镜像按 360x1592 建，画面被水平压扁一半，浮窗变成细长条。
+   *
+   * 现在改成：dumpsys display 的 mDisplayId 段 → DisplayDeviceInfo → wm size。
+   */
+  const grab = async (cmd) => {
+    try {
+      const r = await run('adb', ['-s', target, 'shell', cmd], { timeout: 8000 });
+      return String(r.stdout || '');
+    } catch { return ''; }
+  };
+
+  // ① dumpsys display：找 mDisplayId=<id> 段里的 real/app W x H
+  const d1 = await grab(
+    `dumpsys display 2>/dev/null | grep -A14 "mDisplayId=${displayId}" | grep -oE "(app|real) [0-9]+ x [0-9]+"`
+  );
+  let m = d1.match(/app (\d+) x (\d+)/) || d1.match(/real (\d+) x (\d+)/);
+  if (m && sanity(Number(m[1]), Number(m[2]))) return { w: Number(m[1]), h: Number(m[2]) };
+
+  // ② DisplayDeviceInfo 那一行：... 720 x 1592 ...
+  const d2 = await grab(
+    `dumpsys display 2>/dev/null | grep -A3 "mDisplayId=${displayId}" | grep -oE "[0-9]{3,4} x [0-9]{3,4}"`
+  );
+  m = d2.match(/(\d+) x (\d+)/);
+  if (m && sanity(Number(m[1]), Number(m[2]))) return { w: Number(m[1]), h: Number(m[2]) };
+
+  // ③ 主屏兜底（虚拟屏通常是主屏的缩小版，尺寸不同但比例一致）
+  const d3 = await grab('wm size 2>/dev/null');
+  m = d3.match(/(\d+)x(\d+)/);
+  if (m && sanity(Number(m[1]), Number(m[2]))) {
+    // 用传入值的高度、主屏的比例推算宽度更稳
+    const ratio = (fallbackW && fallbackH) ? (fallbackW / fallbackH) : (Number(m[1]) / Number(m[2]));
+    const h = Number(fallbackH) || Number(m[2]);
+    const w = Math.round(h * ratio);
+    if (sanity(w, h)) return { w, h };
+  }
+
   return { w: fallbackW, h: fallbackH };
+}
+
+/** 尺寸合理性：宽高都要在 200..4096，且比例在 1:4 到 4:1 之间。 */
+function sanity(w, h) {
+  if (!w || !h) return false;
+  if (w < 200 || h < 200 || w > 4096 || h > 4096) return false;
+  const a = w / h;
+  return a > 0.25 && a < 4;
 }
 
 /**
