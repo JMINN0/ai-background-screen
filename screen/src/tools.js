@@ -335,9 +335,20 @@ export async function pickHomeLike() {
    * 所以：按顺序试候选，跳过「此刻正在主屏前台」的那个；
    * 全都正在被用就返回 null，让调用方如实说「屏是空的」，而不是硬投。
    */
+  /* **`com.android.documentsui` 已从候选里删除（2026-11-24 实测）。**
+   *
+   * 它的窗口带 `SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS` ——
+   * 一旦它出现在虚拟屏上，**系统会把我们的悬浮窗强制隐藏**。
+   *
+   * 受控实验（同一台设备、同一个浮窗）：
+   *   计算器在虚拟屏     → Surface: shown=true
+   *   documentsui 投上去 → Surface: shown=false   ← 浮窗消失
+   *   settings 投上去    → Surface: shown=true    ← 恢复
+   *
+   * 用户报「浮窗突然不见了」的根因就是这个。
+   */
   const candidates = [
     'com.android.settings',            // activity-alias，无 launchMode = standard，一定渲染
-    'com.android.documentsui',         // 文件管理器
     'com.android.deskclock',           // 时钟
     'com.android.calculator2',         // 计算器
   ];
@@ -669,6 +680,32 @@ export async function launch(args) {
       + '要还原请自己 am start 原来那个。');
   }
   if (!r.ok) lines.push(`原始输出：${r.out}`);
+  /* **投完检查：浮窗还在不在？**
+   *
+   * 有些 App 的窗口带 `SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS`，
+   * 它一旦出现在虚拟屏上，系统会把我们的悬浮窗强制隐藏。
+   * 实测：`com.android.documentsui` 就是这样一个 App。
+   *
+   * 不检查的话，用户看到的是「浮窗凭空消失」，而且不知道为什么。
+   */
+  try {
+    const _disp = r.displayId;
+    const _port = _disp != null ? (screenPorts.get(Number(_disp)) || 0) : 0;
+    if (_port) {
+      /* 查这个浮窗的 Surface 是不是 shown=false */
+      const _d = await vd.shell(
+        `dumpsys window windows 2>/dev/null | grep -A25 'dsh-overlay:${_port}' | grep -m1 'Surface: shown='`
+      );
+      const hidden = /shown=false/.test(String(_d || ''));
+      if (hidden) {
+        lines.push('');
+        lines.push(`⚠️ **悬浮窗被这个 App 隐藏了**（${pkg} 的窗口带 HIDE_NON_SYSTEM_OVERLAY 标志）。`);
+        lines.push('   这不是插件故障 —— Android 12+ 允许 App 要求系统隐藏所有第三方悬浮窗。');
+        lines.push('   换一个 App（比如 com.android.settings / com.android.calculator2）浮窗就回来了。');
+      }
+    }
+  } catch { /* 检查失败不影响投屏结果 */ }
+
   const _remind = riskReminder(pkg);
   if (_remind) lines.push(_remind);
   return { text: lines.join('\n') };

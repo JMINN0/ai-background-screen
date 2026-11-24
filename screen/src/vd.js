@@ -1976,12 +1976,20 @@ export async function syncRiskLevel() {
      * `risk.json` 降级成**参考资料**：AI 没评估时，如果表里有这个包，
      * 就把表的建议显示出来（带「参考」字样），让用户知道这是查表不是判断。
      */
+    /* **只显示 AI 给的；没给就显示「未评估」。**
+     *
+     * 用户原话：「风控等级和操作方式应该由这个插件提醒 AI 给出这些信息然后才开始操作，
+     * ……而不是插件自己替 AI 选择操作方式和风控显示」。
+     *
+     * 所以这里**不查 risk.json**。查表是「插件替 AI 做判断」，用户明确不要。
+     * risk.json 仍然有用 —— 但它的用途是 AI 调 `vdisplay_risk_check` 时给的参考资料，
+     * 不是浮窗的显示来源。
+     *
+     * 代价：AI 没评估之前浮窗一直显示「未评估」。这是对的行为 ——
+     * 让 AI 知道「该我判断了」，而不是让用户看到一个插件猜的值。
+     */
     if (pkg && _riskAssessment && _riskAssessment.pkg === pkg) {
       lv = _riskAssessment.level || '?';
-    } else if (pkg) {
-      const n = await riskLevelOf(pkg);
-      /* n >= 0 说明表里有；用它当「参考值」，但标记出来 */
-      lv = n >= 0 ? 'L' + n : '?';
     } else {
       lv = '?';
     }
