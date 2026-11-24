@@ -1187,7 +1187,18 @@ export async function reconnectControl() {
   } catch { return false; }
 }
 
-export async function launch(pkg, activity) {
+/**
+ * @param {string} pkg 包名
+ * @param {string} [activity] activity 名
+ * @param {'move'|'fresh'} [mode='move'] 投屏方式
+ *   · move （默认）—— **接管已有实例**：不 force-stop，直接 am start --display。
+ *     AOSP 的 findTask 会遍历所有显示器找已有任务，找到就 reparent 过来。
+ *     实测（2026-11-24）：Edge 的 Task #26132 从 display 0 搬到虚拟屏，
+ *     **同一个 task ID、同一个进程、86 个标签一个没丢**，CDP 照样能操作。
+ *   · fresh —— 强制重开：先 force-stop 再启动。旧行为，会杀掉主屏实例。
+ *     只有确实需要"干净启动"时才用（比如 App 状态坏了）。
+ */
+export async function launch(pkg, activity, mode = 'move') {
   // 投完 App 立刻把它的风控等级同步给浮窗（不等下一次 input）
   setTimeout(() => { try { syncRiskLevel(); } catch { /* ignore */ } }, 2500);
   const s = await start();
@@ -1223,7 +1234,13 @@ export async function launch(pkg, activity) {
       + `（用户可能正在里面编辑东西，比如剪视频）。先让用户切到别的 App，`
       + `或者换一个不冲突的目标。` };
   }
-  if (!_alreadyOnDisplay) {
+  /* **mode='move' 时不 force-stop，让系统搬任务。**
+   *
+   * 这是用户 2026-11-24 明确要的：「后台开过的 app 就不需要重开了吧」。
+   * 实测证明可行：不 force-stop 时 am start --display 会 reparent 已有任务，
+   * 进程和状态全保住。force-stop 反而是"重进"的来源。
+   */
+  if (!_alreadyOnDisplay && mode !== 'move') {
     await shell(`am force-stop ${pkg}`);
     await sleep(600);
   }
@@ -1873,6 +1890,58 @@ async function riskLevelOf(pkg) {
   return -1;
 }
 
+/**
+ * **AI 给出的风控评估（用户 2026-11-24 定的新信息流）。**
+ *
+ * 旧做法是插件读 `docs/risk.json` 自己算等级 —— 但那是查表，查不到就瞎填 L3。
+ * 后果：一个计算器显示「风控 高」，用户被误导。
+ *
+ * 用户的原话：「风控等级和操作方式应该由这个插件**提醒 AI** 给出这些信息然后才开始操作，
+ * 信息获取可以上网搜索也可以按可能性推理或者测试，但测试可能有风险，
+ * 而不是插件自己替 AI 选择操作方式和风控显示」。
+ *
+ * 所以现在的分工：
+ *   · 插件负责「提醒」和「显示」；
+ *   · 判断由 AI 做（搜 / 推理 / 小规模测试），做完调 `vdisplay_risk` 告诉插件；
+ *   · 没评估过的 App 显示「未评估」，**不再默认 L3**。
+ *
+ * @type {{pkg:string, level:string, mode:string, reason:string, at:number}|null}
+ */
+let _riskAssessment = null;
+
+/**
+ * AI 主动设置某个包的风控评估。由 `vdisplay_risk` 工具调用。
+ *
+ * @param {{pkg?:string, level?:string, mode?:string, reason?:string}} a
+ * @returns {{ok:boolean, level:string, hint?:string}}
+ */
+export function setRiskAssessment(a = {}) {
+  const pkg = String(a.pkg || '').trim();
+  let level = String(a.level || '').trim().toUpperCase();
+  /* 允许 AI 传 L0..L5 或者 0..5；也允许传 `?` / `unknown` 表示确实判断不了。 */
+  if (/^[0-5]$/.test(level)) level = 'L' + level;
+  if (/^(UNKNOWN|\?|未评估|不知道)$/i.test(level)) level = '?';
+  if (level && !/^L[0-5]$/.test(level) && level !== '?') {
+    return { ok: false, level: '', hint: 'level 只能是 L0..L5、0..5、或 ?（判断不了）' };
+  }
+  if (!pkg) return { ok: false, level: '', hint: '要给 pkg，比如 com.tencent.mm' };
+  _riskAssessment = {
+    pkg,
+    level: level || '?',
+    mode: String(a.mode || '').trim().slice(0, 20),
+    reason: String(a.reason || '').trim().slice(0, 80),
+    at: Date.now(),
+  };
+  _riskCache = { at: 0, pkg: '', lv: '', op: '' };   // 让下次 sync 立刻重算
+  try { syncRiskLevel(); } catch { /* ignore */ }
+  return { ok: true, level: _riskAssessment.level, hint: `已记录 ${pkg} → ${level || '?'}` };
+}
+
+/** 读 AI 当前的评估（给工具/诊断用）。 */
+export function getRiskAssessment() {
+  return _riskAssessment ? { ..._riskAssessment } : null;
+}
+
 /** 算出后台屏上当前 App 的风控等级，并写进浮窗读的那个文件。
  *
  *  为什么只写 `L2` 两个字符：用户 2026-11-21 说浮窗底部那行
@@ -1899,13 +1968,23 @@ export async function syncRiskLevel() {
     const m = String(st.focusedApp || '').match(/([a-zA-Z][\w.]*\.[\w.]+)\//);
     const pkg = m ? m[1] : '';
     let lv = '';
-    if (pkg) {
+    /* **优先用 AI 的评估；没评估过就显示「未评估」，不再默认 L3。**
+     *
+     * 用户 2026-11-24：判断该由 AI 做（搜索/推理/测试），插件只负责提醒和显示。
+     * 旧逻辑 `if (!lv) lv = 'L3'` 导致「计算器显示高风险」，已删除。
+     *
+     * `risk.json` 降级成**参考资料**：AI 没评估时，如果表里有这个包，
+     * 就把表的建议显示出来（带「参考」字样），让用户知道这是查表不是判断。
+     */
+    if (pkg && _riskAssessment && _riskAssessment.pkg === pkg) {
+      lv = _riskAssessment.level || '?';
+    } else if (pkg) {
       const n = await riskLevelOf(pkg);
-      lv = n >= 0 ? 'L' + n : '';
+      /* n >= 0 说明表里有；用它当「参考值」，但标记出来 */
+      lv = n >= 0 ? 'L' + n : '?';
+    } else {
+      lv = '?';
     }
-    /* 拿不到 pkg 或等级也要写 L3（未知即严格），
-     * 不能让上一个 App 的等级继续挂在浮窗上 —— 那比不显示更误导。 */
-    if (!lv) lv = 'L3';
     /* 写 `等级|操作方式|屏号` 三段。浮窗那边三个都要显示：
      * 用户 2026-11-21 明确要求「风控等级、操作方式、和后台屏编号」都要有。
      * 用竖线分隔，浮窗 split 后逐段解析，缺哪段就跳过哪段。 */

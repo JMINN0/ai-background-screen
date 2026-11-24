@@ -1074,18 +1074,15 @@ public class OverlayService extends Service {
             this.bar = bar;
             bar.setOrientation(LinearLayout.HORIZONTAL);
             bar.setGravity(Gravity.CENTER_VERTICAL);
-            TextView closeBtn = new TextView(OverlayService.this);
-            closeBtn.setText("✕");
-            closeBtn.setTextColor(0xCCFFFFFF);
-            closeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            closeBtn.setPadding(dp(8), 0, dp(8), 0);
-            closeBtn.setOnClickListener(new View.OnClickListener() {
-                public void onClick(View v) {
-                    // **只关自己这一个窗口**，不碰别的
-                    ui.post(new Runnable() { public void run() { removeWin(port); } });
-                }
-            });
-            bar.addView(closeBtn);
+            /* **不设 ✕ 关闭按钮（用户 2026-11-24 要求删掉）。**
+             *
+             * 理由：已经有「拖到投放圈松手 = 关闭」这个手势了，
+             * 顶上再放一个快捷关闭是重复的，还容易被误点。
+             *
+             * 关窗仍然有两条路：
+             *   ① 拖进投放圈松手
+             *   ② 工具调用 vdisplay_stop / overlayStop
+             */
             TextView foldBtn = new TextView(OverlayService.this);
             foldBtn.setText("—");
             foldBtn.setTextColor(0xCCFFFFFF);
@@ -1162,10 +1159,25 @@ public class OverlayService extends Service {
             lbg.setCornerRadius(dp(4));
             label.setBackground(lbg);
             label.setPadding(dp(6), dp(1), dp(6), dp(1));
+            /* **标签放左上角，和右上角的「—」同一行（用户 2026-11-24 要求）。**
+             *
+             * 原来是「底部居中」，压着画面下边缘 —— 那里正好是 App 的
+             * 底部导航栏/输入框，遮住就看不见了。挪到顶部后：
+             *   · 左上是画面里最空的区域（大部分 App 顶部只有状态栏）
+             *   · 和右上角的收起按钮同一行，视觉上成一条
+             * 注意：顶部区域会被顶栏（✕已删，剩 — 和两个图标）占右边，
+             * 所以标签限制最大宽度，避免和它重叠。
+             */
             FrameLayout.LayoutParams tlp2 = new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
-            tlp2.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-            tlp2.bottomMargin = dp(2);
+            tlp2.gravity = Gravity.TOP | Gravity.START;
+            tlp2.topMargin = dp(3);
+            tlp2.leftMargin = dp(3);
+            /* **右边只给「—」留位置。**
+             * 原来按「两个按钮 + 内边距」留了 56dp，但用户 2026-11-24 要求删掉 ✕ 之后
+             * 顶栏只剩一个「—」，56dp 白占了近 1/5 窗口宽度，导致「屏909」被截成「屏9…」。
+             * 现在按「一个按钮 + 内边距」留 36dp。 */
+            tlp2.rightMargin = dp(36);
             box.addView(label, tlp2);
 
             /* **边缘光效层：AI 状态的视觉反馈。**
@@ -2410,6 +2422,10 @@ int dx = (int)(e.getRawX() - downX);
             case "L3": return "高";
             case "L4": return "很高";
             case "L5": return "极高";
+            /* **`?` = AI 还没评估过。**
+             * 用户 2026-11-24 定的：判断由 AI 做，插件只显示。
+             * 没评估时显示「未评估」，而不是瞎填一个等级。 */
+            case "?":  return "未评估";
             default:   return "";
         }
     }
@@ -2423,6 +2439,9 @@ int dx = (int)(e.getRawX() - downX);
             case "L3": return 0xFFFB923C;   // 橙
             case "L4": return 0xFFEF4444;   // 红
             case "L5": return 0xFFDC2626;   // 深红
+            /* **未评估用灰色**，不是白色也不是红 —— 它表示「不知道」，
+             * 不能误导成危险或安全。 */
+            case "?":  return 0xFF9CA3AF;   // 灰
             default:   return 0xFFFFFFFF;
         }
     }

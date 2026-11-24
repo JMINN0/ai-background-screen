@@ -651,10 +651,14 @@ export async function launch(args) {
   if (args?.activity && !act) {
     return { text: 'activity 名不合法（只允许字母数字下划线和点，不能有分号空格等）。' };
   }
-  const r = await vd.launch(pkg, act);
+  const mode = (args?.mode === 'fresh') ? 'fresh' : 'move';
+  const r = await vd.launch(pkg, act, mode);
   if (!r.displayId) return { text: `投屏失败：${r.hint}` };
   const lines = [
     `投到虚拟屏 display=${r.displayId}`,
+    mode === 'move'
+      ? '方式：接管已有实例（没 force-stop，进程和状态保住）'
+      : '方式：强制重开（先 force-stop）',
     `落在虚拟屏上：${r.landedOnVd ? '是 ✅' : '否 ❌'}`,
     `主屏前后：${r.mainFocusBefore || '(未测到)'} → ${r.mainFocusAfter || '(未测到)'}`,
   ];
@@ -665,6 +669,8 @@ export async function launch(args) {
       + '要还原请自己 am start 原来那个。');
   }
   if (!r.ok) lines.push(`原始输出：${r.out}`);
+  const _remind = riskReminder(pkg);
+  if (_remind) lines.push(_remind);
   return { text: lines.join('\n') };
 }
 
@@ -2491,6 +2497,69 @@ export async function userState() {
     busy: busey, frontPkg, imeShown,
     userEvents: userEventsWarned,
   };
+}
+
+/**
+ * **操作前提醒 AI 做风控评估。**
+ *
+ * 用户 2026-11-24 的原始需求：「风控等级和操作方式应该由这个插件**提醒 AI** 给出
+ * 这些信息然后才开始操作」。
+ *
+ * 所以这里不判断、不填值，只做一件事：**如果这个包还没评估过，就在返回文本里提示**。
+ * AI 看到提示后可以调 `vdisplay_risk` 补上，也可以明确说「不用评估」继续。
+ *
+ * @param {string} pkg
+ * @returns {string} 要追加到结果里的话；不需要提醒时返回空串
+ */
+function riskReminder(pkg) {
+  try {
+    const cur = vd.getRiskAssessment ? vd.getRiskAssessment() : null;
+    if (cur && cur.pkg === pkg) return '';   // 这个包评估过了
+    return [
+      '',
+      '⚠️ 这个 App 还没做风控评估。',
+      `   建议先调 vdisplay_risk { pkg: "${pkg}", level: "L0..L5 或 ?", mode: "操作方式", reason: "依据" }`,
+      '   依据可以来自：上网查 / 按 App 类型推理 / 小规模试一次（有风险，自己权衡）。',
+      '   判断不了就传 level:"?"，浮窗会显示「未评估」。',
+    ].join('\n');
+  } catch { return ''; }
+}
+
+/**
+ * **AI 告诉插件「这个 App 该按什么等级、什么方式操作」。**
+ *
+ * 用户 2026-11-24 定的信息流：判断由 AI 做，插件只负责提醒和显示。
+ * AI 可以上网搜、按可能性推理、或者做小规模测试（有风险要自己权衡），
+ * 得出结论后调这个工具，浮窗就会显示 AI 的判断。
+ *
+ * @param {{pkg?:string, level?:string, mode?:string, reason?:string}} args
+ */
+export async function riskSet(args = {}) {
+  const pkg = String(args.pkg || '').trim();
+  const r = vd.setRiskAssessment({
+    pkg,
+    level: args.level,
+    mode: args.mode,
+    reason: args.reason,
+  });
+  if (!r.ok) return { text: `设置失败：${r.hint}` };
+  const LEVELS = {
+    'L0': '无风控 —— 随便操作',
+    'L1': '轻微 —— 控制频率',
+    'L2': '中等 —— 操作拟人化',
+    'L3': '严格 —— 只读，写操作先问用户',
+    'L4': '禁止 —— 银行/支付，只能交给人',
+    'L5': '硬边界 —— 技术上做不到',
+    '?': '判断不了 —— 按最保守的方式做，或者先问用户',
+  };
+  const lines = [
+    `已记录 ${pkg} 的风控评估：${r.level}（${LEVELS[r.level] || '未知等级'}）`,
+  ];
+  if (args.mode) lines.push(`操作方式：${args.mode}`);
+  if (args.reason) lines.push(`依据：${args.reason}`);
+  lines.push('');
+  lines.push('浮窗会显示这个等级。改主意了再调一次覆盖即可。');
+  return { text: lines.join('\n') };
 }
 
 /** 查某个包的风控等级（读 docs/risk.json）。 */

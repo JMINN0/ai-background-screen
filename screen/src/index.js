@@ -8,7 +8,7 @@
  * 引擎自带的那份在 /opt/dsh/node_modules。只写裸包名会让 apply 直接失败。
  */
 import {
-  inputSpec, launchSpec, mainShotSpec, modesSpec, riskCheckSpec, shotSpec, startSpec, statusSpec,
+  inputSpec, launchSpec, mainShotSpec, modesSpec, riskSetSpec, riskCheckSpec, shotSpec, startSpec, statusSpec,
   stopSpec, userStateSpec,
   streamStartSpec, streamStopSpec, textSpec, appsSpec, edgeSpec,
   poolSpec, newScreenSpec, useScreenSpec, closeScreenSpec, checkAppSpec,
@@ -168,6 +168,7 @@ export async function apply(ctx) {
             [probeSecureSpec, (a) => T.probeSecure(a)],
               // 安全闸门（2026-11-19 对抗审查发现）：这两个能力一直缺
               [userStateSpec, () => T.userState()],
+              [riskSetSpec, (a) => T.riskSet(a)],
               [riskCheckSpec, (a) => T.riskCheck(a?.pkg)],
               // 按文字找/点（2026-11-19）：消掉模型自己算坐标的 点空率
               [findTextSpec, (a) => T.findText(a)],

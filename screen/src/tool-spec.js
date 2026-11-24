@@ -119,13 +119,25 @@ export function launchSpec() {
     description: [
       '把一个 App 投到虚拟屏上，而不是主屏。',
       '',
-      '内部会先 force-stop 该 App：如果它已经在主屏后台跑着，直接投屏只会把旧任务拉到前台，',
-      '就会顶掉用户正在看的东西（实测踩过）。投完会**校验并报告**主屏焦点变没变，',
-      '但**不会自动还原** —— 自动还原会误判（用户自己切了 App 时插件反而去改主屏），',
-      '所以只观察、只报告，由你决定要不要处理。',
+      '**默认是「接管」不是「重开」**：不 force-stop，用 am start --display 让系统',
+      '把已有任务搬过去（AOSP 的 findTask 会遍历所有显示器找已有任务，找到就 reparent）。',
+      '实测 2026-11-24：Edge 的 86 个标签、同一个 task ID、同一个进程全程没变 ——',
+      '用户说的「后台开过的 app 不需要重开」就是这个机制。',
+      '',
+      '只有目标 App 正在**主屏前台**时会被拒绝（投过去等于把它从用户眼前搬走）。',
+      '如果 App 状态确实坏了，传 mode:"fresh" 强制重开（会杀掉主屏那个实例）。',
+      '',
+      '投完会校验并报告主屏焦点变没变，但**不会自动还原** —— 自动还原会误判',
+      '（用户自己切了 App 时插件反而去改主屏），所以只观察、只报告，由你决定要不要处理。',
     ].join('\n'),
     parameters: {
       pkg: { type: 'string', required: true, description: '包名，例如 com.tencent.mm。' },
+      mode: {
+        type: 'string',
+        description: '投屏方式。move（默认）= 接管已有实例，不 force-stop，进程和状态保住；'
+          + 'fresh = 强制重开（会杀掉主屏那个实例）。'
+          + '不确定就用默认，只有 App 状态坏了才用 fresh。',
+      },
       activity: { type: 'string', description: 'Activity 名，例如 .ui.LauncherUI。省略则只给包名。' },
     },
     output: out('是否成功落在虚拟屏上、主屏前后焦点对比。'),
@@ -637,6 +649,43 @@ export function userStateSpec() {
 }
 
 /** 查某个 App 的风控等级（读 docs/risk.json，44 个 App 已标注）。 */
+export function riskSetSpec() {
+  return {
+    name: 'vdisplay_risk',
+    description: [
+      '**告诉插件「这个 App 该按什么风控等级、什么方式操作」。**',
+      '',
+      '为什么需要你来定：插件只会查表，查不到就瞎猜 —— 之前一个计算器显示「风控 高」，',
+      '用户被误导。**判断是判断力的事，不是查表的事。**',
+      '',
+      '你可以在下列方式里选，注意风险：',
+      '  · 上网查这个 App 有没有实名/支付/风控机制',
+      '  · 按 App 类型推理（银行/支付/政务 → L4；社交电商 → L3；工具类 → L0-L1）',
+      '  · 小规模试一次看有没有验证码（**有风险**，可能触发风控，自己权衡）',
+      '',
+      '结论通过本工具告诉插件，浮窗会显示你给的等级。判断不了就传 level:"?"。',
+    ].join('\n'),
+    parameters: {
+      pkg: { type: 'string', required: true, description: '包名，例如 com.tencent.mm' },
+      level: {
+        type: 'string',
+        required: true,
+        description: 'L0..L5 或 0..5，或 ?（判断不了）。'
+          + ' L0 无风控 / L1 轻微 / L2 中等 / L3 严格（只读）/ L4 禁止（银行支付）/ L5 硬边界。',
+      },
+      mode: {
+        type: 'string',
+        description: '操作方式，比如「只读观察」「拟人点击」「先问用户」。会显示在浮窗上。',
+      },
+      reason: {
+        type: 'string',
+        description: '依据，一句话。比如「银行类，实名+支付，只能交给人」。',
+      },
+    },
+    output: { text: 'string' },
+  };
+}
+
 export function riskCheckSpec() {
   return {
     name: 'screen_risk',
