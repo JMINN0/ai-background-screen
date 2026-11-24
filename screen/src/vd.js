@@ -1952,7 +1952,11 @@ export function setRiskAssessment(a = {}) {
     reason: String(a.reason || '').trim().slice(0, 80),
     at: Date.now(),
   };
-  _riskCache = { at: 0, pkg: '', lv: '', op: '' };   // 让下次 sync 立刻重算
+  /* **AI 给的操作方式要显示出来**：原来 op 只在 input() 里写成「注入·tap」，
+   * AI 通过 vdisplay_risk 给的「只读观察」「先问用户」永远显示不出来。 */
+  /* **op 要一起带上**：AI 给的操作方式（只读观察/先问用户）必须显示出来，
+   * 不能被这次重置冲掉 —— 否则浮窗永远显示「待机」。 */
+  _riskCache = { at: 0, pkg: '', lv: '', op: String(a.mode || '').trim().slice(0, 20) || '待机' };
   try { syncRiskLevel(); } catch { /* ignore */ }
   return { ok: true, level: _riskAssessment.level, hint: `已记录 ${pkg} → ${level || '?'}` };
 }
@@ -1985,7 +1989,7 @@ export async function syncRiskLevel() {
       return _riskCache.lv;
     }
     const st = await status();
-    const m = String(st.focusedApp || '').match(/([a-zA-Z][\w.]*\.[\w.]+)\//);
+    const m = String(st.focusedApp || '').match(/([a-zA-Z][\w.]*)\//);   // 允许无点的包名（如 system 的 android）
     const pkg = m ? m[1] : '';
     let lv = '';
     /* **优先用 AI 的评估；没评估过就显示「未评估」，不再默认 L3。**

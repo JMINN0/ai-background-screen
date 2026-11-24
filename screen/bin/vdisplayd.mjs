@@ -355,6 +355,10 @@ const ACTIONS = {
       screen_risk: 'riskCheck',
       vdisplay_diff: 'screenDiff',
       screen_modes: 'modes',
+        /* 2026-11-24 补：三个新工具名和导出函数对不上，自动推导会猜错。 */
+        vdisplay_risk: 'riskSet',
+        vdisplay_window: 'windowState',
+        vdisplay_return: 'returnToMain',
     };
     const bare = tool.replace(/^vdisplay_|^screen_/, '');
     const guess = bare.split('_').map((x, i) => (i === 0 ? x : x[0].toUpperCase() + x.slice(1))).join('');
@@ -443,7 +447,7 @@ const ACTIONS = {
      * 不知道 AI 点在哪。
      */
     const T = await import('../src/tools.js');
-    return T.input({ kind, ...args });
+    return T.input({ ...args, kind });   // kind 放最后，保证不被 args 覆盖
   },
 };
 

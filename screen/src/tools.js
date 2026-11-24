@@ -815,8 +815,19 @@ export async function input(args) {
           for (const pt of pts) stream.markTap(pt[0], pt[1], String(a0.kind || 'tap'));
         } catch { /* 慢路径失败不影响快路径 */ }
         try {
-          const fsrv = await import('./framesrv.js');
-          for (const pt of pts) await fsrv.markTap(pt[0], pt[1]);
+            /* **不 await：标记丢一帧无所谓，但堵住操作很要命。**
+             *
+             * 2026-11-24 审查算过：fsrv.markTap 是串行 HTTP，单点超时 600ms，
+             * 6 个触点最坏要等 3.6 秒 —— 而这段跑在 daemon 的全局互斥锁里
+             * （input 在 MUTATING 名单里），会把后续所有写操作一起堵住。
+             *
+             * 标记只是给用户看的视觉反馈，晚一帧、少一个点都不影响动作本身。
+             */
+            import('./framesrv.js').then((fsrv) => {
+              for (const pt of pts) {
+                try { fsrv.markTap(pt[0], pt[1]).catch(() => {}); } catch (e) { /* ignore */ }
+              }
+            }).catch(() => {});
         } catch { /* 快路径失败不影响慢路径 */ }
       }
   } catch { /* 没坐标就算了（滑动这类） */ }

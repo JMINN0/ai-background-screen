@@ -1155,7 +1155,7 @@ public class OverlayService extends Service {
             refreshLabel();
             // 标签浮在底部居中，半透明底，不占布局高度
             GradientDrawable lbg = new GradientDrawable();
-            lbg.setColor(0x88000000);
+            lbg.setColor(0xE6000000);
             lbg.setCornerRadius(dp(4));
             label.setBackground(lbg);
             label.setPadding(dp(6), dp(1), dp(6), dp(1));
@@ -2168,7 +2168,14 @@ int dx = (int)(e.getRawX() - downX);
               /* 可用宽度要留够：文字左右各留 8dp，否则会贴边甚至被裁。
                * 2026-11-22 实机：559px 窗口里「风控 中 · 待机 · 屏760」按 12sp 算刚好超，
                * 渲染出来左边「风控」被裁掉一截。 */
-              int availW = Math.max(dp(24), w - dp(16));
+            /* **宽度要减掉「标签真实的左右边距」，不是拍一个 dp(16)。**
+             *
+             * 2026-11-24 审查算过：标签边距是 leftMargin dp(3) + rightMargin dp(36)
+             * = 39dp，而这里只减 16dp → 少算 23dp → 字号算大了 → 尾部被 ellipsize 截掉。
+             * 注释里 2026-11-22 记的「屏909 被截成 屏9…」就是它。
+             */
+            int labelMargin = dp(3) + dp(36);
+            int availW = Math.max(dp(24), w - labelMargin - dp(4));
               // 先用一个基准字号量宽度，再按比例回推
               float base = 10f;
               label.setTextSize(TypedValue.COMPLEX_UNIT_SP, base);
@@ -2187,7 +2194,7 @@ int dx = (int)(e.getRawX() - downX);
               int padV = Math.max(dp(1), Math.round(dp(1) * (want / base)));
               label.setPadding(padH, padV, padH, padV);
               GradientDrawable bg = new GradientDrawable();
-              bg.setColor(0x88000000);
+              bg.setColor(0xE6000000);
               bg.setCornerRadius(Math.max(dp(2), Math.round(dp(4) * (want / base))));
               label.setBackground(bg);
           }
@@ -2424,13 +2431,23 @@ int dx = (int)(e.getRawX() - downX);
                 String v = parts[i].trim();
                 out[i] = v.length() > 24 ? v.substring(0, 24) : v;
             }
-            // 等级段必须是 L0..L5，别的当没拿到
+            /* **等级段允许三种：L0..L5、`?`（未评估）、空。**
+             *
+             * 2026-11-24 对抗审查抓到：原来只认两字符的 L0..L5，
+             * 而 `?` 长度是 1 → 第一个条件就挂 → out[0]="" → 整段丢掉。
+             * 于是 refreshLabel 里 `if (!lv.isEmpty())` 跳过，
+             * 浮窗只显示「待机 · 屏925」，用户看不到风控状态。
+             * levelWord 里的 `case "?"` 因此是死代码，永远走不到。
+             */
             String lv = out[0];
-            if (lv.length() != 2 || (lv.charAt(0) != 'L' && lv.charAt(0) != 'l')
-                    || lv.charAt(1) < '0' || lv.charAt(1) > '5') {
-                out[0] = "";
-            } else {
+            if ("?".equals(lv)) {
+                out[0] = "?";
+            } else if (lv.length() == 2
+                    && (lv.charAt(0) == 'L' || lv.charAt(0) == 'l')
+                    && lv.charAt(1) >= '0' && lv.charAt(1) <= '5') {
                 out[0] = "L" + lv.charAt(1);
+            } else {
+                out[0] = "";
             }
             return out;
         } catch (Throwable t) {
@@ -2450,6 +2467,8 @@ int dx = (int)(e.getRawX() - downX);
             /* 只认 `L0`..`L5` 这种两字符开关。
              * 2026-11-21 用户反馈：之前那行是「屏 38820 · 注入·tap」，一堆看不懂的，
              * 唯一有意义的是风控等级。所以这里只取等级，别的全部丢掉。 */
+            /* `?` = AI 还没评估，也要透出去（2026-11-24 同上）。 */
+            if ("?".equals(line)) return "?";
             if (line.length() >= 2 && (line.charAt(0) == 'L' || line.charAt(0) == 'l')
                     && Character.isDigit(line.charAt(1))) {
                 return "L" + line.charAt(1);
