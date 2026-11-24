@@ -1614,7 +1614,22 @@ export async function streamStart(args) {
 
   // 悬浮窗连哪个端口：优先 framesrv（快）
   const viewPort = fast.ok ? fast.port : (r.port || 0);
-  const ov = await overlayStart(viewPort);
+  /* **`overlay:false` 时不要建窗口。**
+   *
+   * 2026-11-24 用户报：「拖进删除区确实删了，但过一会又回来了」。
+   *
+   * 根因：daemon 的 10 秒 tick 有个「推流看门狗」，探不到推流就调
+   * T.streamStart()，而这里**无条件** overlayStart() → 窗口被重建。
+   * 于是「用户故意关窗」和「推流真的挂了」在 tick 眼里长得一模一样，
+   * 一律被当成需要修复。
+   *
+   * 修法：给 streamStart 一个开关。看门狗只负责把推流端起来，
+   * **窗口要不要存在由用户和 AI 决定**，不由看门狗决定。
+   * 推流端起来但没窗口，下次用户主动开屏/开窗就能直接用。
+   */
+  const ov = (args && args.overlay === false)
+    ? { ok: true, skipped: 'overlay:false' }
+    : await overlayStart(viewPort);
 
   const lines = [];
   if (fast.ok) {

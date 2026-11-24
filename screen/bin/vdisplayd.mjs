@@ -756,6 +756,10 @@ function startIdleWatch() {
             }
             console.error('[vdisplayd] 停止请求已执行（屏已销毁）');
           }
+        /* **屏已经销毁了，本轮到此为止。**
+         * 原来这里没有 return，会带着过期的 st.displayId 继续往下走，
+         * 掉进「推流看门狗」给一块不存在的屏起推流。 */
+        return;
         }
       } catch { /* 处理失败不影响 tick */ }
 
@@ -817,6 +821,7 @@ function startIdleWatch() {
         if (lastStreamStartAt && Date.now() - lastStreamStartAt < 60_000) {
           return;   // 刚起过，再等等
         }
+
         streamFailStreak++;
         console.error('[vdisplayd] 推流没在听（port ' + port + '），第 ' + streamFailStreak + ' 次重起');
         try {
@@ -836,7 +841,22 @@ function startIdleWatch() {
               await fsrv.stop(Number(st.displayId));
             } catch { /* 本来就没起就算了 */ }
 
-          await T.streamStart({ displayId: st.displayId, fps: 2, width: 360 });
+            /* **不能写死 width:360。**
+             *
+             * 2026-11-24 踩到：360 是「MJPEG 输出宽度」，被当成「源屏宽度」传给
+             * framesrv → 镜像按 360x1592 建 → 画面水平压扁一半
+             * → 浮窗按假比例算尺寸 → 变成细长条畸形。
+             *
+             * 用户原话：「删掉了过一会又回来了，而且回来了还畸形了」——
+             * 两个现象是同一段代码造成的：tick 重建 + 写死 360。
+             */
+            /* **只补推流，不建窗口。**
+             *
+             * 用户 2026-11-24：「删掉了过一会又回来了」——
+             * 看门狗把「用户主动关窗」当成「推流挂了」，重建了窗口。
+             * 窗口该不该存在，由用户和 AI 决定，不该由看门狗决定。
+             */
+            await T.streamStart({ displayId: st.displayId, fps: 2, overlay: false });
         } catch (e) {
           console.error('[vdisplayd] 重起推流失败：' + String(e?.message || e).slice(0, 80));
         }

@@ -277,6 +277,38 @@ public class OverlayService extends Service {
     private int toastShownForWatch = -1;
 
     private void updateWatchMode() {
+        /* **横屏自动收起：默认关闭（2026-11-24 用户反馈）。**
+         *
+         * 用户原话：「我横屏状态下悬浮窗会被最小化，虽然点击能放大但这算是个小bug吧」。
+         *
+         * 这个行为是 2026-11-22 动效审计时加的：横屏时把浮窗缩到 36dp，
+         * 理由是「横屏多半在看视频，别挡着」。但：
+         *   ① 判断依据只有 `Configuration.ORIENTATION_LANDSCAPE`，
+         *      分不清「看视频」和「横屏用别的 App」；
+         *   ② 产品意图只要求「随时能缩到最小」，没要求「横屏自动缩」；
+         *   ③ 用户体感是被系统动了他的窗口。
+         *
+         * 所以默认关。想开的话把这里改成 true（或者以后做成设置项）。
+         */
+        boolean autoCollapseLandscape = false;
+        if (!autoCollapseLandscape) {
+            /* 兜底：如果之前被自动收起过，这里恢复展开 */
+            if (watchMode) {
+                watchMode = false;
+                for (Win w : wins.values()) {
+                    if (w.root == null) continue;
+                    try {
+                        if (w.collapsedByWatch && w.collapsed && !w.expandedInWatch) {
+                            w.collapsedByWatch = false;
+                            w.toggle();
+                        } else {
+                            w.collapsedByWatch = false;
+                        }
+                    } catch (Throwable t) { /* 单个失败不影响其它 */ }
+                }
+            }
+            return;
+        }
         boolean landscape;
         try {
             landscape = getResources().getConfiguration().orientation
@@ -1547,6 +1579,7 @@ int dx = (int)(e.getRawX() - downX);
                                            */
                                           try {
                                               final String stopCmd = "mkdir -p /data/local/tmp/dshframe; "
+                                                  + "chmod 777 /data/local/tmp/dshframe 2>/dev/null; "
                                                   + "echo " + p4 + " > /data/local/tmp/dshframe/stop-request";
                                               new Thread(new Runnable() {
                                                   public void run() {
