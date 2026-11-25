@@ -536,8 +536,8 @@ public class OverlayService extends Service {
     };
 
     private void relayoutAuto() {
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int screenH = getResources().getDisplayMetrics().heightPixels;
+        int[] _rs = realScreenSize();
+        int screenW = _rs[0], screenH = _rs[1];
 
         List<Rect> placed = new ArrayList<>();
         // 手动摆过的窗口当障碍
@@ -1257,8 +1257,12 @@ public class OverlayService extends Service {
             // **建窗口时就给固定尺寸，不要 WRAP_CONTENT。**
             // WRAP_CONTENT + FrameLayout(MATCH_PARENT img) + 还没帧 = 尺寸为 0，
             // 窗口塌成一条线，而且碰撞检测拿不到真实尺寸 → 排位置会重叠。
-            int w0 = Math.round(getResources().getDisplayMetrics().widthPixels * 0.46f);
-            int h0 = Math.round(w0 * 1.6f);
+            /* 高度按真实宽高比，不写死 1.6（横屏时会比屏还高）；
+               尺寸来源用 realScreenSize()，不用缓存的 DisplayMetrics。 */
+            int[] _rs0 = realScreenSize();
+            int w0 = Math.round(_rs0[0] * 0.46f);
+            float _a0 = (float) _rs0[0] / Math.max(1, _rs0[1]);
+            int h0 = Math.round(w0 / Math.max(0.2f, Math.min(5f, _a0)));
             curW = w0; curH = h0;
             /* **必须加 FLAG_NOT_TOUCH_MODAL，否则窗口边界内的触摸全被吃掉。**
              *
@@ -1371,8 +1375,8 @@ int dx = (int)(e.getRawX() - downX);
                                */
                               /* **先跟手。** 2026-11-21 挑刺方抓到：上一版把这段删了，窗口完全拖不动。 */
                               /* ═══ 1. 先跟手拖动（窗口跟手指走）═══ */
-                            int sw2 = getResources().getDisplayMetrics().widthPixels;
-                            int sh2 = getResources().getDisplayMetrics().heightPixels;
+                            int[] _rs = realScreenSize();
+                            int sw2 = _rs[0], sh2 = _rs[1];
                             /* **最小化时要用「当前真实尺寸」，不能用 curW/curH。**
                              *
                              * 用户 2026-11-24 报的 bug：「最小化后拖拽删除时，
@@ -1748,8 +1752,8 @@ int dx = (int)(e.getRawX() - downX);
             if (Math.abs(a - appliedAspect) < 0.005f) return;
             appliedAspect = a;
 
-            int screenW = getResources().getDisplayMetrics().widthPixels;
-            int screenH = getResources().getDisplayMetrics().heightPixels;
+            int[] _rs = realScreenSize();
+            int screenW = _rs[0], screenH = _rs[1];
             int w, h;
             if (userW > 0) {
                 w = userW;
@@ -1770,19 +1774,20 @@ int dx = (int)(e.getRawX() - downX);
                  * 横屏的稀缺资源是高，不是宽。所以横屏改成先看高度，
                  * 宽高两个方案里取更舒服的那个。
                  */
-                if (screenW > screenH) {
-                    int maxH = Math.round(screenH * (n <= 1 ? 0.86f : 0.62f));
-                    int fracW = Math.round(screenW * (n <= 1 ? 0.42f : 0.30f));
-                    int hFromW = Math.round(fracW / a);
-                    if (hFromW <= maxH) { w = fracW; h = hFromW; }
-                    else { h = maxH; w = Math.round(h * a); }
-                } else {
-                    float frac = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
-                    w = Math.round(screenW * frac);
-                    h = Math.round(w / a);
-                    int maxH = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
-                    if (h > maxH) { h = maxH; w = Math.round(h * a); }
-                }
+                /* **双候选取面积大的，不按横竖分两支。**
+                 * screenW > screenH 是比例测试不是方向测试 —— 折叠屏/平板/方形屏会走错。
+                 * 0.42/0.86 那些系数是照 2.21:1 手机横屏调的，平板上算出 24% 宽。 */
+                float fw = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
+                int w1 = Math.round(screenW * fw);
+                int h1 = Math.round(w1 / a);
+                int maxH1 = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
+                if (h1 > maxH1) { h1 = maxH1; w1 = Math.round(h1 * a); }
+                int h2 = Math.round(screenH * (n <= 1 ? 0.86f : 0.62f));
+                int w2 = Math.round(h2 * a);
+                int maxW2 = Math.round(screenW * 0.92f);
+                if (w2 > maxW2) { w2 = maxW2; h2 = Math.round(w2 / a); }
+                if ((long) w1 * h1 >= (long) w2 * h2) { w = w1; h = h1; }
+                else { w = w2; h = h2; }
             }
             int capW = Math.round(screenW * 0.92f);
             if (w > capW) { w = capW; h = Math.round(w / a); }
@@ -1857,8 +1862,8 @@ int dx = (int)(e.getRawX() - downX);
                      * 所以每 3 秒自己看一眼：尺寸变了就全量重排（位置/尺寸/级联/边缘层）。
                      */
                     try {
-                        int swNow = getResources().getDisplayMetrics().widthPixels;
-                        int shNow = getResources().getDisplayMetrics().heightPixels;
+                        int[] _rs = realScreenSize();
+                        int swNow = _rs[0], shNow = _rs[1];
                         onScreenSizeChanged(swNow, shNow);
                     } catch (Throwable t) { /* ignore */ }
                     new Thread(new Runnable() {
