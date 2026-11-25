@@ -1774,20 +1774,29 @@ int dx = (int)(e.getRawX() - downX);
                  * 横屏的稀缺资源是高，不是宽。所以横屏改成先看高度，
                  * 宽高两个方案里取更舒服的那个。
                  */
-                /* **双候选取面积大的，不按横竖分两支。**
-                 * screenW > screenH 是比例测试不是方向测试 —— 折叠屏/平板/方形屏会走错。
-                 * 0.42/0.86 那些系数是照 2.21:1 手机横屏调的，平板上算出 24% 宽。 */
-                float fw = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
-                int w1 = Math.round(screenW * fw);
-                int h1 = Math.round(w1 / a);
-                int maxH1 = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
-                if (h1 > maxH1) { h1 = maxH1; w1 = Math.round(h1 * a); }
-                int h2 = Math.round(screenH * (n <= 1 ? 0.86f : 0.62f));
-                int w2 = Math.round(h2 * a);
-                int maxW2 = Math.round(screenW * 0.92f);
-                if (w2 > maxW2) { w2 = maxW2; h2 = Math.round(w2 / a); }
-                if ((long) w1 * h1 >= (long) w2 * h2) { w = w1; h = h1; }
-                else { w = w2; h = h2; }
+                /* **按「哪个维度稀缺」分两支，这是对的。**
+                 *
+                 * 2026-11-25 我一度改成「双候选取面积大」，实机立刻坏了：
+                 * 竖屏下候选 B 用 0.86 屏高 = 2312，maxW2 = 0.92 屏宽 = 1119 又拦不住，
+                 * 结果选出 1046×2312 的巨幕（占屏 86%×86%）。
+                 *
+                 * 那个 0.86 是为**横屏**设计的（横屏时高度稀缺）；搬到竖屏就是灾难。
+                 * 所以退回按比例分两支 —— `screenW > screenH` 确实在问
+                 * 「宽是不是富余」，对折叠屏/平板/方形屏也依然成立。
+                 */
+                if (screenW > screenH) {
+                    int maxH = Math.round(screenH * (n <= 1 ? 0.86f : 0.62f));
+                    int fracW = Math.round(screenW * (n <= 1 ? 0.42f : 0.30f));
+                    int hFromW = Math.round(fracW / a);
+                    if (hFromW <= maxH) { w = fracW; h = hFromW; }
+                    else { h = maxH; w = Math.round(h * a); }
+                } else {
+                    float frac = n <= 1 ? 0.40f : (n <= 3 ? 0.34f : 0.28f);
+                    w = Math.round(screenW * frac);
+                    h = Math.round(w / a);
+                    int maxH = Math.round(screenH * (n <= 1 ? 0.55f : 0.34f));
+                    if (h > maxH) { h = maxH; w = Math.round(h * a); }
+                }
             }
             int capW = Math.round(screenW * 0.92f);
             if (w > capW) { w = capW; h = Math.round(w / a); }
