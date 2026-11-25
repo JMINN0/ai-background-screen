@@ -1029,10 +1029,27 @@ export async function mainShot(args) {
 export async function status() {
   const st = await vd.status();
   const focus = await vd.mainFocus();
+  if (!st.running) {
+    return { text: `虚拟屏没有在运行。\n主屏焦点：${focus || '(未测到)'}\n所有屏：${Array.isArray(st.allDisplays) ? st.allDisplays.join(', ') : '(查询失败)'}` };
+  }
+  /* **把「屏上还有没有 App」变成明确的一句话。**
+   *
+   * 用户 2026-11-25：「App 被划掉或者崩了 AI 也要知道」。
+   * 以前这里只报 displayId 和原始 dumpsys 串，AI 读不出「App 没了」。
+   */
+  let extra = '';
+  try {
+    const ss = await vd.screenState();
+    const desc = vd.describeScreenState(ss);
+    if (desc) extra = '\n' + desc;
+    else if (ss.state === 'app' && ss.pkg) extra = `\n屏上 App：${ss.pkg}（${ss.taskCount} 个任务）`;
+    else if (ss.state === 'unknown') extra = '\n（屏上状态没测到 —— dumpsys 可能超时，不代表正常）';
+  } catch { /* ignore */ }
   return {
-    text: st.running
-      ? `虚拟屏运行中：displayId=${st.displayId}，SF id=${st.sfId}，已运行 ${st.uptimeSec} 秒\n上面的 App：${st.focusedApp || '(未知)'}\n主屏焦点：${focus || '(未测到)'}\n所有屏：${Array.isArray(st.allDisplays) && st.allDisplays.length ? st.allDisplays.join(', ') : '(查询失败)'}`
-      : `虚拟屏没有在运行。\n主屏焦点：${focus || '(未测到)'}\n所有屏：${Array.isArray(st.allDisplays) && st.allDisplays.length ? st.allDisplays.join(', ') : '(查询失败)'}`,
+    text: `虚拟屏运行中：displayId=${st.displayId}，SF id=${st.sfId}，已运行 ${st.uptimeSec} 秒，${st.width}x${st.height} @ ${st.dpi}dpi`
+      + `\n主屏焦点：${focus || '(未测到)'}`
+      + `\n所有屏：${Array.isArray(st.allDisplays) ? st.allDisplays.join(', ') : '(查询失败)'}`
+      + extra,
   };
 }
 

@@ -1024,6 +1024,71 @@ function forget(reason) {
 }
 
 /** 取虚拟屏上当前前台 App 的窗口串（胶囊用来显示"AI 在操作 XX"）。 */
+/**
+ * **判断虚拟屏上还有没有 App 在跑。**
+ *
+ * 用户 2026-11-25 报：「我从后台把 App 划掉、或者它自己崩了，AI 应该知道」。
+ *
+ * 以前 AI 完全不知道 —— 而且更糟的是**所有信号都在往错的方向引导**：
+ *   · 截图 → 纯黑 PNG，但 ok:true
+ *   · OCR → 「识别到 0 行文字」
+ *   · vdisplay_ui → 「可能是游戏/自绘 UI，或 App 还没渲染完」
+ *   · status → focusedApp 是原始 dumpsys 文本，AI 读不出「没 App 了」
+ *
+ * 所以加这个函数，把「屏上有没有 App」变成一个**明确的枚举**。
+ *
+ * 判据用两层（都是已有能力，不引入新依赖）：
+ *   ① dumpsys activity activities 里这块屏还有没有 task（occupancy.js 已经在解析）
+ *   ② mCurrentFocus 是不是 null
+ *
+ * @returns {Promise<{state:'app'|'empty'|'unknown', pkg:string, taskCount:number, focus:string, adbOk:boolean}>}
+ */
+export async function screenState() {
+  const out = { state: 'unknown', pkg: '', taskCount: 0, focus: '', adbOk: false };
+  const disp = state.displayId;
+  if (!disp) return out;
+  try {
+    /* ① 这块屏上还有没有 task —— 这是最可靠的判据 */
+    const raw = await shell('dumpsys activity activities 2>/dev/null');
+    if (raw && String(raw).trim()) {
+      out.adbOk = true;
+      const { parseDisplays } = await import('./occupancy.js');
+      const map = parseDisplays(raw);
+      const list = map.get(Number(disp)) || [];
+      out.taskCount = list.length;
+      if (list.length > 0) {
+        out.state = 'app';
+        out.pkg = list[0].pkg || '';
+      } else {
+        out.state = 'empty';
+      }
+    }
+    /* ② 焦点作为佐证（也可能因为转场短暂为 null，所以不单独用它判 empty） */
+    const f = await shell(
+      `dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${disp}" | grep -m1 mCurrentFocus`
+    );
+    out.focus = String(f || '').trim();
+    if (out.state === 'unknown' && out.focus) {
+      out.state = /mCurrentFocus=null/.test(out.focus) ? 'empty' : 'app';
+      const m = out.focus.match(/u0 ([\w.]+)\//);
+      if (m) out.pkg = m[1];
+    }
+  } catch { /* 保持 unknown */ }
+  return out;
+}
+
+/** 把 screenState 的结果转成一句人能看懂的话。没有 App 时明确说「截图会黑」。 */
+export function describeScreenState(st) {
+  if (!st || st.state === 'unknown') return '';
+  if (st.state === 'empty') {
+    return '⚠️ 这块屏上**已经没有 App 了**（可能被你从后台划掉、或者它自己崩了）。\n'
+      + '   截图会是纯黑、OCR 读到 0 行 —— 这不是「加载中」，是真的没东西。\n'
+      + '   要恢复的话重新 vdisplay_launch 一个 App。';
+  }
+  return '';
+}
+
+
 export async function focusedApp() {
   if (!state.displayId) return '';
   const r = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
