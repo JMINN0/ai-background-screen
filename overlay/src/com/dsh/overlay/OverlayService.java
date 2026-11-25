@@ -1481,7 +1481,11 @@ int dx = (int)(e.getRawX() - downX);
                                                 public void run() {
                                                     try {
                                                         java.net.HttpURLConnection c = (java.net.HttpURLConnection)
-                                                                new java.net.URL("http://127.0.0.1:" + p4 + "/quit").openConnection();
+                                                                /* **不发 /quit：那会先杀掉 framesrv，而写 stop-request 正需要它活着。**
+                                                                 * 2026-11-25 定位：浮窗是 untrusted_app 域，写不了 shell_data_file 的
+                                                                 * /data/local/tmp（777 是 DAC，管不了 SELinux MAC）。改成发 stopScreen=1，
+                                                                 * 由 framesrv（shell 域）写文件，daemon 读到后统一停屏。 */
+                                                                new java.net.URL("http://127.0.0.1:" + p4 + "/event?type=user_deleted&stopScreen=1&displayId=" + p4).openConnection();
                                                         c.setConnectTimeout(1200);
                                                         c.setReadTimeout(1200);
                                                         c.getResponseCode();

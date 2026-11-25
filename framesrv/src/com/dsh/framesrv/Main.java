@@ -1050,6 +1050,32 @@ public class Main {
                     String evLine = System.currentTimeMillis() + "|" + type + "|" + displayId + "|stopScreen=" + stopScreen + "\n";
                     java.io.FileOutputStream fo = new java.io.FileOutputStream(EVENTS_FILE, true);
                     fo.write(evLine.getBytes("UTF-8"));
+
+                      /* **收到「连屏一起关」时，由这里写 stop-request。**
+                       *
+                       * 2026-11-25 定位到的根因：浮窗是普通 App（untrusted_app 域），
+                       * `/data/local/tmp` 是 shell_data_file 标签 —— **DAC 777 也救不了 MAC**，
+                       * 浮窗 `echo > stop-request` 必然被 SELinux 拒，异常被空 catch 吞掉。
+                       * 所以右按钮「关闭并停后台屏」从来没有生效过，屏一直活着。
+                       *
+                       * 本进程跑在 shell 域（app_process），写这个目录是合法的。
+                       * 浮窗改成发 HTTP 过来，写文件的活由这里干。
+                       */
+                      if ("1".equals(stopScreen)) {
+                          try {
+                              java.io.FileWriter fw = new java.io.FileWriter(
+                                      new java.io.File("/data/local/tmp/dshframe/stop-request"), false);
+                              /* **必须写 port，不是 displayId。**
+                               * daemon 的 takeStopRequest() 把内容当端口，再去
+                               * screenPorts 里反查 displayId。写 displayId 会映射不到，
+                               * 表现是「收到停止请求 displayId=?」然后什么都不做。
+                               * （2026-11-25 实测踩到：写了 973 → daemon 当成端口 973）*/
+                              fw.write(String.valueOf(port));
+                              fw.close();
+                          } catch (Throwable t2) {
+                              System.out.println("stop-request 写入失败: " + t2);
+                          }
+                      }
                     fo.close();
                     byte[] okb = "ok".getBytes("UTF-8");
                     out.write(("HTTP/1.1 200 OK\r\nContent-Length: " + okb.length + "\r\n\r\n").getBytes("UTF-8"));
