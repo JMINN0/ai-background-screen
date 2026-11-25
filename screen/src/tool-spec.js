@@ -669,6 +669,37 @@ export function returnSpec() {
   };
 }
 
+export function uiSpec() {
+  return {
+    name: 'vdisplay_ui',
+    description: [
+      '**读虚拟屏上 App 的控件树 —— 比截图+OCR 快 8 倍，而且精确。**',
+      '',
+      '实测：本工具 261ms，`vdisplay_text`（OCR）2000ms+。',
+      '返回每个控件的类名、id、文字、中心坐标、宽高、是否可点。',
+      '坐标直接就是中心点，可以原样传给 `vdisplay_input` 的 x/y。',
+      '',
+      '**什么时候用**：',
+      '  · 要找按钮/输入框/列表项 → 先调这个，别用 OCR 硬猜',
+      '  · 要点某个有 id 或文字的控件 → 从返回里挑，比截图认字准得多',
+      '  · 判断页面加载完没 → 看 activity 名变没变',
+      '',
+      '**什么时候它没用**（会自动提示你退回去）：',
+      '  · 游戏、Flutter、Unity、自绘 UI —— 控件树是空的或只有一层壳',
+      '  · 这时候用 `vdisplay_text`（OCR）或 `vdisplay_shot`（看图）',
+      '',
+      '原理：`dumpsys activity top` 的输出带 displayId，能按虚拟屏过滤；',
+      '**不需要无障碍权限**（`uiautomator dump` 在很多 ROM 上被禁，这条路能走）。',
+    ].join('\n'),
+    parameters: {
+      displayId: { type: 'number', description: '可选。不传就用当前活动虚拟屏。' },
+      onlyClickable: { type: 'boolean', description: '可选。只要可点击的控件，列表更短。' },
+      limit: { type: 'number', description: '可选。最多列几个，默认 60。' },
+    },
+    output: { text: 'string' },
+  };
+}
+
 export function windowStateSpec() {
   return {
     name: 'vdisplay_window',

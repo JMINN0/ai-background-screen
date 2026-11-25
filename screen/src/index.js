@@ -8,7 +8,7 @@
  * 引擎自带的那份在 /opt/dsh/node_modules。只写裸包名会让 apply 直接失败。
  */
 import {
-  inputSpec, launchSpec, mainShotSpec, modesSpec, riskSetSpec, riskCheckSpec, windowStateSpec, returnSpec, shotSpec, startSpec, statusSpec,
+  inputSpec, launchSpec, mainShotSpec, modesSpec, riskSetSpec, riskCheckSpec, windowStateSpec, returnSpec, uiSpec, shotSpec, startSpec, statusSpec,
   stopSpec, userStateSpec,
   streamStartSpec, streamStopSpec, textSpec, appsSpec, edgeSpec,
   poolSpec, newScreenSpec, useScreenSpec, closeScreenSpec, checkAppSpec,
@@ -170,6 +170,7 @@ export async function apply(ctx) {
               [userStateSpec, () => T.userState()],
               [riskSetSpec, (a) => T.riskSet(a)],
               [returnSpec, (a) => T.returnToMain(a)],
+              [uiSpec, (a) => T.ui(a)],
               [windowStateSpec, async (a) => {
                 const w = await T.windowState(a?.port);
                 if (!w.exists) return { text: '没有悬浮窗在跑。' };

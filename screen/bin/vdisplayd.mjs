@@ -359,6 +359,7 @@ const ACTIONS = {
         vdisplay_risk: 'riskSet',
         vdisplay_window: 'windowState',
         vdisplay_return: 'returnToMain',
+        vdisplay_ui: 'ui',
     };
     const bare = tool.replace(/^vdisplay_|^screen_/, '');
     const guess = bare.split('_').map((x, i) => (i === 0 ? x : x[0].toUpperCase() + x.slice(1))).join('');

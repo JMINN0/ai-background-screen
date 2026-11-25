@@ -765,6 +765,55 @@ export async function launch(args) {
   return { text: lines.join('\n') };
 }
 
+/**
+ * **读虚拟屏上 App 的控件树** —— 比截图+OCR 快一到两个数量级。
+ *
+ * 用户 2026-11-25 提到 CLI-Anything（港大 HKUDS），它的主张是
+ * 「用结构化命令替代脆弱的 GUI 像素操控」。安卓上等价物就是控件树：
+ * `dumpsys activity top` 的输出带 `displayId=`，能按虚拟屏过滤，
+ * 而且**不需要无障碍权限**（`uiautomator dump` 在这台机器上静默失败）。
+ *
+ * 所以这是**主路径**：能读树就走树（几十毫秒、精确、有 id），
+ * 读不到（游戏/Flutter/自绘 UI）再降级到 `vdisplay_text` + 截图。
+ *
+ * @param {{displayId?:number, onlyClickable?:boolean, limit?:number}} args
+ */
+export async function ui(args = {}) {
+  const U = await import('./ui-tree.js');
+  const st = await vd.status().catch(() => null);
+  const disp = Number(args?.displayId || (st && st.displayId) || 0);
+  if (!disp) return { text: '还没有虚拟屏。先调 vdisplay_start。' };
+
+  let raw = '';
+  try {
+    raw = await vd.shell('dumpsys activity top 2>/dev/null');
+  } catch (e) {
+    return { text: '读控件树失败：' + String(e?.message || e).slice(0, 80) };
+  }
+
+  const parsed = U.parseTopDump(raw, disp);
+  if (!parsed.elements.length) {
+    return {
+      text: (parsed.activity
+        ? '找到 ' + parsed.activity + '，但没解析到可见控件。'
+        : '这块屏上没找到 activity（可能是游戏/自绘 UI，或 App 还没渲染完）。')
+        + '\n这种情况请退回截图路线：vdisplay_text 或 vdisplay_shot。',
+    };
+  }
+
+  const r = U.renderElements(parsed.elements, {
+    limit: Number(args?.limit) || 60,
+    onlyClickable: Boolean(args?.onlyClickable),
+  });
+
+  const head = [
+    `屏 ${disp} 上的 activity：${parsed.activity}`,
+    `可见控件 ${r.total} 个，列出 ${r.shown} 个（坐标是中心点，可直接当 x/y 用）`,
+    '',
+  ].join('\n');
+  return { text: head + r.text };
+}
+
 export async function input(args) {
   // **告诉推流「在操作」**：胶囊显示「AI 点按」，用户才知道 AI 在干活
   try { stream.setState('acting'); stream.touch(); } catch { /* 推流没开就算了 */ }
