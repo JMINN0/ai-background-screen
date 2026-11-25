@@ -1041,7 +1041,12 @@ function forget(reason) {
  *   ① dumpsys activity activities 里这块屏还有没有 task（occupancy.js 已经在解析）
  *   ② mCurrentFocus 是不是 null
  *
- * @returns {Promise<{state:'app'|'empty'|'unknown', pkg:string, taskCount:number, focus:string, adbOk:boolean}>}
+ * @returns {Promise<{state:'app'|'empty'|'zombie'|'unknown', pkg:string, taskCount:number, focus:string, adbOk:boolean}>}
+ *
+ * **zombie 是 2026-11-25 新加的**：用户锁屏后，虚拟屏变成「任务还在、
+ * 但 mHasContent=false / mCurrentFocus=null、画面纯黑」的僵尸态。
+ * force-stop 重拉也没用，必须重建整块屏（实测确认）。
+ * 光看任务数会误判成「有 App」，所以要把这种情况单独分出来。
  */
 export async function screenState() {
   const out = { state: 'unknown', pkg: '', taskCount: 0, focus: '', adbOk: false };
@@ -1068,10 +1073,19 @@ export async function screenState() {
       `dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${disp}" | grep -m1 mCurrentFocus`
     );
     out.focus = String(f || '').trim();
+    const focusNull = /mCurrentFocus=null/.test(out.focus);
     if (out.state === 'unknown' && out.focus) {
-      out.state = /mCurrentFocus=null/.test(out.focus) ? 'empty' : 'app';
+      out.state = focusNull ? 'empty' : 'app';
       const m = out.focus.match(/u0 ([\w.]+)\//);
       if (m) out.pkg = m[1];
+    } else if (out.state === 'app' && focusNull) {
+      /* **任务在、但没焦点 = 僵尸屏。**
+       *
+       * 锁屏之后就是这个状态：activity 的任务还挂在屏上，
+       * 但屏 mHasContent=false、mCurrentFocus=null，渲染出来是纯黑。
+       * 实测 force-stop 重拉救不回来，只能重建整块屏。
+       */
+      out.state = 'zombie';
     }
   } catch { /* 保持 unknown */ }
   return out;
@@ -1080,6 +1094,11 @@ export async function screenState() {
 /** 把 screenState 的结果转成一句人能看懂的话。没有 App 时明确说「截图会黑」。 */
 export function describeScreenState(st) {
   if (!st || st.state === 'unknown') return '';
+  if (st.state === 'zombie') {
+    return '⚠️ 这块屏处于**僵尸态**（任务还在但没焦点、渲染纯黑）。\n'
+      + '   常见原因：手机锁屏过 —— 锁屏会让虚拟屏进睡眠，醒来后不自动恢复。\n'
+      + '   force-stop 重拉 App 没用，**必须重建整块虚拟屏**：先 vdisplay_stop 再 vdisplay_start。';
+  }
   if (st.state === 'empty') {
     return '⚠️ 这块屏上**已经没有 App 了**（可能被你从后台划掉、或者它自己崩了）。\n'
       + '   截图会是纯黑、OCR 读到 0 行 —— 这不是「加载中」，是真的没东西。\n'
