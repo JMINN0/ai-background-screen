@@ -755,7 +755,14 @@ function startIdleWatch() {
             if (!destroyedInPool) {
               try { await vd.stop({ forceStopApps: false }); } catch { /* ignore */ }
             }
-            console.error('[vdisplayd] 停止请求已执行（屏已销毁）');
+            /* 先复核再报成功：上面 vd.stop() 的异常被 catch 吞了，这里无条件打「已销毁」会让日志撒谎。 */
+            try {
+              const _after = await vd.status();
+              const _still = ((_after && _after.allDisplays) || []).map(String).includes(String(targetDisp));
+              console.error(_still ? '[vdisplayd] 停屏失败：display ' + targetDisp + ' 仍在' : '[vdisplayd] 停止请求已执行，display ' + targetDisp + ' 已销毁');
+            } catch (e) {
+              console.error('[vdisplayd] 停屏后复核失败（无法确认）：' + String((e && e.message) || e).slice(0, 60));
+            }
           }
         /* **屏已经销毁了，本轮到此为止。**
          * 原来这里没有 return，会带着过期的 st.displayId 继续往下走，
