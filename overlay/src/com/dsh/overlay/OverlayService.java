@@ -1618,14 +1618,51 @@ int dx = (int)(e.getRawX() - downX);
          * （monitorGestureInput / pilferPointers），能从任何前台窗口抢走触摸，
          * 所以贴边**不会**让返回手势失效。用户想贴边就让他贴。
          */
-        void clampPosFlush(int ww, int hh) {
+        /**
+         * **拿当前真实窗口尺寸（px）。**
+         *
+         * 2026-11-25 子代理用真实数字定位到：ACTION_UP 松手时调 clampPosFlush(curW, curH)，
+         * 而 `curW/curH` 是**展开态**的尺寸（486×1074），收起后不再更新
+         * （applyAspect 开头 `if (collapsed) return`）。
+         *
+         * 于是横屏收起态松手时：
+         *   maxY = 1216 - 1074 = 142  → 窗口只能在 top 0~142px → 「只能在上半屏」
+         *   maxX = 2688 - 486 = 2202  → 右边死区 369px     → 「贴不到边」
+         *
+         * 这里统一按「窗口自己的真实尺寸」算，收起/展开同一个来源。
+         */
+        int[] realWinSize() {
+            int w = 0, h = 0;
+            try {
+                if (lp != null) {
+                    w = lp.width; h = lp.height;
+                    if (w > 0 && h > 0) return new int[]{w, h};
+                }
+            } catch (Throwable t) { /* fallthrough */ }
+            try {
+                if (root != null && root.getWidth() > 0 && root.getHeight() > 0) {
+                    return new int[]{root.getWidth(), root.getHeight()};
+                }
+            } catch (Throwable t) { /* fallthrough */ }
+            try {
+                if (curW > 0 && curH > 0) return new int[]{curW, curH};
+            } catch (Throwable t) { /* fallthrough */ }
+            return new int[]{dp(200), dp(200)};
+        }
+
+        /** 用户拖过之后的位置夹取（允许贴边）。**参数已废弃，内部按真实尺寸算。** */
+        void clampPosFlush() {
             if (lp == null) return;
             int[] _scr = realScreenSize();
+            int[] _win = realWinSize();
             int sw = _scr[0], sh = _scr[1];
+            int ww = _win[0], hh = _win[1];
             int maxX = Math.max(0, sw - ww);
             lp.x = Math.max(0, Math.min(maxX, lp.x));
             lp.y = Math.max(0, Math.min(Math.max(0, sh - hh), lp.y));
         }
+        /** 兼容旧签名（调用点暂时不动）。 */
+        void clampPosFlush(int ww, int hh) { clampPosFlush(); }
 
         /**
          * **自动摆放**时的夹取 —— 留手势安全区，避免一建屏就压在手势带上。
@@ -1633,16 +1670,23 @@ int dx = (int)(e.getRawX() - downX);
          * 用于：级联自动定位、收起/展开、比例变化重排、全量 clampAll。
          * 用户手动拖过之后不再走这里（走 clampPosFlush）。
          */
-        void clampPosAuto(int ww, int hh) {
+        /** 自动摆放时的夹取（留手势安全区）。**参数已废弃，内部按真实尺寸算。** */
+        void clampPosAuto() {
             if (lp == null) return;
             int[] _scr = realScreenSize();
+            int[] _win = realWinSize();
             int sw = _scr[0], sh = _scr[1];
-            int g = edgeGuard();
+            int ww = _win[0], hh = _win[1];
+            /* **手势区不能超过「剩余可移动宽度的一半」**，否则窄屏/大窗口下
+             * minX > maxX 会倒挂，窗口被推到屏幕外。 */
+            int g = Math.min(edgeGuard(), Math.max(0, (sw - ww) / 2));
             int minX = g;
             int maxX = Math.max(minX, sw - ww - g);
             lp.x = Math.max(minX, Math.min(maxX, lp.x));
             lp.y = Math.max(0, Math.min(Math.max(0, sh - hh), lp.y));
         }
+        /** 兼容旧签名。 */
+        void clampPosAuto(int ww, int hh) { clampPosAuto(); }
 
         /** 老名字保留成 auto 语义（自动路径都在用它）。 */
         void clampPos(int ww, int hh) {
