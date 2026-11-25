@@ -134,6 +134,39 @@ public class OverlayService extends Service {
         return gestureInsetPx(false);
     }
 
+    /**
+     * **拿当前真实屏幕尺寸（px）—— 不要用缓存的 DisplayMetrics。**
+     *
+     * 用户 2026-11-25 报：「横屏最小化时浮窗只能悬停上半屏，左右贴边会被弹回」。
+     *
+     * 根因方向：`getResources().getDisplayMetrics()` 在 Service 里拿到的可能是
+     * **资源缓存的旧值**（旋转后没刷新），于是 clamp 用的 sw/sh 比真实屏幕小，
+     * 算出来的 maxX / maxY 也小 —— 表现就是「往中间弹」。
+     *
+     * 优先用 WindowManager 当前的 WindowMetrics（API 30+，跟随旋转），
+     * 拿不到再退回 DisplayMetrics。
+     *
+     * @return {宽, 高}，单位像素
+     */
+    private int[] realScreenSize() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                Object metrics = wm.getClass().getMethod("getCurrentWindowMetrics").invoke(wm);
+                Object bounds = metrics.getClass().getMethod("getBounds").invoke(metrics);
+                if (bounds instanceof android.graphics.Rect) {
+                    android.graphics.Rect b = (android.graphics.Rect) bounds;
+                    if (b.width() > 0 && b.height() > 0) return new int[]{b.width(), b.height()};
+                }
+            }
+        } catch (Throwable t) { /* 回退 */ }
+        try {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            return new int[]{dm.widthPixels, dm.heightPixels};
+        } catch (Throwable t) {
+            return new int[]{1080, 1920};
+        }
+    }
+
     private static final String TAG = "DshOverlay";
     private static final String CH_ID = "dsh_overlay";
     private static final int CH_NUM = 4201;
@@ -786,8 +819,8 @@ public class OverlayService extends Service {
 
     private void layoutDropViews() {
         if (hubLp == null) return;
-        int sw = getResources().getDisplayMetrics().widthPixels;
-        int sh = getResources().getDisplayMetrics().heightPixels;
+        int[] _scr = realScreenSize();
+        int sw = _scr[0], sh = _scr[1];
         int cx = sw / 2, cy = sh - dp(96);
         hubLp.x = cx - dp(28);   hubLp.y = cy - dp(28);
         leftLp.x = dp(4);        leftLp.y = cy - dp(18);
@@ -867,7 +900,8 @@ public class OverlayService extends Service {
     }
     /** 右按钮的**实测**矩形。 */
     private int[] rightBarRect() {
-        int sw = getResources().getDisplayMetrics().widthPixels;
+        int[] _scr = realScreenSize();
+        int sw = _scr[0], sh = _scr[1];
         return realRect(rightBar, sw - dp(4) - barW(), hubCy() - dp(18));
     }
 
@@ -1323,8 +1357,8 @@ int dx = (int)(e.getRawX() - downX);
                             if (Math.abs(dx) > dp(6) || Math.abs(dy) > dp(6)) moved = true;
                             if (!moved) return true;
 
-                            int sw = getResources().getDisplayMetrics().widthPixels;
-                            int sh = getResources().getDisplayMetrics().heightPixels;
+                            int[] _scr = realScreenSize();
+                            int sw = _scr[0], sh = _scr[1];
 
                             /* ═══ 已进入删除投放点：只判左右，窗口跟手走 ═══ */
                               /* ═══ 已进入投放环：**窗口冻结不动**，只等停留计时 ═══
@@ -1586,8 +1620,8 @@ int dx = (int)(e.getRawX() - downX);
          */
         void clampPosFlush(int ww, int hh) {
             if (lp == null) return;
-            int sw = getResources().getDisplayMetrics().widthPixels;
-            int sh = getResources().getDisplayMetrics().heightPixels;
+            int[] _scr = realScreenSize();
+            int sw = _scr[0], sh = _scr[1];
             int maxX = Math.max(0, sw - ww);
             lp.x = Math.max(0, Math.min(maxX, lp.x));
             lp.y = Math.max(0, Math.min(Math.max(0, sh - hh), lp.y));
@@ -1601,8 +1635,8 @@ int dx = (int)(e.getRawX() - downX);
          */
         void clampPosAuto(int ww, int hh) {
             if (lp == null) return;
-            int sw = getResources().getDisplayMetrics().widthPixels;
-            int sh = getResources().getDisplayMetrics().heightPixels;
+            int[] _scr = realScreenSize();
+            int sw = _scr[0], sh = _scr[1];
             int g = edgeGuard();
             int minX = g;
             int maxX = Math.max(minX, sw - ww - g);
