@@ -148,6 +148,11 @@ public class OverlayService extends Service {
      *
      * @return {宽, 高}，单位像素
      */
+    /** 当前屏幕宽（px）。**统一入口，别再各写各的。** */
+    private int screenW() { return realScreenSize()[0]; }
+    /** 当前屏幕高（px）。 */
+    private int screenH() { return realScreenSize()[1]; }
+
     private int[] realScreenSize() {
         try {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -243,7 +248,7 @@ public class OverlayService extends Service {
         try {
             if (leftBar != null && leftLp != null) {
                 leftLp.x = 0;
-                leftLp.y = (int) ((long) getResources().getDisplayMetrics().heightPixels / 2 - dp(18));
+                leftLp.y = (int) ((long) screenH() / 2 - dp(18));
                 wm.updateViewLayout(leftBar, leftLp);
             }
             if (rightBar != null && rightLp != null) {
@@ -255,7 +260,7 @@ public class OverlayService extends Service {
                  * 正确写法是给它一个左边距（和 layoutDropViews 保持一致）。
                  */
                 rightLp.x = dp(4);
-                rightLp.y = (int) ((long) getResources().getDisplayMetrics().heightPixels / 2 - dp(18));
+                rightLp.y = (int) ((long) screenH() / 2 - dp(18));
                 wm.updateViewLayout(rightBar, rightLp);
             }
         } catch (Throwable t) { /* 投放条可能还没建 */ }
@@ -371,10 +376,15 @@ public class OverlayService extends Service {
          * 两者共用一个 lastScreenW/H 就会互相判成「尺寸变了」，转一次屏重排两轮。
          * 2026-11-22 动效审计指出这个单位混用。 */
         try {
-            float dens = getResources().getDisplayMetrics().density;
-            if (dens <= 0) dens = 1f;
-            onScreenSizeChanged(Math.round(c.screenWidthDp * dens),
-                    Math.round(c.screenHeightDp * dens));
+            /* **用 realScreenSize()，不要 screenWidthDp * density。**
+             *
+             * 2026-11-25 对抗审查抓到：`screenWidthDp * density` 算的是**应用区**
+             * （扣了系统栏），而 3 秒 tick 传的是整块屏 —— 两路输入对同一件事
+             * 给出两套数字，转一次屏会互相判成「尺寸变了」多排一次。
+             * 现在两路统一走 realScreenSize()。
+             */
+            int[] _rsCfg = realScreenSize();
+            onScreenSizeChanged(_rsCfg[0], _rsCfg[1]);
         } catch (Throwable t) { /* ignore */ }
     }
     private Handler ui;
@@ -669,9 +679,9 @@ public class OverlayService extends Service {
     private int dropState = 0;      // 0=隐藏 1=幽灵(拖动中) 2=已进圈(按钮显示) 3=选中左 4=选中右
 
     /** 圆圈中心：屏幕正下方，抬离导航条。 */
-    private int hubCx() { return getResources().getDisplayMetrics().widthPixels / 2; }
+    private int hubCx() { return screenW() / 2; }
     private int hubCy() {
-        int sh = getResources().getDisplayMetrics().heightPixels;
+        int sh = screenH();
         int ins = 0;
         try {
             android.util.DisplayMetrics m = new android.util.DisplayMetrics();
@@ -1125,7 +1135,7 @@ public class OverlayService extends Service {
             // 原来 WRAP_CONTENT + 没有 bitmap = 宽高 0，
             // 帧还没到时整个窗口只剩「✕ — 端口」一条细线，
             // 用户看到的就是「窗口塌了」。
-            int phW = Math.round(getResources().getDisplayMetrics().widthPixels * 0.46f);
+            int phW = Math.round(screenW() * 0.46f);
             // img 铺满整个窗口（MATCH_PARENT）—— 窗口就是画面，没有留白
             FrameLayout.LayoutParams ilp2 = new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
@@ -1319,7 +1329,7 @@ public class OverlayService extends Service {
                             try {
                                 int gL = gestureInsetPx(false);
                                 int gR = gestureInsetPx(true);
-                                int swNow = getResources().getDisplayMetrics().widthPixels;
+                                int swNow = screenW();
                                 /* 收起态要用真实宽度，否则贴边判定永远算成「没贴边」。 */
                                 int wNow = collapsed
                                         ? Math.max(dp(20), lp.width)
