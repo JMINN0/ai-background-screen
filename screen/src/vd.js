@@ -677,7 +677,10 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
    * ②轮询日志文件 6 秒超时（日志晚于 accept，机制上等不到）；
    * ③pipe 实时读 + 挪到 connect 后，屏建不出来。
    * scrcpy accept 之后还要创建 VirtualDisplay + 配编码器，这段时间没有可观测信号。 */
-  await sleep(1800);
+  /* **1800 → 1200（2026-11-26 实测结论）。**
+     * 试过 900：总耗时没再降（后面的屏轮询把省下的吃掉了），1200 更稳。
+     * 900 以下开始出现建屏失败，别低于 1200。 */
+    await sleep(1200);
   if (spawnError) {
     try { child.kill('SIGKILL'); } catch { /* 没起来就没什么可杀 */ }
     await cleanupForward();
@@ -1128,7 +1131,7 @@ export async function screenState() {
     }
     /* ② 焦点作为佐证（也可能因为转场短暂为 null，所以不单独用它判 empty） */
     const f = await shell(
-      `dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${disp}" | grep -m1 mCurrentFocus`
+      `dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${disp}" | grep -E "mCurrentFocus|mFocusedApp"`
     );
     out.focus = String(f || '').trim();
     const focusNull = /mCurrentFocus=null/.test(out.focus);
@@ -1168,14 +1171,14 @@ export function describeScreenState(st) {
 
 export async function focusedApp() {
   if (!state.displayId) return '';
-  const r = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
+  const r = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`);
   return String(r || '').trim();
 }
 
 export async function status() {
   const ids = await displayIds();
   const sf = await sfIds();
-  const app = state.displayId ? await shell(`dumpsys window displays 2>/dev/null | grep -A20 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`) : '';
+  const app = state.displayId ? await shell(`dumpsys window displays 2>/dev/null | grep -A20 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`) : '';
   return {
     running: await alive(),
     displayId: state.displayId,
@@ -1386,9 +1389,18 @@ export async function launch(pkg, activity, mode = 'move') {
   if (!_mainPkg && mode === 'move') {
     return {
       ok: false,
-      hint: '测不到主屏当前焦点，不能安全接管已有实例（move 模式会把主屏上这个 App 的任务搬走）。'
-        + ' 重试一次；还是测不到就改用 mode:"fresh"（会先 force-stop，行为更明确），'
-        + ' 或者用 vdisplay_launch 前先调 vdisplay_status 确认状态。',
+      /* **不要推荐 mode:"fresh"。**
+       * 2026-11-26 对抗审查抓到：fresh 分支会**无条件 force-stop**
+       * （`if (!_alreadyOnDisplay && mode !== 'move') am force-stop`），
+       * 而主屏检查恰恰需要 mainFocus 成功 —— 测不到焦点时推荐 fresh，
+       * 等于把 AI 引向「杀掉用户正在用的 App」这条更危险的路。
+       * 正确做法：确认不了就不动，等用户切走或者直接问用户。
+       */
+      hint: '测不到主屏当前焦点，为了不误把你主屏上正在用的 App 搬走，这次不动。'
+        + ' 建议：① 稍等 1-2 秒重试（多半是转场中）；'
+        + '② 调 vdisplay_status 看看现在什么状态；'
+        + '③ 还是不行就直接问用户「现在能用你的手机吗」。'
+        + '**不要用 mode:"fresh" 绕过 —— 它会 force-stop 主屏上那个 App。**',
     };
   }
   if (_mainPkg && _mainPkg === pkg) {
@@ -1428,7 +1440,7 @@ export async function launch(pkg, activity, mode = 'move') {
   {
     const _t0 = Date.now();
     for (;;) {
-      onVd = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
+      onVd = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`);
       if (String(onVd || '').includes(pkg)) break;
       if (Date.now() - _t0 > 3000) break;
       await sleep(120);
@@ -2112,7 +2124,6 @@ export function setRiskAssessment(a = {}) {
   /* **op 要一起带上**：AI 给的操作方式（只读观察/先问用户）必须显示出来，
    * 不能被这次重置冲掉 —— 否则浮窗永远显示「待机」。 */
   _riskCache = { at: 0, pkg: '', lv: '', op: String(a.mode || '').trim().slice(0, 20) || '待机' };
-  try { syncRiskLevel(); } catch { /* ignore */ }
   return { ok: true, level: _riskAssessment.level, hint: `已记录 ${pkg} → ${level || '?'}` };
 }
 
@@ -3195,11 +3206,11 @@ export async function mainFocus() {
       }
       if (!inside) continue;
       if (!focus) {
-        const m = line.match(/mCurrentFocus=Window\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)\}/);
+        const m = line.match(/mCurrentFocus=Window\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)/);
         if (m) focus = `${m[1]}/${m[2]}`;
       }
       if (!app) {
-        const fa = line.match(/mFocusedApp=ActivityRecord\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)\}/);
+        const fa = line.match(/mFocusedApp=ActivityRecord\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)/);
         if (fa) app = `${fa[1]}/${fa[2]}`;
       }
     }

@@ -25,7 +25,9 @@ export function startSpec() {
   return {
     name: 'vdisplay_start',
     description: [
-      '创建一块用户看不见的私有虚拟屏（headless virtual display），App 可以跑在上面。',
+            '**给 AI 开一块屏，用这个。**（不要用 screen_new —— 那是多屏池接口，会投错屏）',
+      '',
+'创建一块用户看不见的私有虚拟屏（headless virtual display），App 可以跑在上面。',
       '',
       '关键性质（都实测过）：不画在物理屏幕上、不抢主屏焦点、不弹输入法。',
       '需要这台机器的 com.android.shell 拥有 ADD_TRUSTED_DISPLAY 权限（一部分机型有，Pixel 默认没有）。',
@@ -389,11 +391,20 @@ export function newScreenSpec() {
   return {
     name: 'screen_new',
     description: [
-      '新建一块后台屏，返回它的 screenId。',
+      '**⚠️ 大多数人不需要这个 —— 想「给 AI 开一块屏」请用 vdisplay_start。**',
       '',
-      '什么时候用：需要一块干净的屏、或需要同时让两个 App 各自独立跑。',
-      '注意屏幕数量受手机资源限制 —— 每块屏约 75-185MB 内存，实测两块很轻松，',
-      '4-6 块要看你手机上跑的 App 有多重。',
+      '这套 screen_* 是**多屏池**接口：同时开好几块屏、每块跑不同 App、',
+      '多 AI 各自占一块时用。日常操作（开一块屏、投 App、截图、点击）全部走',
+      'vdisplay_start / vdisplay_launch / vdisplay_shot / vdisplay_input。',
+      '',
+      '**两套接口的区别**：',
+      '  · vdisplay_* —— 只有一块「活动屏」，后面所有 vdisplay 工具都作用于它。简单够用。',
+      '  · screen_*   —— 屏池，每块屏有 screenId，要用 screen_use 切换活动屏。',
+      '',
+      '**混用的后果**（2026-11-26 实测）：screen_new 建了池屏，接着调 vdisplay_launch',
+      '投到的是「活动屏」而不是刚建的那块 → App 投错地方、屏是黑的、像插件坏了。',
+      '',
+      '真要用多屏时：每块屏约 75-185MB 内存，实测两块很轻松。',
     ].join('\n'),
     parameters: {
       orientation: { type: 'string', description: '"portrait" / "landscape" / "square"。省略（默认 auto）按物理屏比例，最接近真机，推荐不要指定。**square 不推荐**：16:9 的游戏会按高度算出更宽的画布，右边被裁。' },
@@ -409,7 +420,8 @@ export function useScreenSpec() {
     description: [
       '切换活动屏。之后所有 vdisplay_* 操作都作用在这块屏上。',
       '',
-      '典型用法：screen_new 建一块 → screen_use 切过去 → vdisplay_launch 投 App。',
+      '**日常不需要这个。** 只有真的要在同一时刻跑多块屏时才用（比如两个 App 各自独立）。',
+      ' 单屏场景直接用 vdisplay_start，别走这里 —— 走了会额外多一层 screenId 管理。',
       '切回来不会打扰另一块屏上的 App —— 实测各自状态都保留。',
     ].join('\n'),
     parameters: {
@@ -836,7 +848,11 @@ export function keepAliveSpec() {
   return {
     name: 'screen_keepalive',
     description: [
-      '设定「AI 停止操作多久后自动关掉后台屏」，让 AI 按任务预估生命周期。',
+      '**⚠️ 这个工具目前只做「标记 + 日志」，不会真的自动关屏。**',
+      '  （2026-11-26 核对源码：看门狗到点只打一行 console.error，不销毁屏。）',
+      '  **省电要自己调 `vdisplay_stop`** —— 不调的话屏会一直开着占内存和电。',
+      '',
+      '原本的设计意图：设定「AI 停止操作多久后自动关掉后台屏」，让 AI 按任务预估生命周期。',
       '',
       '**开始长任务前先调它**：挂机、等转盘、轮询消息、玩需要时间累积的游戏 → 设大（30-360 分钟）；',
       '点几下就完的短任务 → 设小（2-5 分钟），省电更彻底。',

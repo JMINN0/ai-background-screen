@@ -944,6 +944,26 @@ export async function input(args) {
       }
   } catch { /* 没坐标就算了（滑动这类） */ }
   const kind = String(args?.kind || '').trim();
+  /* **风控提醒，按「当前屏上的 App」判断，不是全局单值。**
+   * 2026-11-26 审查抓到两个问题：
+   *   ① 只挂在最后一条 return 上 → 注入失败/画面没变/参数写错时恰好不提醒；
+   *   ② 全局单值判断 → 给任意 App 定过级后，当前 App 会显示别人的等级（更危险）。
+   * 现在：一次算好，所有 return 都带上；判断用 pkg 比对。
+   */
+  let _riskWarn = '';
+  try {
+    const cur = vd.getRiskAssessment ? vd.getRiskAssessment() : null;
+    const st0 = await vd.status().catch(() => null);
+    const curPkg = String(st0 && st0.focusedApp || '').match(/u0 ([\w.]+)\//);
+    const onScreenPkg = curPkg ? curPkg[1] : '';
+    if (cur && cur.level && cur.level !== '?' && cur.pkg === onScreenPkg) {
+      _riskWarn = '\n风控等级：' + cur.level + (cur.mode ? '（' + cur.mode + '）' : '');
+    } else if (onScreenPkg) {
+      _riskWarn = '\n⚠️ 当前 App（' + onScreenPkg + '）的风控还没评估'
+        + (cur && cur.pkg ? '（你上次评估的是 ' + cur.pkg + '）' : '')
+        + ' —— 建议先调 vdisplay_risk 定级（L0..L5）。';
+    }
+  } catch { /* 取不到就不提醒，不阻塞操作 */ }
   // **hold 必须在这个白名单里。**
   // vd.js:1568 早就实现了 kind==='hold'（60Hz 连续 MOVE，驱动游戏摇杆），
   // 但这里漏了它 → 模型传 hold 直接被拒，README 宣传的「60Hz 摇杆走路」
@@ -952,7 +972,7 @@ export async function input(args) {
   // 反编译 scrcpy 的 classes.dex 发现它自己算 index 并 OR 上 5/6，
   // 我们只要发基础 action(0/1/2)。修正后 Inconsistent=0、Dropping=0。
   if (!['tap', 'swipe', 'hold', 'multitouch', 'text', 'key', 'paste'].includes(kind)) {
-    return { text: 'kind 只能是 tap / swipe / hold / text / key / paste。hold 是按住不动（游戏摇杆/长按/挖方块）。' };
+    return { text: 'kind 只能是 tap / swipe / hold / multitouch / text / key / paste。hold 是按住不动（游戏摇杆/长按/挖方块）。' + _riskWarn };
   }
   const r = await vd.input(kind, args || {});
 
@@ -970,10 +990,23 @@ export async function input(args) {
 
   // changed 必须透传：false 表示"动作发出去了但画面没变"，这是有效信息，
   // 不是"注入失败"。早期把它包成"注入失败"会让调用方以为工具坏了。
-  if (r.changed === false && r.hint) return { text: `${r.hint}\n（display=${r.displayId}，${kind} 已发出）${shotInfo}` };
-  if (!r.ok && r.hint) return { text: `注入失败：${r.hint}` };
+  if (r.changed === false && r.hint) return { text: `${r.hint}\n（display=${r.displayId}，${kind} 已发出）${shotInfo}` + _riskWarn };
+  if (!r.ok && r.hint) return { text: `注入失败：${r.hint}` + _riskWarn };
   const tail = r.out ? `（${r.out}）` : '';
-  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` };
+  /* **每次注入都带一句风控状态。**
+   * 2026-11-26：隔壁 AI 操作拼多多 85 次，一次 vdisplay_risk 都没调，
+   * 浮窗一直「未评估」。提醒只在 launch 时出现过 7 次，AI 当无关信息忽略了。
+   * 改在每次 input 返回里带上 —— 这才是真正触发风控的动作。 */
+  const _riskLine = (() => {
+    try {
+      const cur = vd.getRiskAssessment ? vd.getRiskAssessment() : null;
+      if (!cur || !cur.level || cur.level === '?') {
+        return '\n' + '⚠️ 风控等级还是「未评估」—— 操作前建议先调 vdisplay_risk 定级（L0..L5），浮窗会显示出来。';
+      }
+      return '\n' + '风控等级：' + cur.level + (cur.mode ? '（' + cur.mode + '）' : '');
+    } catch { return ''; }
+  })();
+  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn };
 }
 
 export async function shot(args) {
@@ -1180,12 +1213,17 @@ const OVERLAY_PKG = 'com.dsh.overlay';
  * APK 就在插件包里（`assets/overlay/ai-overlay.apk`）。
  * 第一次用悬浮窗时自动 push + install + 授权，用户什么都不用做。
  */
+/* **装没装是进程内常量，缓存住。**
+ * 2026-11-26 实测：pm list packages 要 100-300ms，而每次 streamStart
+ * 都会查一遍。浮窗包在运行期间不会消失了，缓存到进程结束足够。 */
+let _overlayInstalled = false;
 async function ensureOverlayInstalled(run, target) {
+  if (_overlayInstalled) return { ok: true, already: true, cached: true };
   // 已装就直接返回
   try {
     const { stdout } = await run('adb', ['-s', target, 'shell',
       `pm list packages ${OVERLAY_PKG}`], { timeout: 8000 });
-    if (String(stdout || '').includes(OVERLAY_PKG)) return { ok: true, already: true };
+    if (String(stdout || '').includes(OVERLAY_PKG)) _overlayInstalled = true; return { ok: true, already: true };
   } catch { /* 查不到就当没装，继续试装 */ }
 
   // 找内置 APK
@@ -3004,6 +3042,12 @@ function riskReminder(pkg) {
  */
 export async function riskSet(args = {}) {
   const pkg = String(args.pkg || '').trim();
+  /* **包名要校验格式。**
+   * 2026-11-26 审查抓到：vdisplay_launch/checkApp 都有 /^[a-z][\w.]*$/i 校验，
+   * 唯独这里没有 —— 包名写错也「设置成功」，然后浮窗永远「未评估」。 */
+  if (!/^[a-zA-Z][\w.]*$/.test(pkg)) {
+    return { text: '包名不合法：' + JSON.stringify(pkg) + '。应该是 com.tencent.mm 这种格式（字母开头，只含字母数字点下划线）。' };
+  }
   const r = vd.setRiskAssessment({
     pkg,
     level: args.level,
@@ -3027,6 +3071,10 @@ export async function riskSet(args = {}) {
   if (args.reason) lines.push(`依据：${args.reason}`);
   lines.push('');
   lines.push('浮窗会显示这个等级。改主意了再调一次覆盖即可。');
+  /* **立刻同步到浮窗，不等 20 秒的 tick。**
+   * 2026-11-26：设完等级后 opmode 还是 `?`，要等 daemon 的下一次
+   * syncRiskLevel（每 2 个 tick = 20 秒）才更新。用户体感是「设了没反应」。 */
+  try { await vd.syncRiskLevel(); } catch { /* 同步失败不影响记录 */ }
   return { text: lines.join('\n') };
 }
 
@@ -3128,7 +3176,9 @@ export async function newScreen(args) {
 
   const lines = [
     `新屏已建好：${r.screenId}（displayId=${r.displayId}，dpi=${r.dpi}）`,
-    `它现在是活动屏，接下来 vdisplay_launch 会投到它上面。`,
+    `它现在是活动屏。注意：vdisplay_* 那一套作用于「活动屏」，`,
+    `所以建完立刻调 vdisplay_launch 确实会投到它上面 —— 但混用两套 API 容易搞混，`,
+    `单屏场景直接 vdisplay_start 更简单。`,
   ];
 
   // **屏幕池的屏也要有自己的推流和悬浮窗。**
