@@ -273,15 +273,18 @@ export async function start({ displayId, width, height, port, mirror } = {}) {
   }
 
   // 等端口起来（最多 8 秒）
-  for (let i = 0; i < 16; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    const p = await probe(usePort, displayId);   // 同上：防连到别人的 server
+  /* **先探测再睡，间隔 80ms。**
+   * 原来是「每轮先睡 500ms 再探测」—— 帧服务通常 200-400ms 就起来，
+   * 但最少要吃满 500ms。现在先探，没起来才等 80ms，最快 0ms 命中。 */
+  for (let i = 0; i < 100; i++) {
+    const p = await probe(usePort, displayId);
     if (p.ok) {
       activeDisplayId = displayId;
       return { ok: true, port: usePort, fps: p.info?.fps || 0, reused: false };
     }
+    await new Promise((r) => setTimeout(r, i < 5 ? 40 : 80));
   }
-  // 起不来就清掉，别留死记录
+    // 起不来就清掉，别留死记录
   servers.delete(displayId);
   return { ok: false, why: '启动后 8 秒内端口没起来（看 logcat: app_process 可能崩了）' };
 }

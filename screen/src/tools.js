@@ -162,9 +162,17 @@ async function _start(args) {
         _tried.push(cand);
         try {
           const lr = await launch({ pkg: cand });
-          await new Promise((res) => setTimeout(res, 900));
-          /* 查浮窗有没有被这个 App 藏掉 */
-          const w = await windowState();
+          /* **轮询窗口出现，不盲等 900ms。**
+           * 原来每个候选投完要等 900ms 再查浮窗是否被藏 ——
+           * 2-3 个候选被拒就是 1.8-2.7 秒纯等待。
+           * 改成每 150ms 查一次，窗口出现立刻判断。 */
+            /* 轮询窗口出现；**最后一次结果直接复用**，不再重复查一次 windowState。 */
+            let w = { exists: false, shown: undefined };
+            for (let _w = 0; _w < 8; _w += 1) {
+              await new Promise((res) => setTimeout(res, 150));
+              w = await windowState();
+              if (w.exists) break;
+            }
           if (w.exists && w.shown === false) {
             parts.push(`${cand} 会把悬浮窗藏掉（HIDE_NON_SYSTEM_OVERLAY），换下一个`);
             continue;   // 试下一个候选
@@ -1410,13 +1418,14 @@ async function overlayStart(port) {
      * 让调用方（和 AI）看到真话。
      */
     /* 按端口验证，不是按包名数 —— 否则旧窗口会让新调用直接 ok。 */
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 25; i++) {
       const r = await run('adb', ['-s', target, 'shell',
         `dumpsys window windows 2>/dev/null | grep -c 'dsh-overlay:${port}'`],
         { timeout: 6000 }).catch(() => ({ stdout: '0' }));
       const cnt = Number(String(r.stdout).trim());
       if (cnt > 0) return { ok: true, autoInstalled: inst.already === false, wins: cnt };
-      await new Promise((res) => setTimeout(res, 500));
+      /* **100ms 而不是 500ms**：窗口通常 100-200ms 就出现，500ms 粒度太粗。 */
+      await new Promise((res) => setTimeout(res, 100));
     }
     return { ok: false, why: 'am start 成功但窗口没出现（可能缺悬浮窗权限，或服务被系统拦了）' };
   } catch (e) {
