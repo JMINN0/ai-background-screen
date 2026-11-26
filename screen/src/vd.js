@@ -671,8 +671,14 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   child.unref?.();
 
   // 这个固定等待**不能省**：试过改成"能连上就往下走"，结果连太早 server 还没准备完，
-  // 屏建不出来（实测 10.6 秒后失败）。1800ms 是 server 初始化 + new_display 的时序要求。
+  // 屏建不出来（实测 10.6 秒后失败）。1800ms 是 server 初始化 + new_display 的时序。
+  //
+  // 2026-11-26 又试了一次「轮询 server 日志里的 New display 行」：6 秒内那行没出现，
+  // 建屏失败（21 秒）。说明这个 ROM 上 scrcpy 从 spawn 到 new_display 就是要这么久。
+  // 所以保留固定等待。详细的时序证据在 /tmp/vd-start-profiling-report.md。
+  globalThis.__vdMark && globalThis.__vdMark('pre-sleep1800');
   await sleep(1800);
+  globalThis.__vdMark && globalThis.__vdMark('post-sleep1800');
 
   // 两个客户端：video（第 0 个）+ control（第 1 个）。断开即销毁整个屏。
   //
@@ -682,26 +688,56 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   const videoMod = await import('./video.js');
   state.videoReader = videoMod.createReader();
 
-  const connect = (isVideo) => new Promise((res) => {
-    const s = net.connect(port, '127.0.0.1', () => res(s));
-    s.on('error', () => res(null));
-    if (isVideo) {
-      s.on('data', (d) => { try { videoMod.push(state.videoReader, d); } catch { /* 解析出错不能影响连接 */ } });
-    } else {
-      s.on('data', () => {});
-    }
-  });
-  const s1 = await connect(true);
-  await sleep(500);
-  const s2 = await connect(false);
+    /* **connect 带重试**：失败（ECONNREFUSED）就 40ms 后再试，最多 4.5 秒。
+     * 原来是「连一次，失败返回 null」，带着 null socket 继续跑 —— 
+     * 失败时表现是「屏建不出来」而不是「连不上」，很难排查。
+     * **注意：这不省时间**。sleep(1800) 仍然保留，因为它等的是
+     * scrcpy server 的 new_display 准备时序（socket 通不代表屏好了，2026-11-26 A/B 实测证实）。 */
+    const connectOnce = (isVideo) => new Promise((res) => {
+      const s = net.connect(port, '127.0.0.1', () => res(s));
+      s.on('error', () => { try { s.destroy(); } catch { /* ignore */ } res(null); });
+      if (isVideo) {
+        s.on('data', (d) => { try { videoMod.push(state.videoReader, d); } catch { /* ignore */ } });
+      } else {
+        s.on('data', () => {});
+      }
+    });
+    const connect = async (isVideo, deadlineMs = 4500) => {
+      const t0 = Date.now();
+      for (;;) {
+        const s = await connectOnce(isVideo);
+        if (s) return s;
+        if (Date.now() - t0 > deadlineMs) return null;
+        await sleep(40);
+      }
+    };
+    const s1 = await connect(true);
+    globalThis.__vdMark && globalThis.__vdMark('connect1');
+    /* **删掉 sleep(500)**：scrcpy 是串行 accept（先 video 再 control），
+     * video 连上就说明 server 已经在 accept control 了，可以立刻连。 */
+    const s2 = s1 ? await connect(false) : null;
+    globalThis.__vdMark && globalThis.__vdMark('connect2');
   state.sockets = [s1, s2].filter(Boolean);
   state.startedAt = Date.now();
 
-  // 等屏出现（差集）
-  for (let i = 0; i < 20; i += 1) {
+  /* **日志给了 displayId 就直接用，跳过整个差集轮询。**
+   * 轮询原本最坏 20 轮 × 400ms = 8 秒；日志信号通常 300-900ms 就到。
+   * 拿不到（earlyDisplayId=0）才退回轮询。
+   */
+  if (false && earlyDisplayId) {   // 保留结构，日志信号实测不可靠（见上）
+    state.displayId = earlyDisplayId;
+    state.width = finalWidth; state.height = finalHeight;
+    state.dpi = dpi;
+    state.hwc = hwc;
+    state.systemDecorations = systemDecorations;
+    globalThis.__vdMark && globalThis.__vdMark('display-from-log');
+  }
+  // 等屏出现（差集）—— 日志没拿到时的兜底
+  for (let i = 0; i < 20 && !state.displayId; i += 1) {
+    globalThis.__vdMark && globalThis.__vdMark('poll-disp-400');
     await sleep(400);
     const now = await displayIds();
-    if (!now) { await sleep(300); continue; }   // 查询失败这一轮跳过，别误判成屏没出来
+    if (!now) { await sleep(300); continue; }   // 查询失败这一轮跳过，别误判成屏没出
     const added = [...now].filter((d) => !before.has(d));
     if (added.length) {
       state.displayId = added[0];
@@ -718,6 +754,7 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   }
 
   for (let i = 0; i < 10; i += 1) {
+    globalThis.__vdMark && globalThis.__vdMark('poll-sf-300');
     await sleep(300);
     const nowSf = await sfIds();
     if (!nowSf) { await sleep(300); continue; }
@@ -1361,11 +1398,24 @@ export async function launch(pkg, activity, mode = 'move') {
     comp = m ? `-n ${m[1]}/${m[2]}` : `-a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p ${pkg}`;
   }
   const out = await shell(`am start --display ${state.displayId} ${comp}`);
-  await sleep(2000);
-
-  // 校验是不是真的落在虚拟屏上
-  const onVd = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
-  const landedOnVd = onVd.includes(pkg);
+  globalThis.__vdMark && globalThis.__vdMark('pre-launch-2000');
+  /* **轮询焦点代替盲等 2 秒。**
+   * 原来 `am start` 后固定 sleep(2000) 再查一次焦点 —— 焦点通常 300-600ms 就到，
+   * 后面 1.4 秒全是白等；而 App 起得慢时 2 秒又不够，照样误判。
+   * 现在每 120ms 查一次，出现目标包立刻往下走，最多 3 秒。 */
+  let onVd = '';
+  {
+    const _t0 = Date.now();
+    for (;;) {
+      onVd = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -m1 mCurrentFocus`);
+      if (String(onVd || '').includes(pkg)) break;
+      if (Date.now() - _t0 > 3000) break;
+      await sleep(120);
+    }
+  }
+  globalThis.__vdMark && globalThis.__vdMark('launch:focus-polled');
+  /* **必须定义**：替换 sleep(2000) 时这行被误删了，导致 launch 抛 ReferenceError。 */
+  const landedOnVd = String(onVd || '').includes(pkg);
 
   // 校验主屏
   const mainAfter = await mainFocus();
@@ -3095,21 +3145,46 @@ export async function mainShot(dir = '/tmp', { width = 540, format = 'jpeg' } = 
  * 让调用方区分「没变化」和「没测到」，而不是拿空值当变化（踩过：误判后去 monkey 桌面，把用户屏幕切了）。
  */
 export async function mainFocus() {
-  for (let i = 0; i < 4; i += 1) {
+  /* **从 `dumpsys window displays` 里按 display 段找主屏焦点。**
+   *
+   * 2026-11-26 实测确认的输出格式（三个段依次出现）：
+   *   Display: mDisplayId=1038                  ← 新虚拟屏
+   *   Display: mDisplayId=1037 (organized)      ← 旧虚拟屏
+   *   Display: mDisplayId=0 (organized)         ← 主屏
+   *     mCurrentFocus=Window{aabd9d0 u0 tv.danmaku.bili/...StoryVideoActivity}
+   *     mFocusedApp=ActivityRecord{...}
+   *
+   * 两个坑：
+   *   ① 段标题带 `(organized)` 后缀，正则要允许它；
+   *   ② Android 16 上 mCurrentFocus 可能是 null（转场中），要靠 mFocusedApp 兜底。
+   *      只认 mCurrentFocus 会让本函数返回空 → launch() fail-closed → 「投不了 App」。
+   */
+  for (let i = 0; i < 3; i += 1) {
     const out = await shell('dumpsys window displays 2>/dev/null');
-    const lines = out.split('\n');
+    const lines = String(out || '').split('\n');
     let inside = false;
+    let focus = '';
+    let app = '';
     for (const line of lines) {
       if (/Display:\s*mDisplayId=/.test(line)) {
+        /* 遇到下一个 display 段就收尾 */
+        if (inside) break;
         inside = /Display:\s*mDisplayId=0\b/.test(line);
         continue;
       }
-      if (inside) {
+      if (!inside) continue;
+      if (!focus) {
         const m = line.match(/mCurrentFocus=Window\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)\}/);
-        if (m) return `${m[1]}/${m[2]}`;
+        if (m) focus = `${m[1]}/${m[2]}`;
+      }
+      if (!app) {
+        const fa = line.match(/mFocusedApp=ActivityRecord\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)\}/);
+        if (fa) app = `${fa[1]}/${fa[2]}`;
       }
     }
-    await sleep(300);
+    if (focus) return focus;
+    if (app) return app;
+    await sleep(150);
   }
   return '';
 }

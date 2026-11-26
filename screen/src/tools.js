@@ -20,7 +20,35 @@ export async function modes() {
   };
 }
 
+/* **耗时探针**：DSH_VD_PROFILE=1 时打印各阶段耗时。
+ * 没有这张表，所有优化都是猜的。 */
+const _prof = { on: !!process.env.DSH_VD_PROFILE, t0: 0, marks: [] };
+globalThis.__vdMark = (k) => _mark(k);
+function _mark(k) {
+  if (!_prof.on) return;
+  if (!_prof.t0) _prof.t0 = Date.now();
+  _prof.marks.push(k + '=' + (Date.now() - _prof.t0) + 'ms');
+}
+function _flushProf(tag) {
+  if (!_prof.on) return;
+  try { console.error('[vd-prof' + (tag ? ' ' + tag : '') + '] ' + _prof.marks.join(' ')); } catch {}
+  _prof.marks = []; _prof.t0 = 0;
+}
+
 export async function start(args) {
+  _mark('entry');
+  try {
+    const r = await _start(args);
+    _mark('done');
+    _flushProf('start');
+    return r;
+  } catch (e) {
+    _flushProf('start-err');
+    throw e;
+  }
+}
+
+async function _start(args) {
   // **AI 可以按任务预估设定空闲超时**：比如「这个任务大概要挂 30 分钟」就传 keepMin:30。
   // 不传就沿用当前设定（默认 5 分钟）。
   if (args?.keepMin != null) {
@@ -402,7 +430,8 @@ export async function pickHomeLike(opts = {}) {
      * 只有 documentsui 带那个会藏浮窗的权限。
      */
     'com.android.gallery3d',           // 图库
-    'com.android.contacts',            // 联系人
+      /* contacts 2026-11-26 实测会藏浮窗（HIDE_NON_SYSTEM_OVERLAY），已移除。
+       * 2026-11-24 那次「不带这个权限」的结论是错的，害我查了一整晚。 */
     'com.android.calendar',            // 日历
   ];
 
@@ -435,6 +464,27 @@ export async function pickHomeLike(opts = {}) {
    */
   if (!allFocus.trim()) return null;
 
+    /* **一次 adb 拿走所有候选的「装没装 / 跑没跑」。**
+     *
+     * 2026-11-26 实测：原来每个候选要跑 2 次 adb（pidof + pm list packages），
+     * 6 个候选 = 12 次往返 ≈ 1200ms。改成一条 shell 命令后实测 275ms。
+     * 输出格式：`包名|已安装的包名|pid`，空表示不存在。
+     */
+    const candInfo = new Map();   // pkg -> { installed: boolean, running: boolean }
+    try {
+      const q = await vd.shell(
+        'for p in ' + candidates.join(' ') + '; do '
+        + 'inst=$(pm list packages $p 2>/dev/null | head -1 | cut -d: -f2); '
+        + 'pid=$(pidof $p 2>/dev/null); '
+        + 'echo "$p|$inst|$pid"; done'
+      );
+      for (const line of String(q || '').split('\n')) {
+        const parts = line.trim().split('|');
+        if (parts.length < 3 || !parts[0]) continue;
+        candInfo.set(parts[0], { installed: Boolean(parts[1]), running: Boolean(parts[2]) });
+      }
+    } catch { /* 查不到就走原来的逐候选路径 */ }
+  let fallback = '';   // 全被跳过时的兜底（2026-11-26）
   for (const pkg of candidates) {
     if (exclude.has(pkg)) continue;         // 上一轮试过会藏浮窗，跳过
     if (allFocus.includes(pkg)) continue;   // 任何一块屏上正在用，都别 force-stop
@@ -445,27 +495,26 @@ export async function pickHomeLike(opts = {}) {
      * vd.launch 的 am force-stop 会把它连同用户改到一半的状态一起杀掉。
      * 所以再加一条：进程在跑就跳过。
      */
-    try {
-      const { execFile } = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      const run0 = promisify(execFile);
-      const t0 = await adbTarget();
-      const pr = await run0('adb', ['-s', t0, 'shell', 'pidof ' + pkg],
-        { timeout: 5000 }).catch(() => ({ stdout: '' }));
-      if (String(pr.stdout || '').trim()) continue;   // 进程活着 → 跳过
-    } catch { /* 查不到就当没在跑，继续试下一个候选（这里是安全的：
-                 后面还有 pm list packages 检查，而且至少还有别的候选） */ }
-    try {
-      const { execFile } = await import('node:child_process');
-      const { promisify } = await import('node:util');
-      const run = promisify(execFile);
-      const target = await adbTarget();
-      const r = await run('adb', ['-s', target, 'shell', 'pm list packages ' + pkg],
-        { timeout: 6000 }).catch(() => ({ stdout: '' }));
-      if (String(r.stdout || '').includes(pkg)) return pkg;
-    } catch { /* 试下一个 */ }
-  }
-  return null;   // 没有可用的 → 调用方如实报告
+      /* **用批量结果判断，不再逐个跑 adb。**
+       * 原来每个候选 2 次往返（pidof + pm list packages），6 个候选 12 次 ≈ 1200ms；
+       * 现在开头一次 shell 全拿到，实测 275ms。 */
+      const info = candInfo.get(pkg);
+      if (process.env.DSH_PICK_DEBUG) console.error("[pick] " + pkg + " info=" + JSON.stringify(info || null));
+      if (info) {
+        if (info.running) { if (!fallback) fallback = pkg; continue; }
+        if (!info.installed) continue;
+        return pkg;
+      }
+      /* 批量查询失败（candInfo 空）时的兜底：逐候选查，逻辑同前。 */
+      try {
+        const pr = await vd.shell('pidof ' + pkg);
+        if (String(pr || '').trim()) { if (!fallback) fallback = pkg; continue; }
+        const r = await vd.shell('pm list packages ' + pkg);
+        if (String(r || '').includes(pkg)) return pkg;
+      } catch { /* 试下一个 */ }
+    }
+  /* 所有候选都在跑 / 都被排除 → 用兜底候选（另起任务，不动主屏实例）。 */
+  return fallback || null;
 }
 
 export async function selfCheck(args = {}) {
@@ -1486,6 +1535,25 @@ export async function returnToMain(args = {}) {
  * @returns {Promise<{exists:boolean, shown:boolean, collapsed:boolean|null,
  *   x:number|null, y:number|null, w:number|null, h:number|null, port:number|null}>}
  */
+/* **dumpsys window 的短 TTL 缓存。**
+ *
+ * 2026-11-26 实测：一次 `dumpsys window windows` 输出 101KB、耗时 76ms。
+ * 自检流程里 2-3 秒内会连查好几次，每次都要把 101KB 从设备传过来。
+ *
+ * TTL 只设 800ms —— 比一次自检的间隔短，不会读到过期的窗口列表；
+ * 但能把「同一个阶段里的连查」合并成一次。
+ * 任何写操作（launch/stop/input）之后调用方应主动 invalid 掉。
+ */
+let _winDumpCache = { at: 0, text: '' };
+async function windowDumpCached(ttlMs = 800) {
+  const now = Date.now();
+  if (_winDumpCache.text && now - _winDumpCache.at < ttlMs) return _winDumpCache.text;
+  const t = await vd.shell('dumpsys window windows 2>/dev/null');
+  _winDumpCache = { at: Date.now(), text: String(t || '') };
+  return _winDumpCache.text;
+}
+export function invalidateWindowDump() { _winDumpCache = { at: 0, text: '' }; }
+
 export async function windowState(port) {
   const out = { exists: false, shown: false, collapsed: null, x: null, y: null, w: null, h: null, port: null };
   try {
@@ -1496,14 +1564,19 @@ export async function windowState(port) {
      * 会串到**下一个窗口**的 `Surface: shown=`，于是误报「浮窗被藏」。
      */
     const pat = port ? `dsh-overlay:${port}[^0-9]` : 'dsh-overlay:';
-    const d = await vd.shell(
-      `dumpsys window windows 2>/dev/null | grep -E 'Window #|dsh-overlay:|Surface: shown=|mAttrs='`
-    );
+      /* **不要 grep 过滤，直接拿完整 dumpsys。**
+       *
+       * 2026-11-25 用户报「我最小化了，AI 不知道」。
+       * 根因：原来用 grep -E 预过滤，每个 Window 块里混进了**上一个窗口**的
+       * Surface: 行（它在 Window # 之前），切块后第一行就是别人的 Surface，
+       * 判定全乱 —— 实测返回 exists:false，而窗口明明在（117x208 最小化态）。
+       */
+      const d = await windowDumpCached();
     const all = String(d || '');
     if (!all.trim()) return out;
 
     /* 切块：每块以 `Window #` 开头 */
-    const blocks = all.split(/(?=Window #)/);
+    const blocks = all.split(/(?=\n\s*Window #\d+ )/);
     const target = blocks.find((b) => new RegExp(pat).test(b));
     if (!target) return out;
     out.exists = true;
@@ -1884,7 +1957,12 @@ export async function findText(args) {
     let hit = false;
     if (mode === 'exact') hit = t.trim() === need;
     else if (mode === 'regex') hit = rx.test(t);
-    else hit = t.includes(need) || need.includes(t.trim()) && t.trim().length > 0;
+    /* **只允许「行里包含目标」，不允许「目标包含整行」。**
+     *
+     * 2026-11-25 审查抓到：后半段是反向包含 —— 搜「确定」会命中
+     * 「取消/确定」整行，而且 OCR 出来的长串会整行匹配，点下去位置就偏了。
+     */
+    else hit = t.includes(need);
     if (hit) hits.push(l);
   }
   if (!hits.length) {
@@ -1979,7 +2057,20 @@ export async function tapText(args) {
   await new Promise((res) => setTimeout(res, 500));
   const g2 = await grabFullPng();
   if (g2.ok) after = (await V.dhash(g2.path)).hash;
-  const pageChanged = !!(before && after && before !== after);
+  /* **用局部差异判断，不用整屏 dHash。**
+   *
+   * 2026-11-25 审查抓到：整屏 dHash 会被转场动画、时钟秒数、光标闪烁、
+   * 视频画面干扰 —— 它回答的是「两张图一样吗」，不是「我这一下点中了吗」。
+   * V.diff 内部按 24×24 网格算最大格差，并用仓库标定的阈值（mad/255>0.005 || mc/255>0.15）给出 changed。
+   */
+  let pageChanged = false;
+  let diffInfo = null;
+  try {
+    if (!r.shotPath) throw new Error('no before shot');
+    const d = await V.diff(r.shotPath, g2.path);
+    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+  } catch { /* 退回哈希判据 */ }
+  if (!diffInfo && before && after) pageChanged = before !== after;
   const tapOk = !/失败|不允许|不可用/.test(String(t.text || ''));
 
   const verdict = !tapOk
@@ -2270,7 +2361,19 @@ export async function tapImage(args) {
 
   const g2 = await grabFullPng();
   const after = g2.ok ? (await V.dhash(g2.path)).hash : null;
-  const pageChanged = !!(before && after && before !== after);
+  /* **用局部差异判断，不用整屏 dHash。**
+   *
+   * 2026-11-25 审查抓到：整屏 dHash 会被转场动画、时钟秒数、光标闪烁、
+   * 视频画面干扰 —— 它回答的是「两张图一样吗」，不是「我这一下点中了吗」。
+   * V.diff 内部按 24×24 网格算最大格差，并用仓库标定的阈值（mad/255>0.005 || mc/255>0.15）给出 changed。
+   */
+  let pageChanged = false;
+  let diffInfo = null;
+  try {
+    const d = await V.diff(g1.path, g2.path);
+    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+  } catch { /* 退回哈希判据 */ }
+  if (!diffInfo && before && after) pageChanged = before !== after;
 
   const verdict = !injected
     ? '⚠️ 注入失败'
@@ -2474,7 +2577,19 @@ export async function tapColor(args) {
 
   const g2 = await grabFullPng();
   const after = g2.ok ? (await V.dhash(g2.path)).hash : null;
-  const pageChanged = !!(before && after && before !== after);
+  /* **用局部差异判断，不用整屏 dHash。**
+   *
+   * 2026-11-25 审查抓到：整屏 dHash 会被转场动画、时钟秒数、光标闪烁、
+   * 视频画面干扰 —— 它回答的是「两张图一样吗」，不是「我这一下点中了吗」。
+   * V.diff 内部按 24×24 网格算最大格差，并用仓库标定的阈值（mad/255>0.005 || mc/255>0.15）给出 changed。
+   */
+  let pageChanged = false;
+  let diffInfo = null;
+  try {
+    const d = await V.diff(g1.path, g2.path);
+    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+  } catch { /* 退回哈希判据 */ }
+  if (!diffInfo && before && after) pageChanged = before !== after;
 
   const verdict = !injected
     ? '⚠️ 注入失败'

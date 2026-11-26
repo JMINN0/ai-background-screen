@@ -27,6 +27,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -531,6 +532,25 @@ public class OverlayService extends Service {
      * 于是第 1 个窗口按「只有 1 个」定成 668×1478，后面再开第 2、3 个它不会缩，
      * findFreeSlot 放不下就回退到同一个坐标 → **重叠**。
      */
+    /* **首次建窗时提示「点一下能放大」。**
+     *
+     * 2026-11-26 用户要求：默认最小化（不挡视线），但必须让用户知道能点开。
+     * 只弹一次（进程内），不重复骚扰。
+     */
+    private boolean firstRunHintShown = false;
+    private void showFirstRunHint() {
+        if (firstRunHintShown) return;
+        firstRunHintShown = true;
+        try {
+            Toast t = Toast.makeText(this,
+                    "AI 在后台运行（默认最小化，不挡你）\n点这个小的可以放大看画面",
+                    Toast.LENGTH_LONG);
+            t.setGravity(Gravity.CENTER, 0, 0);
+            t.show();
+            Log.i(TAG, "首次提示已弹出");
+        } catch (Throwable e) { /* 提示弹不出来不影响功能 */ }
+    }
+
     private void reflowAll() {
         for (Win w : wins.values()) {
             if (w.userW > 0 || w.collapsed) continue;   // 用户调过大小/收起的别动
@@ -1045,7 +1065,13 @@ public class OverlayService extends Service {
         /** 当前是否处于「连不上、正在重连」的显示状态。只用于避免重复刷文案。 */
         boolean reconnecting = false;
         int curW = 0, curH = 0;   // 当前实际尺寸（relayoutAuto 要用）
-        boolean collapsed = false;
+        /* **默认最小化（用户 2026-11-26 要求）。**
+         *
+         * 原话：「大概率没人会喜欢被悬浮窗挡视角」。
+         * 展开态 486×1074 占掉主屏 40% 宽、40% 高，一建出来就把用户正在看的东西挡住。
+         * 默认收成 117×208 的小图，用户点一下才展开。
+         */
+        boolean collapsed = true;
         int userW = 0, userH = 0;
         long lastOk = 0;
         int portRetries = 0;
@@ -1270,10 +1296,22 @@ public class OverlayService extends Service {
             /* 高度按真实宽高比，不写死 1.6（横屏时会比屏还高）；
                尺寸来源用 realScreenSize()，不用缓存的 DisplayMetrics。 */
             int[] _rs0 = realScreenSize();
-            int w0 = Math.round(_rs0[0] * 0.46f);
-            float _a0 = (float) _rs0[0] / Math.max(1, _rs0[1]);
-            int h0 = Math.round(w0 / Math.max(0.2f, Math.min(5f, _a0)));
-            curW = w0; curH = h0;
+            /* **建窗就按当前 collapsed 状态给尺寸。**
+             * 2026-11-26：默认 collapsed=true，但原来固定用展开尺寸（屏宽 46%），
+             * 结果一建出来就是大窗口 —— 「默认最小化」根本不生效。 */
+            int w0, h0;
+            if (collapsed) {
+              w0 = dp(36);
+              h0 = Math.round(w0 / Math.max(0.2f, Math.min(5f, aspect)));
+              if (h0 < dp(36)) h0 = dp(36);
+              if (h0 > dp(64)) h0 = dp(64);
+            } else {
+              w0 = Math.round(_rs0[0] * 0.46f);
+              float _a0 = (float) _rs0[0] / Math.max(1, _rs0[1]);
+              h0 = Math.round(w0 / Math.max(0.2f, Math.min(5f, _a0)));
+            }
+            curW = Math.round(_rs0[0] * 0.46f);
+            curH = Math.round(curW / Math.max(0.2f, Math.min(5f, (float) _rs0[0] / Math.max(1, _rs0[1]))));
             /* **必须加 FLAG_NOT_TOUCH_MODAL，否则窗口边界内的触摸全被吃掉。**
              *
              * 2026-11-21 用户报的 bug：主屏侧滑返回时，B站没反应 —— 手势被悬浮窗抢了。
@@ -1614,7 +1652,7 @@ int dx = (int)(e.getRawX() - downX);
                 wm.addView(root, lp);
                 Log.i(TAG, "窗口已添加 port=" + port + " " + lp.width + "x" + lp.height + " x=" + lp.x + " y=" + lp.y);
                 // **加完立刻重算所有窗口尺寸再重排**（P0：数量变了尺寸要跟着变）
-                ui.post(new Runnable() { public void run() { reflowAll(); } });
+                ui.post(new Runnable() { public void run() { reflowAll(); showFirstRunHint(); } });
             } catch (Exception e) {
                 Log.e(TAG, "加窗口失败 port=" + port + ": " + e.getMessage());
             }
@@ -2112,7 +2150,8 @@ int dx = (int)(e.getRawX() - downX);
                   r.close();
               } catch (Throwable t) { /* 文件不在 = idle */ }
               if (line == null || line.trim().isEmpty()) {
-                  if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                  /* **回落到待机描边，不是彻底不画。** 用户 2026-11-26 要求「待机也要有光条」。 */
+                    if (!ev.isStandby()) ev.setMode(EdgeView.MODE_STANDBY, android.graphics.Color.TRANSPARENT, 1f, 0);
                   return;
               }
               String[] parts = line.trim().split("\\|", -1);
@@ -2137,7 +2176,8 @@ int dx = (int)(e.getRawX() - downX);
                   /* edgeDisp 现在存的是**端口**（浮窗知道自己端口，不知道 displayId）。
                    * 0 = 不限屏。 */
                   if ((long) port != edgeDisp) {
-                      if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                      /* 动画放完 → 回落待机描边（同上）。 */
+                        if (!ev.isStandby()) ev.setMode(EdgeView.MODE_STANDBY, android.graphics.Color.TRANSPARENT, 1f, 0);
                       return;
                   }
               }
@@ -2150,7 +2190,11 @@ int dx = (int)(e.getRawX() - downX);
               else if ("critical".equals(modeName)) m = EdgeView.MODE_CRITICAL;
 
               if (m == EdgeView.MODE_IDLE) {
-                  if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                  /* **回落到待机描边，不是彻底不画。**
+                   * 用户 2026-11-26 明确要求「待机也要有光条」——
+                   * 原来这里设 MODE_IDLE，EdgeView 就 setWillNotDraw(true)，
+                   * 结果待机时窗口什么状态都看不出来。 */
+                  if (!ev.isStandby()) ev.setMode(EdgeView.MODE_STANDBY, android.graphics.Color.TRANSPARENT, 1f, 0);
                   return;
               }
               long remain = 0;
@@ -2158,7 +2202,11 @@ int dx = (int)(e.getRawX() - downX);
                   long elapsed = startedAtMs > 0 ? (System.currentTimeMillis() - startedAtMs) : 0L;
                   remain = durMs - Math.max(0L, elapsed);
                   if (remain <= 0) {
-                      if (!ev.isIdle()) ev.setMode(EdgeView.MODE_IDLE, android.graphics.Color.TRANSPARENT, 0f, 0);
+                      /* **回落到待机描边，不是彻底不画。**
+                       * 用户 2026-11-26 明确要求「待机也要有光条」——
+                       * 原来这里设 MODE_IDLE，EdgeView 就 setWillNotDraw(true)，
+                       * 结果待机时窗口什么状态都看不出来。 */
+                      if (!ev.isStandby()) ev.setMode(EdgeView.MODE_STANDBY, android.graphics.Color.TRANSPARENT, 1f, 0);
                       return;
                   }
               }

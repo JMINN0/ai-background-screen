@@ -31,6 +31,7 @@ import android.view.View;
  */
 class EdgeView extends View {
 
+    static final int MODE_STANDBY = -1;   // 待机：常亮淡描边（用户 2026-11-25 要求）
     static final int MODE_IDLE = 0;       // 不画
     static final int MODE_WORKING = 1;    // 环绕流动
     static final int MODE_DONE = 2;       // 完成：横扫 + 淡出
@@ -38,7 +39,7 @@ class EdgeView extends View {
     static final int MODE_ERROR = 4;      // 出错：快脉冲
     static final int MODE_CRITICAL = 5;   // 严重：粗红边高频闪
 
-    private int mode = MODE_IDLE;
+    private int mode = MODE_STANDBY;   // 一建出来就是待机描边（用户要求）
     private int color = Color.TRANSPARENT;
     private float intensity = 1f;
     private long endsAt = 0;
@@ -79,7 +80,9 @@ class EdgeView extends View {
         tail.setStrokeWidth(dp(3.2f));
         tail.setStrokeCap(Paint.Cap.ROUND);
 
-        setWillNotDraw(true);   // idle 时让系统跳过整个绘制通道
+        /* **不再关绘制**：待机也要画常亮描边（用户 2026-11-25 要求）。
+         * 只有真正 MODE_IDLE（完全隐藏）才关，那个状态现在没人用。 */
+        setWillNotDraw(false);
     }
 
     private float dp(float v) { return v * d; }
@@ -108,22 +111,40 @@ class EdgeView extends View {
         color = col;
         intensity = Math.max(0f, Math.min(1f, inten));
 
-        boolean nowIdle = (m == MODE_IDLE);
-        if (wasIdle == nowIdle) { if (!nowIdle) invalidate(); return; }
-        setWillNotDraw(nowIdle);
+        boolean nowHidden = (m == MODE_IDLE);
+        if (wasIdle == nowHidden) { invalidate(); return; }
+        setWillNotDraw(nowHidden);
         invalidate();
     }
 
     int getMode() { return mode; }
 
+    /** **完全隐藏态**：不画任何东西。只有这个状态才允许 setWillNotDraw(true)。
+     *
+     * 2026-11-26 审查抓到：上一版把 STANDBY 也算进 isIdle()，
+     * 而 OverlayService 有 4 处 `if (!ev.isIdle()) ev.setMode(MODE_IDLE)`
+     * —— 那些判断全部失效，浮窗再也切不回隐藏态。功能性回归。
+     * 所以拆成两个方法：isIdle 只表示「真的什么都没画」。
+     */
     boolean isIdle() { return mode == MODE_IDLE; }
+
+    /** **是不是有待机描边**（静态可见但不闪烁）。和 isIdle 语义不同，别混用。 */
+    boolean isStandby() { return mode == MODE_STANDBY; }
 
     @Override
     protected void onDraw(Canvas cv) {
         if (mode == MODE_IDLE) return;
+        /* **待机也画**：用户要求「每个状态都要有发光条围绕，待机也要」。
+         *
+         * 之前 idle 直接 setWillNotDraw(true)，系统跳过整个绘制通道 ——
+         * 所以待机时窗口看起来「什么状态都没有」，用户不知道 AI 是待命还是死了。
+         *
+         * 待机画法：一圈静态淡描边，不闪不呼吸（静态 = 不触发持续重绘，几乎不耗电）。
+         */
 
         long now = SystemClock.uptimeMillis();
-        if (endsAt > 0 && now >= endsAt) { setMode(MODE_IDLE, Color.TRANSPARENT, 0f, 0); return; }
+        /* 动画放完**回落到待机描边**，不是彻底不画 —— 否则窗口看起来像死了。 */
+        if (endsAt > 0 && now >= endsAt) { setMode(MODE_STANDBY, Color.TRANSPARENT, 1f, 0); return; }
 
         // 最后 400ms 淡出，不要突然消失 —— 突然消失看起来像卡了
         float fade = 1f;
@@ -134,6 +155,8 @@ class EdgeView extends View {
         float inset = dp(4f);
         float r = dp(10f);
         rect.set(inset, inset, w - inset, h - inset);
+        /* **待机常亮描边** —— 放在 rect/r 算好之后（用户 2026-11-25 要求）。 */
+        if (mode == MODE_STANDBY) { drawStandby(cv, r); return; }
 
         /* **路径只在尺寸变化时重建。**
          * 原来每帧 setPath + getLength + 16 次 getSegment，
@@ -285,6 +308,46 @@ class EdgeView extends View {
      *   warning = 不对称呼吸（快起慢落，人放松时就是这种节奏）
      *   error   = 双拍「咚-咚」（机械、警急、不像呼吸）
      */
+    /**
+     * **待机常亮描边**（用户 2026-11-25 要求）。
+     *
+     * 用户原话：「悬浮窗除了操作、出错等每个操作都要有发光条围绕，那么待机也要有」。
+     *
+     * 设计要点：
+     *   · **静态，不闪不呼吸** —— 动态动画会持续 invalidate，待机时白烧电；
+     *   · 淡青色，alpha 约 0.42，一眼能看出「AI 在线待命」但不抢眼；
+     *   · 只有描边，不加光晕 —— 光晕在最小化的小窗上会糊成一片（见 drawCritical 注释）。
+     */
+    private void drawStandby(Canvas cv, float unusedR) {
+        /* **按实际窗口尺寸自适应**，不沿用大窗口的 inset/圆角。
+         *
+         * 2026-11-26 审查抓到：最小化窗口只有 117×208，
+         * 而 rect 用的是 dp(4) 内缩 + dp(10) 圆角（这台机器 density 3.25 → 13px / 32.5px），
+         * 117 - 2×13 = 91px 的可用宽度上，32.5px 圆角几乎相接，
+         * 画出来是个「胶囊」而不是方块，还压住了预览画面。
+         *
+         * 现在按短边比例算：内缩和圆角都不超过短边的 12%，且封顶 dp(4)/dp(10)。
+         */
+        int w = getWidth(), h = getHeight();
+        if (w <= 0 || h <= 0) return;
+        float shortSide = Math.min(w, h);
+        /* **描边要看得见，但不能吃掉画面。**
+         * 2026-11-26 实测：117×208 的最小化窗口上，按 5%/2.2% 算出来
+         * inset 只有 5.8px、线宽 2.5px —— 实际几乎看不见（用户反馈「待机没有光条」）。
+         * 改成：**线宽不跟着缩，至少 dp(1.8)（约 5.8px）**，且内缩压到 3%，
+         * 保证小窗口上也是一圈清楚的边。
+         */
+        float inset = Math.max(1.5f, Math.min(dp(4f), shortSide * 0.03f));
+        float rad = Math.min(dp(10f), shortSide * 0.10f);
+        rect.set(inset, inset, w - inset, h - inset);
+        float sw = Math.max(dp(1.8f), Math.min(dp(3f), shortSide * 0.028f));
+
+        stroke.setColor(0xFF4DD0E1);          // 青色 = 待命
+        stroke.setStrokeWidth(sw);
+        stroke.setAlpha(190);                 // 0.75 —— 原来 108(0.42) 在小窗上太淡
+        cv.drawRoundRect(rect, rad, rad, stroke);
+    }
+
     private void drawWarning(Canvas cv, float t, int alpha, float r) {
         final float PERIOD = 2.6f;
         float phase = (t % PERIOD) / PERIOD;          // 0..1
