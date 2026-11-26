@@ -997,15 +997,6 @@ export async function input(args) {
    * 2026-11-26：隔壁 AI 操作拼多多 85 次，一次 vdisplay_risk 都没调，
    * 浮窗一直「未评估」。提醒只在 launch 时出现过 7 次，AI 当无关信息忽略了。
    * 改在每次 input 返回里带上 —— 这才是真正触发风控的动作。 */
-  const _riskLine = (() => {
-    try {
-      const cur = vd.getRiskAssessment ? vd.getRiskAssessment() : null;
-      if (!cur || !cur.level || cur.level === '?') {
-        return '\n' + '⚠️ 风控等级还是「未评估」—— 操作前建议先调 vdisplay_risk 定级（L0..L5），浮窗会显示出来。';
-      }
-      return '\n' + '风控等级：' + cur.level + (cur.mode ? '（' + cur.mode + '）' : '');
-    } catch { return ''; }
-  })();
   return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn };
 }
 
@@ -1171,6 +1162,16 @@ export async function stop(args) {
     otherAlive = Number(pi?.count ?? pi?.screens?.length ?? 0) || 0;
   } catch { /* ignore */ }
   if (otherAlive <= 0) await stream.stop().catch(() => {});
+  /* **all=true 时把残留的 framesrv 全清掉。**
+   * 2026-11-26 新手实测：每次建屏都会漏一块 dsh-frames 镜像屏，
+   * 因为 stop 只按账本清，而账本在进程重启后是空的。
+   * 这里在「全停」时补一刀 —— 反正用户要的就是全清干净。
+   */
+  if (args?.all === true) {
+    try {
+      await vd.shell("pkill -9 -f 'framesrv.Main' 2>/dev/null; true");
+    } catch { /* 清不掉不影响主流程 */ }
+  }
   const r = await vd.stop({ forceStopApps: args?.forceStopApps === true });
   const lines = ['虚拟屏已销毁。'];
   if (r.killed?.length) lines.push(`已清理后台 App：${r.killed.join('、')}`);
@@ -1223,7 +1224,13 @@ async function ensureOverlayInstalled(run, target) {
   try {
     const { stdout } = await run('adb', ['-s', target, 'shell',
       `pm list packages ${OVERLAY_PKG}`], { timeout: 8000 });
-    if (String(stdout || '').includes(OVERLAY_PKG)) _overlayInstalled = true; return { ok: true, already: true };
+    /* **花括号不能省。** 2026-11-26 审查抓到：
+     * 原来写在同一行没加 {}，return 跑到 if 外面 ——
+     * 函数永远返回「已装」，永远不会执行安装，缓存也永远不置位。 */
+    if (String(stdout || '').includes(OVERLAY_PKG)) {
+      _overlayInstalled = true;
+      return { ok: true, already: true };
+    }
   } catch { /* 查不到就当没装，继续试装 */ }
 
   // 找内置 APK

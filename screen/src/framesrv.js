@@ -354,6 +354,21 @@ export async function cleanupOrphans(dryRun = false) {
 }
 
 export async function stop(displayId) {
+  /* **账本里没有也要清。**
+   * 2026-11-26 新手实测发现：每次建屏都会漏一块 dsh-frames 镜像屏。
+   * 根因：daemon/工具进程重启后 servers map 是空的，
+   * framesrv.stop(displayId) 找不到账本项就直接跳过 → 镜像屏一直活着，
+   * 而且它持有 app_process 进程，会一直占内存。
+   * 兜底：按 displayId 在设备上找到对应的 framesrv 进程直接杀掉。
+   */
+  if (displayId != null && !servers.get(displayId)) {
+    try {
+      const hit = await run('adb', ['-s', await adbTarget(), 'shell',
+        `pkill -9 -f 'framesrv.Main --display=${displayId} ' 2>/dev/null; true`,
+      ], { timeout: 8000 }).catch(() => null);
+      if (hit) return { ok: true, cleaned: 'by-displayId' };
+    } catch { /* 杀不掉就继续走账本路径 */ }
+  }
   if (displayId != null) {
     const s = servers.get(displayId);
     if (s) {

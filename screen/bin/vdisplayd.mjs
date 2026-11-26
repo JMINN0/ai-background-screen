@@ -927,6 +927,28 @@ function startIdleWatch() {
  * 不是正在使用中的。这个判据不会误杀"用户自己开着 HWC"的情况，因为那种情况下
  * 属性是 1 且通常也没有我们的虚拟屏……所以只有在我们自己写过状态文件时才做。
  */
+/* **孤儿屏清理（2026-11-26 新手实测发现）。**
+ * daemon 重启后，旧 daemon 建的虚拟屏还在（持有者是死掉的 app_process），
+ * 新 daemon 不认识它 → vdisplay_status 说「没有在运行」，
+ * 但 adb dumpsys 里那块屏还活着，而且会一直占内存。
+ * 清理办法：把「不是当前活动屏」的 scrcpy 屏对应的 app_process 杀掉。
+ */
+async function cleanupOrphanDisplays() {
+  try {
+    const st = await vd.status();
+    const active = String(st.displayId || '');
+    // 列出所有 scrcpy 虚拟屏
+    const raw = await vd.shell('dumpsys SurfaceFlinger --display-id 2>/dev/null | grep \"Virtual display\"');
+    const orphanCount = String(raw || '').split('\n').filter((l) => l.includes('scrcpy')).length
+      - (st.running ? 1 : 0);
+    if (orphanCount <= 0) return 0;
+    // 有孤儿：杀所有 app_process（当前屏的会被 daemon 自己重起）
+    console.error('[vdisplayd] 发现 ' + orphanCount + ' 块孤儿屏，清理');
+    await vd.shell('for p in $(ps -A -o PID,NAME 2>/dev/null | awk \'$2=="app_process"{print $1}\'); do kill -9 $p 2>/dev/null; done');
+    return orphanCount;
+  } catch { return 0; }
+}
+
 async function reconcileLeftovers() {
   try {
     const hwc = String(await vd.shell('getprop debug.sf.enable_hwc_vds')).trim();

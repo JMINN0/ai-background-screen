@@ -1131,13 +1131,13 @@ export async function screenState() {
     }
     /* ② 焦点作为佐证（也可能因为转场短暂为 null，所以不单独用它判 empty） */
     const f = await shell(
-      `dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${disp}" | grep -E "mCurrentFocus|mFocusedApp"`
+      `dumpsys window displays 2>/dev/null | sed -n "/mDisplayId=${disp}/,/mDisplayId=/p" | grep -E "mCurrentFocus|mFocusedApp"`
     );
     out.focus = String(f || '').trim();
     const focusNull = /mCurrentFocus=null/.test(out.focus);
     if (out.state === 'unknown' && out.focus) {
       out.state = focusNull ? 'empty' : 'app';
-      const m = out.focus.match(/u0 ([\w.]+)\//);
+      const m = out.focus.match(/u\d+ ([\w.]+)\//);
       if (m) out.pkg = m[1];
     } else if (out.state === 'app' && focusNull) {
       /* **任务在、但没焦点 = 僵尸屏。**
@@ -1171,14 +1171,14 @@ export function describeScreenState(st) {
 
 export async function focusedApp() {
   if (!state.displayId) return '';
-  const r = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`);
+  const r = await shell(`dumpsys window displays 2>/dev/null | sed -n "/mDisplayId=${state.displayId}/,/mDisplayId=/p" | grep -E "mCurrentFocus|mFocusedApp"`);
   return String(r || '').trim();
 }
 
 export async function status() {
   const ids = await displayIds();
   const sf = await sfIds();
-  const app = state.displayId ? await shell(`dumpsys window displays 2>/dev/null | grep -A20 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`) : '';
+  const app = state.displayId ? await shell(`dumpsys window displays 2>/dev/null | sed -n "/mDisplayId=${state.displayId}/,/mDisplayId=/p" | grep -E "mCurrentFocus|mFocusedApp"`) : '';
   return {
     running: await alive(),
     displayId: state.displayId,
@@ -1440,7 +1440,7 @@ export async function launch(pkg, activity, mode = 'move') {
   {
     const _t0 = Date.now();
     for (;;) {
-      onVd = await shell(`dumpsys window displays 2>/dev/null | grep -A30 "mDisplayId=${state.displayId}" | grep -E "mCurrentFocus|mFocusedApp"`);
+      onVd = await shell(`dumpsys window displays 2>/dev/null | sed -n "/mDisplayId=${state.displayId}/,/mDisplayId=/p" | grep -E "mCurrentFocus|mFocusedApp"`);
       if (String(onVd || '').includes(pkg)) break;
       if (Date.now() - _t0 > 3000) break;
       await sleep(120);
@@ -3206,11 +3206,11 @@ export async function mainFocus() {
       }
       if (!inside) continue;
       if (!focus) {
-        const m = line.match(/mCurrentFocus=Window\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)/);
+        const m = line.match(/mCurrentFocus=Window\{[0-9a-f]+ u\d+\s+([\w.]+)\/([\w.$]+)/);
         if (m) focus = `${m[1]}/${m[2]}`;
       }
       if (!app) {
-        const fa = line.match(/mFocusedApp=ActivityRecord\{[0-9a-f]+ u0 ([\w.]+)\/([\w.$]+)/);
+        const fa = line.match(/mFocusedApp=ActivityRecord\{[0-9a-f]+ u\d+\s+([\w.]+)\/([\w.$]+)/);
         if (fa) app = `${fa[1]}/${fa[2]}`;
       }
     }
