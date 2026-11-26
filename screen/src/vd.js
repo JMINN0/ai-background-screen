@@ -644,11 +644,24 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   //            ② 等 spawn/error 落定，失败就返回可读 hint，绝不把异常抛出去。
   let child;
   try {
-    child = spawn(ADB, ['-s', target, 'shell', cmd], { detached: true, stdio: ['ignore', fd, fd] });
+    child = spawn(ADB, ['-s', target, 'shell', cmd], { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     await cleanupForward();
     return { ok: false, hint: `无法启动 adb（${ADB}）：${e?.message || e}。先装 android-tools-adb（apt-get install -y android-tools-adb）` };
   }
+    let spawnedDisplayId = 0;
+    try {
+      const onData = (buf) => {
+        const txt = String(buf);
+        if (!spawnedDisplayId) {
+          const m = txt.match(/New display: \d+x\d+\/\d+ \(id=(\d+)\)/);
+          if (m) spawnedDisplayId = Number(m[1]);
+        }
+      };
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+    } catch { /* 忽略 */ }
+
   let spawnError = null;
   child.on('error', (e) => { if (!spawnError) spawnError = e; state.child = null; });
   await new Promise((resolve) => {
@@ -658,6 +671,13 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     child.once('error', done);
     setTimeout(done, 3000).unref?.();
   });
+
+  /* **等 1800ms，位置在「确认 spawn 成功」之后、connect 之前。**
+   * 2026-11-26 三次替代方案全部失败：①直接删 3/3 失败；
+   * ②轮询日志文件 6 秒超时（日志晚于 accept，机制上等不到）；
+   * ③pipe 实时读 + 挪到 connect 后，屏建不出来。
+   * scrcpy accept 之后还要创建 VirtualDisplay + 配编码器，这段时间没有可观测信号。 */
+  await sleep(1800);
   if (spawnError) {
     try { child.kill('SIGKILL'); } catch { /* 没起来就没什么可杀 */ }
     await cleanupForward();
@@ -676,9 +696,6 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   // 2026-11-26 又试了一次「轮询 server 日志里的 New display 行」：6 秒内那行没出现，
   // 建屏失败（21 秒）。说明这个 ROM 上 scrcpy 从 spawn 到 new_display 就是要这么久。
   // 所以保留固定等待。详细的时序证据在 /tmp/vd-start-profiling-report.md。
-  globalThis.__vdMark && globalThis.__vdMark('pre-sleep1800');
-  await sleep(1800);
-  globalThis.__vdMark && globalThis.__vdMark('post-sleep1800');
 
   // 两个客户端：video（第 0 个）+ control（第 1 个）。断开即销毁整个屏。
   //
@@ -716,7 +733,6 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     /* **删掉 sleep(500)**：scrcpy 是串行 accept（先 video 再 control），
      * video 连上就说明 server 已经在 accept control 了，可以立刻连。 */
     const s2 = s1 ? await connect(false) : null;
-    globalThis.__vdMark && globalThis.__vdMark('connect2');
   state.sockets = [s1, s2].filter(Boolean);
   state.startedAt = Date.now();
 
@@ -753,13 +769,18 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     return { ok: false, hint: 'server 起来了但没等到新屏出现。常见原因：socket 名没带下划线、客户端没连上、或者权限不足。' };
   }
 
-  for (let i = 0; i < 10; i += 1) {
-    globalThis.__vdMark && globalThis.__vdMark('poll-sf-300');
-    await sleep(300);
+  /* **先查后睡，间隔 50ms。**
+   * 原来是 sleep(300) 在前、查在后 —— 屏出现后至少再白等 300ms。
+   * 2026-11-26 实测：sfId 的下游消费者很少（framesrv 走 displayId 不是 sfId），
+   * 所以这 300-500ms 基本白花。 */
+  for (let i = 0; i < 60; i += 1) {
+    globalThis.__vdMark && globalThis.__vdMark('poll-sf');
     const nowSf = await sfIds();
-    if (!nowSf) { await sleep(300); continue; }
-    const added = [...nowSf].filter((d) => !beforeSf.has(d));
-    if (added.length) { state.sfId = added[0]; break; }
+    if (nowSf) {
+      const added = [...nowSf].filter((d) => !beforeSf.has(d));
+      if (added.length) { state.sfId = added[0]; break; }
+    }
+    await sleep(50);
   }
 
   // 校验能力标志
