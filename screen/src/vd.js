@@ -486,7 +486,36 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   // 因为 scrcpy new_display 不直接支持旋转参数，只支持尺寸。
   // 旋转由 App 自己根据屏幕尺寸判断（横屏 App 看到宽>高的屏会自动横屏）。
   if (state.displayId) {
-    /* **只要屏还活着就复用，配置不同只提示不重建。**
+    /* ══════════════════════════════════════════════════════════
+   * **建屏前先清残留，否则新屏会创建成 state OFF（黑屏）。**
+   *
+   * 2026-11-26/27 实测结论（三轮对照）：
+   *   · 干净环境（屏幕数 = 0）+ 重启 daemon → 建屏 3/3 都是 state ON
+   *   · 已有虚拟屏残留时再建 → 新屏 state OFF，App 渲染不出来，画面全黑
+   *   · 等 30 秒、注入触摸、screencap、keyevent 都救不回来
+   *
+   * 根因线索：高通显示驱动的注释写着
+   *   "Defer power-on for virtual display to first draw cycle"
+   * —— 虚拟屏要等「第一次绘制」才上电。而屏 OFF 时 App 画不出内容，
+   * 不画内容就永远没有第一次绘制 —— 死锁。
+   * 干净环境下不会踩到；有残留屏时资源竞争导致新屏一直不上电。
+   *
+   * 所以建屏前先扫一遍：有残留的 scrcpy/dsh-frames 就清掉。
+   * 代价是「多屏池」场景下会误清别的屏 —— 但多屏池本来就不在核心场景里
+   * （见 docs/产品意图.md），优先保证单屏可用。
+   * ══════════════════════════════════════════════════════════ */
+  try {
+    const leftovers = await shell('dumpsys SurfaceFlinger --display-id 2>/dev/null | grep -c "Virtual display"');
+    const nLeft = Number(String(leftovers || '0').trim());
+    if (nLeft > 0 && !state.displayId) {
+      /* 有残留但当前没在用（state.displayId 为空）→ 清掉 */
+      await shell("pkill -9 -f 'framesrv.Main' 2>/dev/null; "
+        + "pkill -9 -f 'com.genymobile.scrcpy.Server' 2>/dev/null; true");
+      await sleep(1200);   // 等系统回收 VirtualDisplay
+    }
+  } catch { /* 清理失败不影响建屏，顶多是黑屏 */ }
+
+  /* **只要屏还活着就复用，配置不同只提示不重建。**
      *
      * 以前的逻辑只比较 systemDecorations，尺寸/DPI/方向全不比 —— 于是：
      *   · 有人显式建了带装饰的屏，别处一句 start()（默认 false）就把它拆了，
@@ -789,6 +818,34 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
   // 校验能力标志
   const flags = await shell(`dumpsys display 2>/dev/null | grep "DisplayDeviceInfo.*scrcpy" | head -1`);
   const canHost = /FLAG_OWN_CONTENT_ONLY/.test(flags) && /FLAG_OWN_FOCUS/.test(flags);
+
+  /* **检查屏有没有真的上电（2026-11-27 实测）。**
+   *
+   * 屏建出来但 state=OFF 时，App 渲不出来、画面全黑，
+   * 而且等 30 秒 / 注入触摸 / screencap / keyevent 都救不回来 —— 必须重建。
+   *
+   * 这是「静默黑屏」唯一的检测点：
+   * 「能托管 App」那个 FLAG 判断看不出来，DisplayDeviceInfo 里也没有 state 字段。
+   */
+  let displayState = "";
+  try {
+    const gd = await shell(`cmd display get-displays 2>/dev/null | grep "displayId ${state.displayId}"`);
+    const sm = String(gd || "").match(/state ([A-Z]+)/);
+    displayState = sm ? sm[1] : "";
+  } catch { /* 查不到就当正常 */ }
+
+  if (displayState === "OFF") {
+    console.error("[vd] 屏 " + state.displayId + " 是 state OFF —— 系统没给它上电");
+    return {
+      ok: false,
+      displayId: state.displayId,
+      displayState: "OFF",
+      hint: "虚拟屏创建成功但系统没给它上电（state OFF），App 渲染不出来、画面全黑。\n"
+        + "这不是你的操作问题，也不是插件坏了：实测等 30 秒、注入触摸、screencap、keyevent 都救不回来。\n"
+        + "怎么办：① 再调一次 vdisplay_start（多数情况第二次就好）；\n"
+        + "② 反复出现就重启手机 —— SurfaceFlinger 跑太久（实测 20 天）会出这个状态。",
+    };
+  }
 
   // **建屏成功就落盘**：之后任何进程都能复用这块屏，不会重复建。
   savePersistedState();
