@@ -700,16 +700,38 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     child.once('error', done);
     setTimeout(done, 3000).unref?.();
   });
-
-  /* **等 1800ms，位置在「确认 spawn 成功」之后、connect 之前。**
-   * 2026-11-26 三次替代方案全部失败：①直接删 3/3 失败；
-   * ②轮询日志文件 6 秒超时（日志晚于 accept，机制上等不到）；
-   * ③pipe 实时读 + 挪到 connect 后，屏建不出来。
-   * scrcpy accept 之后还要创建 VirtualDisplay + 配编码器，这段时间没有可观测信号。 */
-  /* **1800 → 1200（2026-11-26 实测结论）。**
-     * 试过 900：总耗时没再降（后面的屏轮询把省下的吃掉了），1200 更稳。
-     * 900 以下开始出现建屏失败，别低于 1200。 */
-    await sleep(1200);
+    /* **等 scrcpy server 真的 listen，不盲等。**
+     *
+     * 2026-11-27 子代理用真机数据推翻了我之前的判断：
+     * 原来这里是固定 sleep(1200)，理由写的是「等 scrcpy 初始化」。
+     * 实测发现 socket 分两阶段出现：
+     *   +400ms  socket=0   server 还没起
+     *   +800ms  socket=1   server listen 了（@scrcpy_<scid> 出现）
+     *   +1600ms socket=2   两条连接都接上
+     * 所以真正该等的是「listen 那一刻」，不是固定时长。
+     *
+     * 更重要的发现：DesktopConnection 是串行 accept ——
+     * video 接上后 server 还在 accept control，两条都接完才 createVirtualDisplay。
+     * 所以「只连一条就往下走」会让 server 永远卡在第二个 accept，
+     * 屏根本不会被创建（表现出来像「屏 OFF」或「找不到 activity」）。
+     */
+    globalThis.__vdMark && globalThis.__vdMark('pre-wait-listen');
+    {
+      const _t0 = Date.now();
+      for (;;) {
+        try {
+          const _u = await shell('cat /proc/net/unix 2>/dev/null | grep -c scrcpy');
+          if (Number(String(_u || '0').trim()) > 0) break;
+        } catch { /* 查不到继续等 */ }
+        if (Date.now() - _t0 > 3000) {
+          /* 3 秒还没 listen：退回固定等待，至少不退化 */
+          await sleep(600);
+          break;
+        }
+        await sleep(50);
+      }
+    }
+    globalThis.__vdMark && globalThis.__vdMark('listen-ready');
   if (spawnError) {
     try { child.kill('SIGKILL'); } catch { /* 没起来就没什么可杀 */ }
     await cleanupForward();
@@ -762,8 +784,16 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     };
     const s1 = await connect(true);
     globalThis.__vdMark && globalThis.__vdMark('connect1');
-    /* **删掉 sleep(500)**：scrcpy 是串行 accept（先 video 再 control），
-     * video 连上就说明 server 已经在 accept control 了，可以立刻连。 */
+    /* **两条 socket 之间要留 400ms。**
+     *
+     * 2026-11-27 子代理用真机数据纠正了我之前删掉 sleep(500) 的判断：
+     * 我当时的理由是「video 连上就说明 server 在 accept control 了」—— **这是错的**。
+     * 视频帧数据会先到，但「帧到了」和「新连接被 accept」是两件事。
+     * server 还在 LocalServerSocket.accept() 里等着，抢跑会让 control 连接被拒。
+     *
+     * 实测时序：+800ms socket=1（listen），+1600ms socket=2（两条都接上）。
+     */
+    await sleep(400);
     const s2 = s1 ? await connect(false) : null;
   state.sockets = [s1, s2].filter(Boolean);
   state.startedAt = Date.now();
