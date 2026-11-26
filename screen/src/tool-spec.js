@@ -1,6 +1,19 @@
 /** 40 个工具的契约。 */
 const out = (d) => ({
-  schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true, description: d } } },
+  /* **additionalProperties 必须是 true。**
+     *
+     * 2026-11-27 实测：五个工具（tap_text / probe_secure / live /
+     * screen_user_state / screen_risk）被宿主报
+     * `value.xxx is not a declared property` —— 因为它们返回了
+     * clicked / pageChanged / nx / ny 等结构字段，而这里声明
+     * additionalProperties:false 只允许 text。
+     *
+     * 后果很恶劣：tap_text 点击其实生效了，但工具报错，AI 会重复点。
+     *
+     * 改成 true：text 仍然是主字段（render 只用它），
+     * 但不再拒绝实现返回的结构化字段。
+     */
+    schema: { type: 'object', additionalProperties: true, properties: { text: { type: 'string', required: true, description: d } } },
   render(_a, v) { return [{ type: 'text', text: v.text }]; },
 });
 
