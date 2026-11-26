@@ -54,30 +54,62 @@ function shortId(rest) {
  * @returns {{activity:string, pkg:string, elements:Array, count:number}}
  */
 export function parseTopDump(raw, displayId) {
-  const out = { activity: '', pkg: '', elements: [], count: 0 };
+  const out = { activity: '', pkg: '', elements: [], count: 0, mixedFixed: false };
   if (!raw) return out;
 
   const lines = String(raw).split('\n');
-  let inTarget = false;
+
+  /* **先选出「应该显示哪一个 activity」，再只解析那一段。**
+   *
+   * 2026-11-26 实测抓到的 bug：一块屏上可能有**多个** ACTIVITY 段
+   * （栈里停了 settings，前台是 calculator2）。旧代码按「屏」判定，
+   * 两段都算命中 → 把两棵 View 树拼在一起。
+   *
+   * 后果很严重：activity 头写的是计算器，但元素里混了 settings 的，
+   * 有 8 个 settings 元素的坐标落在计算器按钮矩形内 ——
+   * AI 按 id 找「设置」，点到的是数字键。这个 bug 在主屏上同样存在。
+   *
+   * 修法：按 ACTIVITY 行切段，在每段正文里找 mResumed=true，选那一段；
+   * 取不到再退回 Task 的 visible=true；都没有才用第一个。
+   */
+  const heads = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const am = lines[i].match(/\bACTIVITY\s+([\w.$]+\/[\w.$]+).*displayId=(\d+)/);
+    if (am) heads.push({ pkg: am[1], disp: Number(am[2]), line: i, headText: lines[i] });
+  }
+
+  const segs = heads.map((h, k) => {
+    const end = k + 1 < heads.length ? heads[k + 1].line : lines.length;
+    let resumed = null;
+    for (const b of lines.slice(h.line, Math.min(end, h.line + 40))) {
+      const rs = b.match(/mResumed=(true|false)\s+mStopped=(true|false)/);
+      if (rs) { resumed = rs[1] === 'true'; break; }
+    }
+    const vis = h.headText.match(/visible=(\w+)/);
+    return { ...h, resumed, visible: vis ? vis[1] === 'true' : null, end };
+  });
+
+  const onDisp = segs.filter((x) => displayId == null || x.disp === Number(displayId));
+  const chosen = onDisp.find((x) => x.resumed === true)
+    || onDisp.find((x) => x.visible === true)
+    || onDisp[0];
+
+  if (!chosen) return out;
+  out.activity = chosen.pkg;
+  out.pkg = chosen.pkg.split('/')[0];
+  if (onDisp.length > 1) out.mixedFixed = true;   // 告诉调用方「这块屏上不止一个 activity」
+
+  /* 只解析被选中那一段里的 View Hierarchy */
   let inHierarchy = false;
   let depthBase = -1;
   let idx = 0;
+  /* **父偏移栈**：解析时按 depth 维护「当前这一层父容器的绝对左上角」。 */
+  const parentStack = [{ depth: -1, x: 0, y: 0 }];
+  let parentX = 0;
+  let parentY = 0;
 
-  for (const line of lines) {
-    /* ACTIVITY 行：找到目标屏的那个 activity */
-    const am = line.match(/\bACTIVITY\s+([\w.$]+\/[\w.$]+).*displayId=(\d+)/);
-    if (am) {
-      const thisDisp = Number(am[2]);
-      inTarget = (displayId == null) || (thisDisp === Number(displayId));
-      inHierarchy = false;
-      if (inTarget) {
-        out.activity = am[1];
-        out.pkg = am[1].split('/')[0];
-      }
-      continue;
-    }
-    /* 下一个 ACTIVITY 之前的 View Hierarchy 段 */
-    if (!inTarget) continue;
+  for (let i = chosen.line; i < chosen.end; i += 1) {
+    const line = lines[i];
     if (/View Hierarchy:/.test(line)) { inHierarchy = true; depthBase = -1; continue; }
     if (!inHierarchy) continue;
     if (/^\s*(Local Activity|ViewRoot|Looper)/.test(line)) { inHierarchy = false; continue; }
@@ -86,31 +118,51 @@ export function parseTopDump(raw, displayId) {
     if (!m) continue;
     const [, indent, cls, hash, flags, status, x1, y1, x2, y2, rest] = m;
 
-    /* 用第一行的缩进当基准，算层级（每 2 空格一层） */
     if (depthBase < 0) depthBase = indent.length;
     const depth = Math.max(0, Math.round((indent.length - depthBase) / 2));
 
-    const vis = flags.charAt(0);              // V / I / G
+    const vis = flags.charAt(0);
     const l = Number(x1), t = Number(y1), r = Number(x2), b = Number(y2);
     const w = r - l, h = b - t;
 
+    /* 按 depth 出栈：回到「比当前深度浅的那一层」 */
+    while (parentStack.length > 1 && parentStack[parentStack.length - 1].depth >= depth) {
+      parentStack.pop();
+    }
+    const top = parentStack[parentStack.length - 1];
+    parentX = top.x;
+    parentY = top.y;
+
+    /* **累加父偏移。**
+     * 2026-11-26 实测：dumpsys 给的坐标是**相对父容器**的。
+     * 例：CalculatorDisplay 是 0,0-720,558，它挂在根 (360,796) 下，
+     * 里面的 digit_7 是 27,235-194,418 —— 实际屏幕坐标要加上父层偏移。
+     * 不累加的话，AI 按 (111,327) 点「7」，实际点到屏幕上方去了。
+     */
+    const absoluteX = l + parentX;
+    const absoluteY = t + parentY;
+
     out.elements.push({
-      i: idx++,                                // 顺序号，方便按「第几个」点
+      i: idx++,
       depth,
-      cls: cls.split('.').pop(),               // 短类名，省 token
+      cls: cls.split('.').pop(),
       full: cls,
-      vis,                                     // V 可见 / I 不可见 / G 已回收
-      clickable: status.includes('C'),         // 状态位里有 C = clickable
-      focusable: status.includes('F'),
+      vis,
+      /* **clickable/focusable 在 flags 里，不在 status 里。**
+       * 实测：Button 的 flags 是 `VFED..C..`（C = clickable），status 是 `........`。
+       * 原来查 status.includes('C') 永远为假 → onlyClickable 过滤后一个不剩。 */
+      clickable: flags.includes('C'),
+      focusable: flags.includes('F'),
       id: shortId(rest),
       title: (rest.match(/\[([^\]]*)\]/) || [])[1] || '',
-      x: l, y: t, w, h,
-      cx: w > 0 ? Math.round((l + w / 2)) : l, // 中心点，直接可点
-      cy: h > 0 ? Math.round((t + h / 2)) : t,
+      x: absoluteX, y: absoluteY, w, h,
+      cx: w > 0 ? Math.round((absoluteX + w / 2)) : absoluteX,
+      cy: h > 0 ? Math.round((absoluteY + h / 2)) : absoluteY,
     });
+    /* 这个控件成为下一层的父偏移 */
+    parentStack.push({ depth, x: absoluteX, y: absoluteY });
   }
 
-  /* 只留可见 + 有面积的，不然一堆 0x0 的占位把列表撑爆 */
   out.count = out.elements.length;
   out.elements = out.elements.filter((e) => e.vis === 'V' && e.w > 0 && e.h > 0);
   return out;

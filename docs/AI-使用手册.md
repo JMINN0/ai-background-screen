@@ -32,6 +32,86 @@
 
 ---
 
+## 1.5 怎么调用：MCP vs curl
+
+**你有两种调用方式，先确认宿主给的是哪种。**
+
+### 有 MCP 接入
+直接用工具名，比如 `vdisplay_start`。这是最省事的路。
+
+### 没有 MCP —— 用 curl 直接调 daemon
+
+**地址从哪拿（这一步最容易错）：**
+
+```bash
+# 正确来源：daemon 自己写的状态文件
+cat ~/.dsh/plugin-screen/cli-daemon.json
+# → {"pid": 23265, "port": 35389, "startedAt": 1795703642436}
+
+# 端口就是 port 字段
+D="127.0.0.1:$(python3 -c "import json;print(json.load(open('$HOME/.dsh/plugin-screen/cli-daemon.json'))['port'])")"
+```
+
+> ⚠️ **不要用 `/tmp/vd_addr.txt`。** 2026-11-26 实测：那个文件没有任何进程在写，
+> 内容会过期（实测记的是 34313，真实端口 35389）。拿旧端口调 = 返回空 + HTTP 000。
+
+**探活（调任何工具之前先做这一步）：**
+
+```bash
+curl -s --noproxy '*' -m 5 -o /dev/null -w '%{http_code}\n' "http://$D/ping"
+# 200 = 活着；000 = daemon 没起来
+```
+
+**调工具的固定写法：**
+
+```bash
+curl -s --noproxy '*' -m 60 -X POST "http://$D/cmd" \
+  -H 'content-type: application/json' \
+  -d '{"action":"runTool","args":{"tool":"vdisplay_status","args":{}}}'
+```
+
+**包装成一个函数更省事：**
+
+```bash
+vd() {
+  D="127.0.0.1:$(python3 -c "import json;print(json.load(open('$HOME/.dsh/plugin-screen/cli-daemon.json'))['port'])")"
+  curl -s --noproxy '*' -m 60 -X POST "http://$D/cmd" -H 'content-type: application/json' \
+    -d "{\"action\":\"runTool\",\"args\":{\"tool\":\"$1\",\"args\":$2}}" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("result",{}); print(r.get("result",{}).get("text") or r.get("text") or d)'
+}
+# 用法
+vd vdisplay_status '{}'
+vd vdisplay_launch '{"pkg":"com.android.calculator2"}'
+```
+
+### 还能更省事：用现成的 vdtool.sh
+
+```bash
+cd /root/workspace/offscreen-android/screen
+./vdtool.sh vdisplay_status '{}'
+```
+
+它比裸 curl 多做的事：校验 JSON、把 daemon 的错误翻成人话、自动解包嵌套的 `result.result`。
+
+### 错误码表（重要）
+
+| 现象 | 含义 | 怎么办 |
+|---|---|---|
+| HTTP `000` + 空返回 | **daemon 没起来**，或端口过期 | 查 `cli-daemon.json` 的 port 是否变了；变了就是重启过 |
+| HTTP `000` + exit 7 | 连接被拒 | 同上 |
+| HTTP `000` + exit 28 | curl 超时 | 操作太慢（建屏要 4-5 秒），把 `-m` 调到 190 |
+| HTTP `404` | 路径错了 | 检查是不是 `/cmd` |
+| HTTP `400` | JSON 格式错 | 检查引号转义 |
+| HTTP `500` | 工具内部异常 | 看返回体里的 `hint` |
+| `{"ok":true}` 但 `result.ok:false` | **工具报错但 HTTP 正常** | 看 `result.hint` —— 这才是真正的错误信息 |
+| 返回的是别的东西 | 端口打到别的服务 | 端口错了 |
+
+> ⚠️ **最常见的坑**：curl 返回**空字符串且没有报错**。
+> 这不是"工具不支持"，是 daemon 挂了或端口变了。**先探活，再怀疑工具。**
+
+
+---
+
 ## 二、标准操作流程
 
 ### 2.0 通用循环（所有场景都是这个骨架）
@@ -183,6 +263,22 @@ vdisplay_shot { format: "png" }                     // 要拿来当模板 → �
 
 ---
 
+> ⚠️ **2026-11-26 实测修正**：`vdisplay_ui`（控件树）**不稳定**。
+> 同一块屏连调三次，第一次返回「没找到 activity」，第二三次正常返回 151 个控件。
+> 原因是 `dumpsys activity top` 要 dump 所有屏，任何一个卡住就整条超时。
+> **所以：空返回先重试一次**，别立刻判定「这屏是自绘 UI」。
+
+**识别优先级（按可靠性排）：**
+
+| 顺序 | 工具 | 什么时候用 | 坑 |
+|---|---|---|---|
+| 1 | `vdisplay_text` | 读文字、数字、列表 | **会漏字**（实测读不到计算器结果区的 `-1`）；`maxLines` 从上往下截，结果区在下面要给大值 |
+| 2 | `vdisplay_shot` | 看图标、看布局、OCR 漏字时 | 花图片 token |
+| 3 | `vdisplay_ui` | 有控件 id、要点精确位置 | **不稳定，空返回先重试** |
+
+**OCR 和控件树都读不到时**（游戏/Flutter/Unity）：
+用 `vdisplay_find_image` 模板匹配（5.7ms，比 OCR 快两个数量级），但要先自己裁模板。
+
 ### 2.3 场景三：点击 / 输入 / 滑动
 
 **点击（四种，按可靠性排）**
@@ -279,6 +375,37 @@ vdisplay_wait_stable    // 等画面稳下来（滑动后 121–182ms 就稳）
 
 ---
 
+### 2.4b 「页面没变化」该怎么理解（重要）
+
+**2026-11-26 实测发现的坑：往空的显示区点第一个数字，返回「页面没变化」，但实际算对了。**
+
+这是「空 → 有内容」的局部变化，整屏 dHash 会被大片静态背景稀释掉。
+
+**「页面没变化」的可信度分三级：**
+
+| 你在做什么 | 这句话可信吗 | 该怎么做 |
+|---|---|---|
+| 点的是开关/勾选框 | **不可信** | 用 `vdisplay_text` 读状态文字 |
+| 往空区域输入第一个字符 | **不可信** | 用 `vdisplay_shot` 看 |
+| 点按钮后应该跳页 | **可信** | 真的可能没点到 |
+
+**遇到「没变化」的正确处理：**
+
+1. **不要立刻重试同一个坐标** —— 可能已经生效了，再点就是点两次
+2. 先 `vdisplay_shot` 看一眼实际画面
+3. 或者 `vdisplay_diff` 比一下（**注意：第一次调只建基线，要调两次才有数据**）
+4. 确认真的没生效，再考虑换坐标/换方法
+
+### 2.4c `vdisplay_diff` 要调两次
+
+```bash
+vd vdisplay_diff '{}'    # 第一次：只返回「已记录当前画面」
+vd vdisplay_input '{"kind":"tap","nx":0.5,"ny":0.5}'
+vd vdisplay_diff '{}'    # 第二次：才给你 mad / maxCell
+```
+
+**看 `maxCell` 别看 `mad`** —— `mad` 被静态背景稀释，一个数字变了可能只有 0.0012，但 `maxCell` 有 0.31。
+
 ### 2.5 场景五（重要）：出错了怎么排查
 
 **第一件事永远是 `vdisplay_status {}`**。它会把「屏上还有没有 App」写成一句话：
@@ -312,6 +439,73 @@ vdisplay_wait_stable    // 等画面稳下来（滑动后 121–182ms 就稳）
 读不到 → vdisplay_ui → vdisplay_text → vdisplay_shot(region)
 画面不动 → vdisplay_status → vdisplay_probe_secure → 重建屏
 ```
+
+---
+
+## 2.6 daemon 挂了 / 孤儿屏
+
+### 三种状态要分清
+
+| 状态 | `vdisplay_status` 说 | `adb dumpsys` 说 | 含义 |
+|---|---|---|---|
+| 正常 | 虚拟屏运行中，displayId=N | 有 1 块 scrcpy + 1 块 dsh-frames | 好 |
+| **daemon 挂了** | 连不上 / 超时 | 可能有屏，也可能没有 | daemon 进程没了 |
+| **孤儿屏** | 「虚拟屏没有在运行」 | **屏还在** | 旧 daemon 建的，新的不认识 |
+
+### 判断 daemon 是不是挂了
+
+```bash
+# ① 探活
+curl -s --noproxy '*' -m 5 -o /dev/null -w '%{http_code}\n' "http://$D/ping"
+# 000 = 挂了
+
+# ② 看端口有没有变
+cat ~/.dsh/plugin-screen/cli-daemon.json
+# pid 变了 = 重启过
+
+# ③ 看进程
+ps -eo pid,args | grep vdisplayd.mjs | grep -v grep
+```
+
+### 判断有没有孤儿屏（关键）
+
+```bash
+# 工具说没在跑
+vd vdisplay_status '{}'     # → 「虚拟屏没有在运行」
+
+# 但设备上屏还在
+adb -s 127.0.0.1:5555 shell "dumpsys SurfaceFlinger --display-id 2>/dev/null | grep -c 'Virtual display'"
+# > 0 就是有孤儿
+```
+
+**表现**：你调 `vdisplay_start` 会新建一块，但旧的那块一直占着内存；反复几次，屏越积越多。
+
+### 清理孤儿屏（三级，从轻到重）
+
+```bash
+# 一级：正常关屏（能关掉就到此为止）
+vd vdisplay_stop '{"all":true}'
+
+# 二级：清残留的取帧进程（它们持有 dsh-frames 镜像屏）
+adb -s 127.0.0.1:5555 shell "pkill -9 -f 'framesrv.Main' 2>/dev/null; true"
+
+# 三级：清所有虚拟屏进程（连 scrcpy 一起，会关掉你正在用的屏）
+adb -s 127.0.0.1:5555 shell "pkill -9 -f 'com.genymobile.scrcpy.Server' 2>/dev/null; true"
+```
+
+> **2026-11-26 实测**：`dsh-frames` 镜像屏只活到创建它的 `framesrv` 进程结束。
+> 而 `vdisplay_stop` 只杀「账本里记着的」进程 —— daemon 重启后账本是空的，
+> 所以重启前建的屏永远清不掉。**二级清理是必须的。**
+
+### 收尾自查（做完事跑一遍）
+
+```bash
+adb -s 127.0.0.1:5555 shell "dumpsys SurfaceFlinger --display-id 2>/dev/null | grep -c 'Virtual display'"   # 期望 0
+adb -s 127.0.0.1:5555 shell "ps -A -o NAME 2>/dev/null | grep -c app_process"                                # 期望 0
+adb -s 127.0.0.1:5555 shell "pidof <你投过的包名>"                                                           # 期望空，不是空就 am force-stop
+rm -f /tmp/vd-*.jpg /tmp/vd-*.png                                                                            # 截图缓存
+```
+
 
 ---
 

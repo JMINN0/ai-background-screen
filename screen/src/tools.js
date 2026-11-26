@@ -843,7 +843,16 @@ export async function ui(args = {}) {
 
   let raw = '';
   try {
-    raw = await vd.shell('dumpsys activity top 2>/dev/null');
+    /* **必须带 -d <displayId>。**
+     *
+     * 2026-11-26 实测根因：`dumpsys activity top` 只 dump **焦点屏**（display 0），
+     * 虚拟屏上的 activity 一个字节都不在里面 —— 除非焦点恰好落在那块虚拟屏上
+     * （所以之前测试时偶然能看到，切回主屏就消失，表现为「不稳定」）。
+     *
+     * `dumpsys activity -d N top` 才是按屏 dump，实测 606 行、ACTIVITY + View Hierarchy 齐全。
+     * help 里的原话：`-d: limit output to given display.`
+     */
+    raw = await vd.shell(`dumpsys activity -d ${disp} top 2>/dev/null`);
   } catch (e) {
     return { text: '读控件树失败：' + String(e?.message || e).slice(0, 80) };
   }
@@ -2122,7 +2131,15 @@ export async function tapText(args) {
   try {
     if (!r.shotPath) throw new Error('no before shot');
     const d = await V.diff(r.shotPath, g2.path);
-    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+    /* **补 maxCell 局部判据。**
+     * 2026-11-26 新手实测：往空显示区点第一个数字（计算器的「1」），
+     * d.changed 是 false（整屏 MAD 被大片静态背景稀释），
+     * 但实际算对了 —— 这是「空→有内容」的局部变化。
+     * maxCell 按 24×24 网格算最大格差，能抓到这种小区域变化。 */
+    if (d && d.ok) {
+      diffInfo = d;
+      pageChanged = Boolean(d.changed) || Number(d.maxCell) >= 0.12;
+    }
   } catch { /* 退回哈希判据 */ }
   if (!diffInfo && before && after) pageChanged = before !== after;
   const tapOk = !/失败|不允许|不可用/.test(String(t.text || ''));
@@ -2131,7 +2148,7 @@ export async function tapText(args) {
     ? '⚠️ 注入失败'
     : pageChanged
       ? '✅ 点了，页面已变化'
-      : '✅ 点了（页面没变化 —— 可能是开关类控件，或这个页面本来就该保持）';
+      : '✅ 点了（没测到画面变化 —— 四种可能：开关类控件、页面本来就该保持不动、**往空的显示区点第一个字符（空→有内容的变化整屏 dHash 抓不到）**、或者这一下真没生效。下次判断请用 vdisplay_shot 看，别只信这句话）';
 
   return {
     text: `${verdict}\n点击目标：「${r.label}」 nx=${r.nx.toFixed(3)} ny=${r.ny.toFixed(3)}\n`
@@ -2425,7 +2442,15 @@ export async function tapImage(args) {
   let diffInfo = null;
   try {
     const d = await V.diff(g1.path, g2.path);
-    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+    /* **补 maxCell 局部判据。**
+     * 2026-11-26 新手实测：往空显示区点第一个数字（计算器的「1」），
+     * d.changed 是 false（整屏 MAD 被大片静态背景稀释），
+     * 但实际算对了 —— 这是「空→有内容」的局部变化。
+     * maxCell 按 24×24 网格算最大格差，能抓到这种小区域变化。 */
+    if (d && d.ok) {
+      diffInfo = d;
+      pageChanged = Boolean(d.changed) || Number(d.maxCell) >= 0.12;
+    }
   } catch { /* 退回哈希判据 */ }
   if (!diffInfo && before && after) pageChanged = before !== after;
 
@@ -2433,7 +2458,7 @@ export async function tapImage(args) {
     ? '⚠️ 注入失败'
     : pageChanged
       ? '✅ 点击已生效（画面变了）'
-      : '✅ 已点击，但画面没变（可能是开关类控件，或这一下没打到可点的地方）';
+      : '✅ 已点击，但没测到画面变化（可能是开关类控件、空→有内容的局部变化、或这一下没打到可点的地方）';
   return {
     text: `${verdict}\n模板目标 nx=${r.nx} ny=${r.ny}（score ${r.score}）\n画面：${pageChanged ? '变了' : '没变'}`,
     clicked: injected, pageChanged, nx: r.nx, ny: r.ny,
@@ -2641,7 +2666,15 @@ export async function tapColor(args) {
   let diffInfo = null;
   try {
     const d = await V.diff(g1.path, g2.path);
-    if (d && d.ok) { diffInfo = d; pageChanged = Boolean(d.changed); }
+    /* **补 maxCell 局部判据。**
+     * 2026-11-26 新手实测：往空显示区点第一个数字（计算器的「1」），
+     * d.changed 是 false（整屏 MAD 被大片静态背景稀释），
+     * 但实际算对了 —— 这是「空→有内容」的局部变化。
+     * maxCell 按 24×24 网格算最大格差，能抓到这种小区域变化。 */
+    if (d && d.ok) {
+      diffInfo = d;
+      pageChanged = Boolean(d.changed) || Number(d.maxCell) >= 0.12;
+    }
   } catch { /* 退回哈希判据 */ }
   if (!diffInfo && before && after) pageChanged = before !== after;
 
@@ -2649,7 +2682,7 @@ export async function tapColor(args) {
     ? '⚠️ 注入失败'
     : pageChanged
       ? '✅ 点击已生效（画面变了）'
-      : '✅ 已点击，但画面没变（可能不是可点区域）';
+      : '✅ 已点击，但没测到画面变化（可能不是可点区域，也可能是空→有内容这种整屏 dHash 抓不到的变化）';
   return {
     text: `${verdict}\n色块 ${b.w}×${b.h} 中心 nx=${b.cx} ny=${b.cy}\n画面：${pageChanged ? '变了' : '没变'}`,
     clicked: injected, pageChanged, nx: b.cx, ny: b.cy,
