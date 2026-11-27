@@ -283,6 +283,37 @@ async function _start(args) {
       parts.push('⚠️ 自检本身出错：' + String(e?.message || e).slice(0, 60));
     }
 
+  /* **建屏后检查主屏焦点有没有被虚拟屏抢走（2026-11-27 实测）。**
+   *
+   * 用户报的现象：建完虚拟屏，主屏焦点就没了，
+   * 按返回键时事件落到虚拟屏的 App 上。
+   *
+   * 实测数据（本机）：
+   *   建屏前  mTopFocusedDisplayId=0（主屏）
+   *   建屏后  mTopFocusedDisplayId=1331（虚拟屏的 displayId）
+   *   同时    dumpsys input 的 FocusedWindows 也是 displayId=1331 —— 两处吻合
+   * 字段可靠性：只出现 1 次，值是逻辑 displayId，和 FocusedWindows 一致。
+   *
+   * **不要自动 am start 恢复** —— 2026-11-27 踩过：
+   * 那样会把虚拟屏的 App 投到用户主屏上（用户当场发现）。
+   */
+  try {
+    /* **等 1.5 秒再判**：转场期间焦点会短暂落在虚拟屏上，之后自己回主屏。
+     * 2026-11-27 实测：刚投完查到 display=1335，但 3 秒后变回 0。
+     * 立即判断会造成误报。 */
+    await vd.sleep(1500);
+    const _top = await vd.shell('dumpsys window 2>/dev/null | grep -m1 "mTopFocusedDisplayId"');
+    const _tm = String(_top || "").match(/mTopFocusedDisplayId=(\d+)/);
+    const _td = _tm ? Number(_tm[1]) : -1;
+    if (_td > 0) {
+      parts.push("");
+      parts.push("⚠️ 主屏输入焦点被虚拟屏抢走了（顶层焦点屏 = display " + _td + "）。");
+      parts.push("   影响：用户按返回键/菜单键/方向键时，事件会落到虚拟屏的 App 上。");
+      parts.push("   这是 Android 的焦点仲裁机制，不是插件坏了 —— 已知限制。");
+      parts.push("   恢复：告诉用户「点一下主屏任意界面就好」。**不要自己 am start**（会把 App 投到主屏）。");
+    }
+  } catch { /* 查不到不影响建屏结果 */ }
+
   return { text: parts.join('\n') };
 }
 
@@ -782,7 +813,6 @@ export async function launch(args) {
       ? '方式：接管已有实例（没 force-stop，进程和状态保住）'
       : '方式：强制重开（先 force-stop）',
     `落在虚拟屏上：${r.landedOnVd ? '是 ✅' : '否 ❌'}`,
-    `主屏前后：${r.mainFocusBefore || '(未测到)'} → ${r.mainFocusAfter || '(未测到)'}`,
   ];
   // 不再自动还原（见 vd.js 里的说明），所以这里**必须明确告诉调用方**：
   // 主屏被抢了，而且我们没管。以前这行只在 restoredMain 为真时打，而它永远是 false。
@@ -819,6 +849,30 @@ export async function launch(args) {
 
   const _remind = riskReminder(pkg);
   if (_remind) lines.push(_remind);
+  
+  /* **投完 App 检查焦点（2026-11-27 实测：丢焦点发生在这一步，不是建屏时）。**
+   *
+   * 实测数据：
+   *   投之前  mTopFocusedDisplayId=0（主屏）
+   *   投之后  mTopFocusedDisplayId=1333（虚拟屏）
+   * 原因：新建的虚拟屏在 z-order 最顶层，RootWindowContainer 遍历时第一个碰到它。
+   *
+   * **不要自动 am start 恢复** —— 2026-11-27 踩过：会把虚拟屏的 App 投到主屏。
+   */
+  try {
+    await vd.sleep(1500);   // 同上：避开转场期间的瞬时抢焦点
+    const _t2 = await vd.shell('dumpsys window 2>/dev/null | grep -m1 "mTopFocusedDisplayId"');
+    const _m2 = String(_t2 || "").match(/mTopFocusedDisplayId=(\d+)/);
+    const _d2 = _m2 ? Number(_m2[1]) : -1;
+    if (_d2 > 0) {
+      lines.push("");
+      lines.push("⚠️ 主屏输入焦点被虚拟屏抢走了（顶层焦点屏 = display " + _d2 + "）。");
+      lines.push("   影响：用户按返回键/菜单键/方向键时，事件会落到虚拟屏的 App 上。");
+      lines.push("   这是 Android 的焦点仲裁机制，不是插件坏了。");
+      lines.push("   恢复：告诉用户「点一下主屏任意界面就好」。**不要自己 am start**（会把 App 投到主屏）。");
+    }
+  } catch { /* 查不到不影响投屏结果 */ }
+
   return { text: lines.join('\n') };
 }
 

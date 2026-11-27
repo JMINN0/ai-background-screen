@@ -4,7 +4,21 @@
  * 原理：用 uid 2000 调 scrcpy-server 的 `new_display`，它走
  * DisplayManager.createNewVirtualDisplay，带回这些标志：
  *   FLAG_OWN_CONTENT_ONLY  内容不跟主屏同步（不是镜像）
- *   FLAG_OWN_FOCUS         不抢主屏焦点（Android 14+ 才有）
+ *   FLAG_OWN_FOCUS         这块屏「自己算自己的焦点」—— **不是「不抢主屏焦点」**
+ *
+ *     ❌ 之前这行注释写的是「不抢主屏焦点」，2026-11-27 子代理用 AOSP 原文推翻：
+ *        "Indicates that the display maintains its own focus and touch mode...
+ *         but only applies to the specific display instead of system-wide"
+ *
+ *     真正表示「不抢焦点」的是另一位：
+ *        VIRTUAL_DISPLAY_FLAG_STEAL_TOP_FOCUS_DISABLED = 1 << 16
+ *
+ *     所以：带 OWN_FOCUS 的屏会参与「顶层焦点屏」这唯一名额的竞争。
+ *     它赢了之后，主屏 hasOwnFocus()=false 且 topFocusedDisplayId 有效，
+ *     主屏就不再搜索焦点窗口 → mCurrentFocus=null → 按键事件落到虚拟屏的 App。
+ *     这就是用户报的「按返回键给了悬浮窗里的 App」。
+ *
+ *     **但这个 flag 不能删** —— 删了 App 在虚拟屏上收不到按键（canHost 判断也依赖它）。
  *   FLAG_TRUSTED / FLAG_OWN_DISPLAY_GROUP / FLAG_PRESENTATION …
  * 关键：**没有 FLAG_PUBLIC**，所以这块屏不画在物理屏幕上，用户完全看不见。
  *
