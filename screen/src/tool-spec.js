@@ -176,6 +176,15 @@ export function inputSpec() {
     ].join('\n'),
     parameters: {
       kind: { type: 'string', required: true, description: 'tap | swipe | hold | text | key | paste。hold = 按住不动（游戏摇杆/长按/挖方块），60Hz 连续 MOVE，实测可用。multitouch = 双指（一根按住 + 另一根滑动），实测可用 —— 游戏边走路边转视角、双指缩放。参数用 p1/p2/p2To。' },
+      /* **声明这次操作的意图，用来对照 App 的 forbid 列表。**
+       *
+       * 2026-11-28 对抗审查指出：按等级拦会拦错对象 ——
+       * risk.json 里 L4 是游戏/抢购，银行反而在 L3。
+       * 真正该拦的是 forbid 里的 pay/write/login/face。
+       *
+       * 不传 intent 时，对有 forbid 的包**默认当 write**（严格优先）。
+       */
+      intent: { type: 'string', description: 'read | write | pay | login | face。read = 只翻页/看内容；write = 会改数据；pay = 付钱；login = 登录；face = 人脸。不传时按 write 处理（严格）。' },
       ms: { type: 'integer', description: '时长毫秒。swipe 默认 300；hold 默认 1000（按住的时长）；multitouch 默认 600。' },
       p1: { type: 'object', additionalProperties: false, properties: { nx: { type: 'number', description: '第一指 x 0-1' }, ny: { type: 'number', description: '第一指 y 0-1' } }, description: 'multitouch：第一指位置（通常是摇杆，按住不动）' },
       p2: { type: 'object', additionalProperties: false, properties: { nx: { type: 'number' }, ny: { type: 'number' } }, description: 'multitouch：第二指起点（通常是视角滑动起点）' },

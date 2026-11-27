@@ -1022,6 +1022,8 @@ export async function stop({ forceStopApps = false } = {}) {
   state.displayId = null; state.sfId = null; state.scid = null; state.port = null;
   resetShotBasis();             // **8 个字段一次清全**（原来只清 3 个，region 会漏）
   state.launchedPkgs = [];
+  /* 屏都销毁了，下一块屏是全新的会话，L3 警告应该重新算。 */
+  try { clearL3Warned(); } catch { /* 不影响销毁 */ }
   return {
     ok: true,
     killed,
@@ -2204,6 +2206,66 @@ async function riskLevelOf(pkg) {
 }
 
 /**
+ * 读 `docs/risk.json`，返回某包的 **forbid 列表**（该 App 禁止的操作类型）。
+ *
+ * 2026-11-28 对抗审查指出：按等级拦会拦错对象 ——
+ * `risk.json` 里 L4 是游戏/抢购，真正花钱的银行反而在 L3。
+ * 该拦的是 forbid 里的 `pay`/`write`/`login`/`face`。
+ *
+ * 返回 `{ forbid: string[], readOnly: boolean }`，读不到返回空。
+ */
+async function riskForbidOf(pkg) {
+  const EMPTY = { forbid: [], readOnly: false };
+  try {
+    if (!pkg) return EMPTY;
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    for (const rel of ['../assets/risk.json', '../docs/risk.json', '../../docs/risk.json']) {
+      try {
+        const d = JSON.parse(await readFile(join(here, rel), 'utf8'));
+        const apps = (d && d.apps) || {};
+        const info = apps[pkg];
+        if (info && typeof info === 'object') {
+          return {
+            forbid: Array.isArray(info.forbid) ? info.forbid.map(String) : [],
+            readOnly: info.readOnly === true || info.level === 3,
+          };
+        }
+        return EMPTY;   // 表里没有这个包
+      } catch { /* 换下一个路径 */ }
+    }
+    return EMPTY;
+  } catch { return EMPTY; }
+}
+
+/** 把 forbid 映射成「这次 intent 是否被禁止」。 */
+function isForbidden(forbid, readOnly, intent) {
+  const list = Array.isArray(forbid) ? forbid : [];
+  if (list.includes('all')) return 'all';
+  const want = String(intent || '').toLowerCase();
+  /* **只读明确放行**：翻页、滚动、看内容都不改数据，任何包都允许。 */
+  if (want === 'read') return null;
+  /* **声明了具体意图：精确匹配 forbid。** */
+  if (want && list.includes(want)) return want;
+  /* **没声明意图（或声明了 read 之外的未知值）：按最严处理。**
+   *
+   * 2026-11-28 踩到的坑：原来默认 intent='write'，而淘宝的 forbid 是
+   * ["batch","pay"] —— write 不在里面，于是「不知道这次是不是支付」的
+   * 情况下直接放行了。这是自动绕过：AI 只要不声明 intent 就永远不被拦。
+   *
+   * 现在：**有 forbid 的包，不声明意图就拦**，逼 AI 说清楚。
+   * 表里没有 forbid 的包（大多数 L0/L1）不受影响。
+   */
+  if (!want && list.length > 0) return '未声明意图（该包 forbid=' + list.join('/') + '，请传 intent）';
+  /* readOnly 的包：任何非 read 都拦（L3 的 9 个都是 readOnly） */
+  if (readOnly) return 'readOnly';
+  return null;
+}
+
+
+/**
  * **AI 给出的风控评估（用户 2026-11-24 定的新信息流）。**
  *
  * 旧做法是插件读 `docs/risk.json` 自己算等级 —— 但那是查表，查不到就瞎填 L3。
@@ -2223,6 +2285,35 @@ async function riskLevelOf(pkg) {
 let _riskAssessment = null;
 
 /**
+ * 哪些包已经报过 L3 警告（第二阶段 B）。
+ *
+ * **必须是模块级**：项目里「跨调用要保持的状态放进了函数作用域」这类问题
+ * 已经出现 3 次以上（见 AGENTS.md），表现都是「代码看着对，但每次都报第一次」。
+ *
+ * 用 Set 而不是单值：多块后台屏可能同时开着两个 L3 App，
+ * 单值会让两个 App 互相把对方的「第一次」冲掉。
+ *
+ * 什么时候清：
+ *   · `stop()`（销毁虚拟屏）→ 整个清空；
+ *   · `setRiskAssessment()` 改了这个包的等级 → 只删这个包。
+ *     第二次评估可能把 L3 改成 L2 再改回来，那算「新的一次」，
+ *     应该重新提醒，不能因为历史上报过就永远不再提醒。
+ */
+const _l3Warned = new Set();
+
+/** 给 tools.js / 诊断用：看某个包报没过 L3 警告。 */
+export function hasL3Warned(pkg) {
+  return _l3Warned.has(String(pkg || ''));
+}
+
+/** 清空 L3 警告记录（`stop()` 和等级变更时调用）。传 pkg 只清这个包。 */
+export function clearL3Warned(pkg) {
+  if (pkg === undefined || pkg === null || pkg === '') _l3Warned.clear();
+  else _l3Warned.delete(String(pkg));
+  return _l3Warned.size;
+}
+
+/**
  * AI 主动设置某个包的风控评估。由 `vdisplay_risk` 工具调用。
  *
  * @param {{pkg?:string, level?:string, mode?:string, reason?:string}} a
@@ -2238,6 +2329,8 @@ export function setRiskAssessment(a = {}) {
     return { ok: false, level: '', hint: 'level 只能是 L0..L5、0..5、或 ?（判断不了）' };
   }
   if (!pkg) return { ok: false, level: '', hint: '要给 pkg，比如 com.tencent.mm' };
+  /* **等级一改，「第一次」就重新算。** 见 _l3Warned 的注释。 */
+  try { clearL3Warned(pkg); } catch { /* 不影响记录 */ }
   _riskAssessment = {
     pkg,
     level: level || '?',
@@ -2692,6 +2785,12 @@ export async function input(kind, a = {}) {
    * 等级就白评了。代价是 L2..L4 每次操作多等 0.5~9 秒，这是有意的。
    */
   let tactic = null;
+  /* 「这一下是不是 L3 上的第一次」—— 置位后由 withL3() 挂进返回值。
+   * **必须在 try 之前、函数顶层声明**：放进 try 里面的话，
+   * 后面那些不在 try 里的 withL3() 会拿不到它（TDZ / ReferenceError）——
+   * 实测踩到一次：无设备时调 input() 直接抛 `l3First is not defined`。
+   * 而这个错误被外层 catch 吞掉的话就是「功能看着有、从来没生效」。 */
+  let l3First = false;
   try {
     const ta = await import('./tactics.js');
     /* **等级必须和当前屏上的 App 对上，否则会「用 A 的等级操作 B」。**
@@ -2705,20 +2804,104 @@ export async function input(kind, a = {}) {
      */
     const riskRaw = getRiskAssessment();
     let riskLevel = '?';
-    if (riskRaw && riskRaw.level) {
-      try {
-        const st0 = await status();
-        const m0 = String((st0 && st0.focusedApp) || '').match(/u\d+\s+([\w.]+)\//);
-        const onPkg = m0 ? m0[1] : '';
-        if (onPkg && riskRaw.pkg === onPkg) {
-          riskLevel = riskRaw.level;
-        }
-        /* 包对不上就保持 ? —— 按未评估处理，宁慢不错 */
-      } catch { /* 取不到就按未评估 */ }
+    /* **当前屏上的包名要独立取，不能依赖「有没有定级」。**
+     *
+     * 2026-11-28 实测抓到：原来 onPkg 只在 `riskRaw.pkg === onPkg` 时才保留，
+     * 而 riskRaw 是 null 时（AI 没定级，最常见的情况）onPkg 永远是空。
+     * 于是按 forbid 拦的逻辑（需要 onPkg 才能查表）一条都没生效。
+     *
+     * 现在：先独立取包名，再用它两件事：
+     *   ① 查 forbid（不依赖定级）
+     *   ② 校验定级是否属于这个包
+     */
+    let onPkg = '';
+    try {
+      const st0 = await status();
+      const m0 = String((st0 && st0.focusedApp) || '').match(/u\d+\s+([\w.]+)\//);
+      onPkg = m0 ? m0[1] : '';
+    } catch { onPkg = ''; }
+    if (riskRaw && riskRaw.level && riskRaw.pkg && riskRaw.pkg === onPkg) {
+      riskLevel = riskRaw.level;
     }
+    /* 包对不上就保持 ? —— 按未评估处理，宁慢不错 */
+    /* ═══ 按 forbid 拦，不按等级拦（2026-11-28 改）══════════
+     *
+     * **原来这里写的是「L4 硬阻断」，理由是「L4 = 银行/支付」。那是错的。**
+     * 查 `docs/risk.json` 实际是：
+     *   L4 的 5 个全是游戏和抢购（王者荣耀/和平精英/原神/i茅台/大麦）
+     *   真正花钱的银行/支付全在 L3（微信/支付宝/工行/招行/银联）
+     * 照等级拦 = 拦游戏放行转账，风险倒挂。
+     *
+     * 现在改成：读 `risk.json` 的 `forbid` 字段，按**动作类型**拦。
+     *   支付宝: L3 forbid=[login,pay,face,write]
+     *   淘宝:   L2 forbid=[batch,pay]
+     * 这样「翻页看余额」照常，「点支付」才被拦 —— 误伤最小、拦截面最大。
+     *
+     * **intent 不声明时按 write 处理**：AI 有动机不声明，
+     * 不声明就放行等于自动绕过。
+     *
+     * 位置必须在 waitFor 之前：不许执行的动作等 0.5~9 秒毫无意义，
+     * 而且这里是「一次点击都没发出去」的唯一保证点。
+     */
+    let _fb = { forbid: [], readOnly: false };
+    try {
+      if (onPkg) _fb = await riskForbidOf(onPkg);
+    } catch { /* 读不到就不拦，下面还有 L4 兜底 */ }
+    const _hit = isForbidden(_fb.forbid, _fb.readOnly, a && a.intent);
+    if (_hit) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: 'forbid:' + _hit,
+        displayId: state.displayId,
+        hint: '⛔ 已拦截：' + _hit + ' @ ' + onPkg + '（该 App 的 forbid 含 "' + _hit + '"）。'
+          + '\n   这个动作没有发生，一次点击都没发出去。'
+          + '\n   - 只看内容：传 intent:"read"（翻页/滚动/读文字都算 read）'
+          + '\n   - 付钱/登录/改数据：停下来问用户，不要自己试'
+          + '\n   ⚠️ 不要重试，不要换工具绕过 —— 这是设计上的硬边界。',
+      };
+    }
+
+    /* **L4 兜底**：只处理「AI 手动定 L4 但表里没有 forbid」的包。
+     * 实测 L4 的 5 个 App 都是 forbid=[all]，上面已经拦住了。
+     */
+    if (riskLevel === 'L4' && !_hit) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: 'L4',
+        displayId: state.displayId,
+        hint: '这个 App 被定成了 L4（禁止），所以不注入。'
+          + '\n   如果它其实可以操作，先用 vdisplay_risk 改成合适的等级。',
+      };
+    }
+
     tactic = ta.planFor(riskLevel);
     if (kind === 'tap' || kind === 'swipe') {
       tactic.waitedMs = await ta.waitFor(tactic.level);
+    }
+
+    /* ═══ 第二阶段 B：L3 写操作确认 ══════════════════════════════════
+     *
+     * L3 = 严格，只读，写操作先问用户。但**代码无法从坐标判断一次 tap
+     * 是「读」（翻列表、滚动）还是「写」（提交、发送、下单）** ——
+     * 同一个坐标，屏幕状态不同含义就不同。所以不做判断，改成：
+     * 每个包在 L3 上的**第一次**注入，照常执行，但返回值带上 `l3Warning`，
+     * 明确告诉 AI「这是 L3 上的写操作，规范要求先问用户」。
+     *
+     * **为什么第一次仍然执行、不拒绝**：拒绝会让 AI 重试，而重试本身就是
+     * 风控特征（同一坐标短时间内反复点）；也可能把「翻一页」这种纯读操作
+     * 卡死。所以选择「执行 + 警告」，让 AI 自己停下来问。
+     *
+     * **为什么按 pkg 记、只在第一次报**：如果每下都报，AI 会把它当成噪音
+     * 忽略掉；只在切换到这个 App 的第一下报，它才看得见。
+     *
+     * 状态放在模块级 Set（`_l3Warned`），理由见那边的注释：
+     * 诡异的作用域问题在这个项目里已经出现 3 次以上。
+     */
+    if (riskLevel === 'L3' && onPkg && !_l3Warned.has(onPkg)) {
+      _l3Warned.add(onPkg);
+      l3First = true;
     }
   } catch {
     // tactics 模块自己坏了不能让所有输入都失败：退化成「按 L3 参数、不额外等待」，
@@ -2731,6 +2914,24 @@ export async function input(kind, a = {}) {
   }
   /** 把「用了什么手段」挂进返回值；只挂 tap / swipe。 */
   const withTactic = (r) => (tactic && (kind === 'tap' || kind === 'swipe') ? { ...r, tactic } : r);
+  /*
+   * **L3 警告要挂在每一个出口上。**
+   *
+   * input() 里有七八个 return（注入后、hold / text / key 各自的分支、
+   * 失败回退……），只改主出口的话，L3 警告会因为「这次恰好走了另一个分支」
+   * 而消失 —— 而消失的正是最该提醒的那一次。
+   * 所以统一包一层：只加字段，**不改变任何既有字段**，
+   * 没人检查 `l3Warning` 的调用方行为和改动前完全一样。
+   */
+  const withL3 = (r) => (l3First && r && typeof r === 'object'
+    ? {
+      ...r,
+      l3Warning: true,
+      hint: r.hint
+        ? r.hint + '\n\n⚠️ L3（严格）App 上的写操作。规范要求先问用户再做。这是第一次，已执行；如果用户没同意，请立即停止。'
+        : '⚠️ L3（严格）App 上的写操作。规范要求先问用户再做。这是第一次，已执行；如果用户没同意，请立即停止。',
+    }
+    : r);
   const d = state.displayId;
   let cmd;
   // 归一化坐标：给 nx/ny（0..1）就按当前屏尺寸换算，省得调用方猜坐标系。
@@ -2867,11 +3068,11 @@ export async function input(kind, a = {}) {
      */
     const hx = a.nx != null ? Number(a.nx) * state.width : Number(a.x);
     const hy = a.ny != null ? Number(a.ny) * state.height : Number(a.y);
-    if (!Number.isFinite(hx) || !Number.isFinite(hy)) return { ok: false, hint: 'hold 需要坐标（x/y 或 nx/ny）' };
+    if (!Number.isFinite(hx) || !Number.isFinite(hy)) return withL3({ ok: false, hint: 'hold 需要坐标（x/y 或 nx/ny）' });
     const inj = await import('./inject.js');
     if (sendControlRaw() === null) {
       // 控制通道不可用时 hold 没法做（adb input 没有等价的「按住不放」）
-      return { ok: false, hint: 'hold 需要 scrcpy 控制通道，当前不可用' };
+      return withL3({ ok: false, hint: 'hold 需要 scrcpy 控制通道，当前不可用' });
     }
     const h = inj.buildHold({
       x: hx, y: hy, screenW: state.width, screenH: state.height,
@@ -2898,7 +3099,7 @@ export async function input(kind, a = {}) {
             pressure: 1, actionButton: 0, buttons: 0 }));
         } catch { /* ignore */ }
       }
-    return { ok: sentH > 0, displayId: d, out: `hold ${sentH} 帧（${h.bufs.length - 2} 个 MOVE @60Hz, ${h.totalMs}ms）`, changed: null };
+    return withL3({ ok: sentH > 0, displayId: d, out: `hold ${sentH} 帧（${h.bufs.length - 2} 个 MOVE @60Hz, ${h.totalMs}ms）`, changed: null });
   } else if (kind === 'multitouch') {
     /*
      * 双指手势：一根手指按住不动（摇杆），另一根滑动（转视角）。
@@ -2915,11 +3116,11 @@ export async function input(kind, a = {}) {
     const P2 = f(p2, 'nx', 'ny');
     const P2T = a.p2To ? f(a.p2To, 'nx', 'ny') : P2;
     if (!Number.isFinite(P1.x) || !Number.isFinite(P2.x)) {
-      return { ok: false, hint: 'multitouch 需要 p1 和 p2 的坐标（nx/ny 或 x/y）' };
+      return withL3({ ok: false, hint: 'multitouch 需要 p1 和 p2 的坐标（nx/ny 或 x/y）' });
     }
     const inj = await import('./inject.js');
     if (sendControlRaw() === null) {
-      return { ok: false, hint: 'multitouch 需要 scrcpy 控制通道（adb input 不支持多指）' };
+      return withL3({ ok: false, hint: 'multitouch 需要 scrcpy 控制通道（adb input 不支持多指）' });
     }
     const mt = inj.buildMultiTouch({
       p1: P1, p2: P2, p2To: P2T,
@@ -2935,15 +3136,15 @@ export async function input(kind, a = {}) {
       sent += 1;
       if (k < mt.delays.length) await sleep(mt.delays[k]);
     }
-    return { ok: sent > 0, displayId: d, out: `multitouch ${sent} 帧（双指 ${mt.totalMs}ms）`, changed: null };
+    return withL3({ ok: sent > 0, displayId: d, out: `multitouch ${sent} 帧（双指 ${mt.totalMs}ms）`, changed: null });
   } else if (kind === 'swipe') {
     // **四个坐标都要映射，起点也不能漏。** 上一版起点读的是 a.x（用户给的是 x1），
     // 于是恒为 0；另外 y1/x2/y2 只乘比例没加 region 偏移。
     const sx = mapX('nx1', 'x1'); const sy = mapY('ny1', 'y1');
     const ex = mapX('nx2', 'x2'); const ey = mapY('ny2', 'y2');
     if (sx === null || sy === null || ex === null || ey === null) {
-      return { ok: false, hint: 'swipe 需要完整坐标：x1/y1/x2/y2（或 nx1/ny1/nx2/ny2）。' +
-        ' 拒绝用 0 当默认值 —— 那会从屏幕最左边划出去，在开了手势导航的屏上可能把 App 划走。' };
+      return withL3({ ok: false, hint: 'swipe 需要完整坐标：x1/y1/x2/y2（或 nx1/ny1/nx2/ny2）。' +
+        ' 拒绝用 0 当默认值 —— 那会从屏幕最左边划出去，在开了手势导航的屏上可能把 App 划走。' });
     }
     // 同上：优先控制通道。**swipe 的收益更大** ——
     // `adb input swipe` 的 MOVE 是严格等距线性的，行为统计一眼能看出来；
@@ -2986,9 +3187,9 @@ export async function input(kind, a = {}) {
     // 实测：非 ASCII（中文）走 input text 会让设备侧抛 NPE，而且异常文本会被当输出回填。
     // 别假装支持——直接告诉调用方改用 paste。
     if (/[^\x00-\x7F]/.test(txt)) {
-      return { ok: false, hint: 'input text 只支持 ASCII。中文等非 ASCII 字符请改用 kind:"paste"（需先让剪贴板里有内容）。' };
+      return withL3({ ok: false, hint: 'input text 只支持 ASCII。中文等非 ASCII 字符请改用 kind:"paste"（需先让剪贴板里有内容）。' });
     }
-    if (!/^[\w\s.,:/@#%&*()\-+=?!']{0,400}$/.test(txt)) return { ok: false, hint: 'text 含不支持的字符' };
+    if (!/^[\w\s.,:/@#%&*()\-+=?!']{0,400}$/.test(txt)) return withL3({ ok: false, hint: 'text 含不支持的字符' });
     cmd = `input -d ${d} text "${txt.replace(/["\\$`]/g, '')}"`;
   } else if (kind === 'key') cmd = `input -d ${d} keyevent ${String(a.key || '').replace(/[^A-Z0-9_]/gi, '')}`;
   else if (kind === 'paste') {
@@ -3000,7 +3201,7 @@ export async function input(kind, a = {}) {
     // 注意：剪贴板是系统全局的，写它就是覆盖用户自己的剪贴板内容。
     if (a.text !== undefined && a.text !== null && String(a.text) !== '') {
       if (!setClipboard(String(a.text))) {
-        return { ok: false, hint: '写剪贴板失败（控制通道没连上）。可以改用 kind:"text"（仅 ASCII）。' };
+        return withL3({ ok: false, hint: '写剪贴板失败（控制通道没连上）。可以改用 kind:"text"（仅 ASCII）。' });
       }
       await sleep(300);   // SET_CLIPBOARD 已经连带粘贴，等它生效即可
       cmd = null;         // 不再补 keyevent
@@ -3008,7 +3209,7 @@ export async function input(kind, a = {}) {
       cmd = `input -d ${d} keyevent 279`;   // KEYCODE_PASTE：粘现有剪贴板
     }
   }
-  else return { ok: false, hint: `不认识的输入类型：${kind}` };
+  else return withL3({ ok: false, hint: `不认识的输入类型：${kind}` });
 
   // 记下这次点/滑的位置，pickRoi 在没有 bbox 时用它兜底
   state.lastInputAt = {
@@ -3029,7 +3230,7 @@ export async function input(kind, a = {}) {
   // tick 已经在分派之前采好了（见上面的注释）
   // SET_CLIPBOARD 那条路 cmd 是 null（server 已经自己粘过，不能再发 keyevent）
   const out = cmd ? await shell(cmd) : '（SET_CLIPBOARD 已连带粘贴）';
-  if (!verify) return withTactic({ ok: true, displayId: d, out: out.trim(), changed: null });
+  if (!verify) return withL3(withTactic({ ok: true, displayId: d, out: out.trim(), changed: null }));
 
   await sleep(Number(a.settleMs) || 500);
   let changed = null;
@@ -3074,7 +3275,7 @@ export async function input(kind, a = {}) {
     }
   }
 
-  return withTactic({
+  return withL3(withTactic({
     /* **把实际用的手段带给上层**：tools.js 会转成可读文本给 AI。
      * 没有它，AI 不知道这次用的是什么参数，也没法向用户解释为什么慢。 */
     tactic,
@@ -3086,7 +3287,7 @@ export async function input(kind, a = {}) {
       ? '画面在 2 秒内一直没有变化，这一下可能真的没生效（坐标偏了 / 控件不可点 / 界面还没加载完）。建议重新截一张图确认位置，不要盲目重复点同一坐标。'
       : undefined,
     out: out.trim(),
-  });
+  }));
 }
 
 /**

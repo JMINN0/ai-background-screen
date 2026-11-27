@@ -1051,10 +1051,43 @@ export async function input(args) {
     }
   }
 
+  /* ═══ 第二阶段：L4 硬阻断 / L3 警告的人类可读文本 ═══════════════════
+   *
+   * vd.input() 返回的 `blocked` / `l3Warning` 字段如果不在这里翻成文字，
+   * AI 只会看到「注入失败：这个 App 是 L4…」这一句，容易以为是自己写错了参数、
+   * 换个方式再试一次 —— 而这正是 L4 要防的事。所以这里明确写成「不要再试」。
+   */
+  if (r.blocked === true && r.reason === 'L4') {
+    return {
+      text: '⛔ 已阻断：这个 App 是 L4（银行/支付类），只允许人工操作，这次一次点击都没发出去。\n'
+        + '不要再换参数、换坐标、换 kind 重试 —— 重试同样会被阻断，而且徒增风控痕迹。\n'
+        + '正确做法：vdisplay_edge { state: "critical", reason: "L4 银行/支付类，交给用户" }，'
+        + '然后 handoff 给用户，由他本人在主屏操作。',
+      blocked: true,
+      reason: 'L4',
+    };
+  }
+  const _l3Warn = (r.l3Warning === true)
+    ? '\n\n⚠️ L3（严格）App 上的写操作。规范要求先问用户再做。这是第一次，已执行；如果用户没同意，请立即停止。'
+    : '';
   // changed 必须透传：false 表示"动作发出去了但画面没变"，这是有效信息，
   // 不是"注入失败"。早期把它包成"注入失败"会让调用方以为工具坏了。
-  if (r.changed === false && r.hint) return { text: `${r.hint}\n（display=${r.displayId}，${kind} 已发出）${shotInfo}` + _riskWarn };
-  if (!r.ok && r.hint) return { text: `注入失败：${r.hint}` + _riskWarn };
+  if (r.changed === false && r.hint) return { text: `${r.hint}\n（display=${r.displayId}，${kind} 已发出）${shotInfo}` + _riskWarn + _l3Warn };
+  /* **被拦截 ≠ 注入失败。**
+   *
+   * 2026-11-28 审查指出：blocked 走 ok:false 那条分支会被显示成
+   * 「注入失败：…」，AI 会当成 bug 去重试，重试本身是风控特征。
+   * 所以单独一条，措辞要明确「这是设计上的边界，不是坏了」。
+   */
+  if (r.blocked === true) {
+    return {
+      text: `${r.hint || "这一步被风控规则拦下了"}`,
+      blocked: true,
+      reason: r.reason,
+      displayId: r.displayId,
+    };
+  }
+  if (!r.ok && r.hint) return { text: `注入失败：${r.hint}` + _riskWarn + _l3Warn };
   const tail = r.out ? `（${r.out}）` : '';
   /* **每次注入都带一句风控状态。**
    * 2026-11-26：隔壁 AI 操作拼多多 85 次，一次 vdisplay_risk 都没调，
@@ -1078,7 +1111,7 @@ export async function input(args) {
       return "\n[" + parts.join(" · ") + "]";
     } catch { return ""; }
   })();
-  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn + _tac };
+  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn + _tac + _l3Warn };
 }
 
 export async function shot(args) {
@@ -3160,6 +3193,47 @@ export async function riskSet(args = {}) {
   if (!/^[a-zA-Z][\w.]*$/.test(pkg)) {
     return { text: '包名不合法：' + JSON.stringify(pkg) + '。应该是 com.tencent.mm 这种格式（字母开头，只含字母数字点下划线）。' };
   }
+  /* ═══ 第二阶段 C：AI 自报的等级低于参照值时，「依据」变必填 ═══════════
+   *
+   * 问题：等级完全由 AI 自己给，它随手定个 L0 就把后面所有约束全绕过了
+   * （零等待、零散布、L3 警告、L4 阻断统统不生效）。
+   * `assets/risk.json` 里有一张人工整理的参照表，是唯一不受 AI 影响的锚点。
+   *
+   * 做法：AI 给的等级**低于**参照值、又没写 reason → 不写入，让它补一句依据。
+   *
+   * **为什么只是「补 reason」而不是直接拒绝或强制抬高档位**：
+   *   · 参照表本身会过时（比如某 App 关掉了风控），强制抬高会误伤；
+   *   · 直接拒绝会让 AI 反复重试，而重试在目标站点上本身就是风控特征；
+   *   · 要一句依据，成本最低，又能把「随手定 L0」挡在外面 —— 它得先说出为什么。
+   *
+   * **只在「低于」时要求**：AI 定得比参照值高（更保守）不需要解释，
+   * 那本来就是安全方向的偏差。
+   *
+   * 读表失败、包里没有记录、或参照值不是 0..5 的数字 → 一律跳过校验，
+   * 不让一个坏掉的 risk.json 把整个工具卡死。
+   */
+  let refLevel = null;
+  try {
+    const ref = await riskCheck(pkg);
+    if (ref && typeof ref.level === 'number' && Number.isFinite(ref.level)) refLevel = ref.level;
+  } catch { refLevel = null; }
+  /** 'L3' / '3' / 'l3' → 3；认不出返回 null */
+  const lvNum = (v) => {
+    const m = String(v == null ? '' : v).trim().toUpperCase().match(/^L?([0-5])$/);
+    return m ? Number(m[1]) : null;
+  };
+  const newLevel = lvNum(args.level);
+  const hasReason = String(args.reason || '').trim().length > 0;
+  if (newLevel != null && refLevel != null && newLevel < refLevel && !hasReason) {
+    return {
+      text: `⚠️ 你定的 L${newLevel} 低于参照值 L${refLevel}（assets/risk.json）。\n`
+        + `要继续请再调一次并传 reason，说明你的依据（比如「查过它没有实名/支付机制」）。\n`
+        + `注意：等级一低，L3 的写操作提醒和 L4 的硬阻断就都不会生效。`,
+      needReason: true,
+      refLevel,
+      newLevel,
+    };
+  }
   const r = vd.setRiskAssessment({
     pkg,
     level: args.level,
@@ -3181,6 +3255,12 @@ export async function riskSet(args = {}) {
   ];
   if (args.mode) lines.push(`操作方式：${args.mode}`);
   if (args.reason) lines.push(`依据：${args.reason}`);
+  /* 第二阶段 C：定得比参照值低时，记下来提醒一句（不拒绝，见上面的长注释）。 */
+  if (newLevel != null && refLevel != null && newLevel < refLevel) {
+    lines.push('');
+    lines.push(`⚠️ 你定的 L${newLevel} 低于参照值 L${refLevel}。你给的依据已记录；`
+      + '如果事后发现这个判断错了，请重新调本工具改回高档位。');
+  }
   lines.push('');
   lines.push('浮窗会显示这个等级。改主意了再调一次覆盖即可。');
   /* **立刻同步到浮窗，不等 20 秒的 tick。**
