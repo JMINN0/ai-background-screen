@@ -108,6 +108,10 @@ export function buildTouch(o) {
  * @param {number} o.screenH
  * @param {number} [o.holdMs=95]   按下到抬起的总时长
  * @param {number} [o.moves=0]     中间插几个 MOVE
+ * @param {number} [o.size=0]      落点散布的目标尺寸（px）。0 = 精确落在 (x,y)，
+ *                                 行为和加这个参数之前完全一致
+ * @param {number} [o.overshoot=0] overshoot 概率（0..1）。0 = 不 overshoot（同上）
+ * @param {number} [o.jitter=1]    中间 MOVE 的抖动半径（px），和历史行为一致
  * @returns {{bufs:Buffer[], totalMs:number}}
  */
 export function buildTap(o) {
@@ -115,6 +119,64 @@ export function buildTap(o) {
   const holdMs = Number(o.holdMs) || 95;
   const moves = Math.max(0, Number(o.moves) || 0);
   const bufs = [];
+
+  /*
+   * **size = 0 走的就是原来那段代码，一个字没改。**
+   * 新增的散布/overshoot 全部在 size > 0 的分支里 —— 这样「不加参数时行为完全一致」
+   * 是结构上保证的，不靠数值碰巧相等。
+   */
+  const size = Math.max(0, Number(o.size) || 0);
+  if (size > 0) {
+    const overshoot = Math.max(0, Math.min(1, Number(o.overshoot) || 0));
+    // jitter 可能是 0（L0/L5），不能写 `Number(o.jitter) || 1` 把它变成 1
+    const jitter = o.jitter != null && Number.isFinite(Number(o.jitter)) ? Math.max(0, Number(o.jitter)) : 0.6;
+    const dt = 70 + Math.random() * 50;   // DOWN 到 UP 的真实间隔；totalMs 如实报出去
+
+    // 落点用截断高斯（σ = 目标尺寸的 15~25%），截在 ±size/2 内，和 human.js 的建模一致
+    const gauss = () => {
+      const u = Math.random() || 1e-9;
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+    };
+    const half = size / 2;
+    const pick = (base) => base + Math.max(-half, Math.min(half, gauss() * size * (0.15 + Math.random() * 0.1)));
+
+    let tx = pick(x);
+    let ty = pick(y);
+    // 随机方向冲过头（沿从 (x,y) 指向落点的主轴继续冲），再回落到真实落点
+    if (Math.random() < overshoot) {
+      const d = Math.max(1, Math.hypot(tx - x, ty - y));
+      const k = size * (0.3 + Math.random() * 0.4);
+      tx += ((tx - x) / d) * k;
+      ty += ((ty - y) / d) * k;
+    }
+    const jittered = () => (Math.random() - 0.5) * jitter * 2;
+
+    bufs.push(buildTouch({
+      action: ACTION.DOWN, x: tx + jittered(), y: ty + jittered(), screenW, screenH,
+      pressure: 0.42 + Math.random() * 0.12,
+      actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+    }));
+    for (let i = 1; i <= moves; i += 1) {
+      const t = i / (moves + 1);
+      const env = 0.42 + Math.sin(Math.PI * t) * 0.5;
+      // MOVE 逐渐收拢回落点 —— 这就是「冲过头再回来」
+      const back = i / (moves + 1);
+      bufs.push(buildTouch({
+        action: ACTION.MOVE,
+        x: tx + jittered() * (1 - back),
+        y: ty + jittered() * (1 - back),
+        screenW, screenH,
+        pressure: Math.max(0.2, Math.min(0.95, env + (Math.random() - 0.5) * 0.06)),
+        actionButton: BUTTON_PRIMARY, buttons: BUTTON_PRIMARY,
+      }));
+    }
+    bufs.push(buildTouch({
+      action: ACTION.UP, x: tx, y: ty, screenW, screenH,
+      pressure: 0.18 + Math.random() * 0.1,
+      actionButton: BUTTON_PRIMARY, buttons: 0,
+    }));
+    return { bufs, totalMs: Math.round(dt) };
+  }
 
   // DOWN：压力不是从 1.0 开始，真实触摸是逐渐压实
   bufs.push(buildTouch({
@@ -158,6 +220,8 @@ export function buildTap(o) {
  * @param {number} o.screenW @param {number} o.screenH
  * @param {number} [o.ms=300]
  * @param {number} [o.steps=14]
+ * @param {number} [o.bend=0]  轨迹弯曲度（px，沿途最大横向偏移）。0 = 只有原来的
+ *                             1.5/2.5px 抖动，行为与加这个参数之前完全一致
  * @returns {{bufs:Buffer[], totalMs:number, delays:number[]}}
  */
 /**
@@ -253,6 +317,20 @@ export function buildSwipe(o) {
   // 缓动：真人手指是"快起 - 匀 - 缓停"，用 easeInOutQuad
   const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2);
 
+  /*
+   * 弯曲度 bend：沿轨迹法线方向按 sin(πt) 拱起来（两端为 0，终点和 UP 不受影响）。
+   * bend = 0 时 nx/ny 恒为 0，下面那两行加的是 0 —— 和原来的直线逐字节一致。
+   */
+  const bend = Math.max(0, Number(o.bend) || 0);
+  const sign = Math.random() < 0.5 ? -1 : 1;
+  let nx = 0; let ny = 0;
+  if (bend > 0) {
+    const dx = x2 - x1; const dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    nx = (-dy / len) * bend * sign;
+    ny = (dx / len) * bend * sign;
+  }
+
   bufs.push(buildTouch({
     action: ACTION.DOWN, x: x1, y: y1, screenW, screenH,
     pressure: 0.45 + Math.random() * 0.1,
@@ -265,8 +343,9 @@ export function buildSwipe(o) {
     const t = i / steps;
     const e = ease(t);
     // 坐标沿缓动曲线走，再叠一点垂直抖动（真人滑动不会完美直线）
-    const x = x1 + (x2 - x1) * e + (Math.random() - 0.5) * 1.5;
-    const y = y1 + (y2 - y1) * e + (Math.random() - 0.5) * 2.5;
+    const arc = Math.sin(Math.PI * t);
+    const x = x1 + (x2 - x1) * e + nx * arc + (Math.random() - 0.5) * 1.5;
+    const y = y1 + (y2 - y1) * e + ny * arc + (Math.random() - 0.5) * 2.5;
     const p = 0.5 + Math.sin(Math.PI * t) * 0.35;
     bufs.push(buildTouch({
       action: ACTION.MOVE, x, y, screenW, screenH,

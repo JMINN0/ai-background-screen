@@ -1060,7 +1060,25 @@ export async function input(args) {
    * 2026-11-26：隔壁 AI 操作拼多多 85 次，一次 vdisplay_risk 都没调，
    * 浮窗一直「未评估」。提醒只在 launch 时出现过 7 次，AI 当无关信息忽略了。
    * 改在每次 input 返回里带上 —— 这才是真正触发风控的动作。 */
-  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn };
+  /* **把用的手段说给 AI 听**（2026-11-28）。
+   *
+   * 以前 AI 只看到「已注入 tap」，不知道背后用了什么参数。
+   * 现在把等级/等待/散布带上，这样：
+   *   ① AI 知道为什么这次慢（不是因为卡的）
+   *   ② AI 能向用户解释「我在用 L2 拟人化，所以每一步多等 1.6 秒」
+   *   ③ 出问题时有据可查
+   */
+  const _tac = (() => {
+    try {
+      const t = r.tactic;
+      if (!t || !t.level) return "";
+      const parts = ["风控 " + t.level];
+      if (t.waitedMs > 0) parts.push("等待 " + Math.round(t.waitedMs) + "ms");
+      if (t.size > 0) parts.push("落点散布 " + t.size);
+      return "\n[" + parts.join(" · ") + "]";
+    } catch { return ""; }
+  })();
+  return { text: `已在 display=${r.displayId} 注入 ${kind}${tail}${shotInfo}` + _riskWarn + _tac };
 }
 
 export async function shot(args) {
@@ -2196,7 +2214,7 @@ export async function tapText(args) {
     }
   } catch { /* 退回哈希判据 */ }
   if (!diffInfo && before && after) pageChanged = before !== after;
-  const tapOk = !/失败|不允许|不可用/.test(String(t.text || ''));
+  const tapOk = !((/失败|不允许|不可用|拒绝|⛔/.test(String(t.text || '')) || t.blocked === true || t.ok === false ));
 
   const verdict = !tapOk
     ? '⚠️ 注入失败'
@@ -2481,7 +2499,7 @@ export async function tapImage(args) {
   // **tools.input() 从不返回 ok 字段** —— 它所有返回路径都只有 {text}。
   // 所以 `t.ok !== false` 恒为 true（undefined !== false），注入失败也报 ✅。
   // 改成和 tapText 一致的文本判据。
-  const injected = !/失败|不允许|不可用/.test(String(t.text || ''));
+  const injected = !((/失败|不允许|不可用|拒绝|⛔/.test(String(t.text || '')) || t.blocked === true || t.ok === false ));
   await new Promise((res) => setTimeout(res, 900));
 
   const g2 = await grabFullPng();
@@ -2705,7 +2723,7 @@ export async function tapColor(args) {
   const before = g1.ok ? (await V.dhash(g1.path)).hash : null;
 
   const t = await input({ kind: 'tap', nx: b.cx, ny: b.cy, verify: false });
-  const injected = !/失败|不允许|不可用/.test(String(t.text || ''));
+  const injected = !((/失败|不允许|不可用|拒绝|⛔/.test(String(t.text || '')) || t.blocked === true || t.ok === false ));
   await new Promise((res) => setTimeout(res, 900));
 
   const g2 = await grabFullPng();

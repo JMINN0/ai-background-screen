@@ -529,6 +529,31 @@ export async function start({ width = 0, height = 0, dpi = 320, systemDecoration
     }
   } catch { /* 清理失败不影响建屏，顶多是黑屏 */ }
 
+  /* **检测僵尸屏：有 DisplayInfo 但没对应进程。**
+   *
+   * 2026-11-27 抓到现场：scrcpy 进程死了，但它建的 VirtualDisplay
+   * 还挂在系统里（state OFF），dsh-frames 一直镜像它 → 用户看到黑屏。
+   * 特征：ps 查不到 app_process，但 get-displays 还报着那块屏。
+   *
+   * 处理：杀干净重来。这是唯一能自愈的办法 ——
+   * 因为进程已经没了，没有别的途径能 release 那个 VirtualDisplay。
+   */
+  try {
+    const _gd = await shell('cmd display get-displays 2>/dev/null | grep -oE "displayId [0-9]+" | wc -l');
+    const _nDisp = Number(String(_gd || "0").trim());
+    if (_nDisp > 1) {   // 除主屏外还有别的屏
+      const _ps = await shell("ps -A -o NAME 2>/dev/null | grep -c app_process");
+      const _nProc = Number(String(_ps || "0").trim());
+      if (_nProc === 0) {
+        /* 有屏但没进程 = 全是僵尸屏 */
+        console.error("[vd] 发现 " + (_nDisp - 1) + " 块僵尸屏（无进程持有），清掉");
+        await shell("pkill -9 -f 'framesrv.Main' 2>/dev/null; "
+          + "pkill -9 -f 'com.genymobile.scrcpy.Server' 2>/dev/null; true");
+        await sleep(1500);
+      }
+    }
+  } catch { /* 检测失败就按原样继续 */ }
+
   /* **只要屏还活着就复用，配置不同只提示不重建。**
      *
      * 以前的逻辑只比较 systemDecorations，尺寸/DPI/方向全不比 —— 于是：
@@ -2653,6 +2678,59 @@ export async function input(kind, a = {}) {
   try { _riskCache.op = '注入·' + kind; _riskCache.at = 0; syncRiskLevel(); } catch { /* 不影响操作 */ }
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
+
+  /*
+   * ── 风控等级 → 操作手段（tactics.js）─────────────────────────────
+   *
+   * 只做第一阶段：把等级翻成注入参数，**不在这里拦截** L3/L4。
+   *
+   * 等级来源是 AI 用 `vdisplay_risk` 给出的评估；AI 没评估过（null 或 '?'）
+   * 就按未知处理 → planFor 退回 L3 那一档的参数。
+   *
+   * `waitFor` 放在**注入之前**、并且没有开关能跳过：
+   * 这是整个机制的核心 —— 否则 AI 只要把参数传成「不等」就能拿到快路径，
+   * 等级就白评了。代价是 L2..L4 每次操作多等 0.5~9 秒，这是有意的。
+   */
+  let tactic = null;
+  try {
+    const ta = await import('./tactics.js');
+    /* **等级必须和当前屏上的 App 对上，否则会「用 A 的等级操作 B」。**
+     *
+     * 2026-11-28 审查抓到：_riskAssessment 是全局单值，只存最后一个包。
+     * 给「系统设置」定 L0 后切到银行 App，等级还是 L0 →
+     * 银行 App 用最快、零等待、零散布的参数。这是最危险的错误。
+     *
+     * 校验方式：从 status() 拿当前屏焦点包，只有 pkg 一致才采信。
+     * 不一致或取不到 → 按「未评估」处理（走 L2 保守档，见下）。
+     */
+    const riskRaw = getRiskAssessment();
+    let riskLevel = '?';
+    if (riskRaw && riskRaw.level) {
+      try {
+        const st0 = await status();
+        const m0 = String((st0 && st0.focusedApp) || '').match(/u\d+\s+([\w.]+)\//);
+        const onPkg = m0 ? m0[1] : '';
+        if (onPkg && riskRaw.pkg === onPkg) {
+          riskLevel = riskRaw.level;
+        }
+        /* 包对不上就保持 ? —— 按未评估处理，宁慢不错 */
+      } catch { /* 取不到就按未评估 */ }
+    }
+    tactic = ta.planFor(riskLevel);
+    if (kind === 'tap' || kind === 'swipe') {
+      tactic.waitedMs = await ta.waitFor(tactic.level);
+    }
+  } catch {
+    // tactics 模块自己坏了不能让所有输入都失败：退化成「按 L3 参数、不额外等待」，
+    // 但返回值里标出来，不假装用过手段。
+    try {
+      const ta2 = await import('./tactics.js');
+      tactic = ta2.planFor('?');
+      tactic.degraded = true;
+    } catch { tactic = null; }
+  }
+  /** 把「用了什么手段」挂进返回值；只挂 tap / swipe。 */
+  const withTactic = (r) => (tactic && (kind === 'tap' || kind === 'swipe') ? { ...r, tactic } : r);
   const d = state.displayId;
   let cmd;
   // 归一化坐标：给 nx/ny（0..1）就按当前屏尺寸换算，省得调用方猜坐标系。
@@ -2749,6 +2827,9 @@ export async function input(kind, a = {}) {
         x: toX(), y: toY(), screenW: sw, screenH: sh,
         holdMs: Number(a.holdMs) || (60 + Math.random() * 90),
         moves: 2 + Math.floor(Math.random() * 3),
+        // 风控手段：size=0 时 buildTap 走原路径（精确中心，和以前一致）
+        size: tactic ? tactic.size : 0,
+        overshoot: tactic ? tactic.overshoot : 0,
       });
       let sent = 0;
       for (let k = 0; k < bufs.length; k += 1) {
@@ -2874,6 +2955,10 @@ export async function input(kind, a = {}) {
         screenW: state.width, screenH: state.height,
         ms: Number(a.ms) || 300,
         steps: Number(a.steps) || 14,
+        // 风控手段：bend=0 时 buildSwipe 走的还是原来那条直线
+        // 弯曲幅度取 size/8：真人滑动的横向偏移本来就只有落点散布的几分之一，
+        // size/4 实测弓到 53px，在 720 宽的屏上已经像画弧不像滑动了。
+        bend: tactic ? tactic.size / 8 : 0,
       });
       let sentAll = true;
       for (let k = 0; k < swp.bufs.length; k += 1) {
@@ -2944,7 +3029,7 @@ export async function input(kind, a = {}) {
   // tick 已经在分派之前采好了（见上面的注释）
   // SET_CLIPBOARD 那条路 cmd 是 null（server 已经自己粘过，不能再发 keyevent）
   const out = cmd ? await shell(cmd) : '（SET_CLIPBOARD 已连带粘贴）';
-  if (!verify) return { ok: true, displayId: d, out: out.trim(), changed: null };
+  if (!verify) return withTactic({ ok: true, displayId: d, out: out.trim(), changed: null });
 
   await sleep(Number(a.settleMs) || 500);
   let changed = null;
@@ -2989,7 +3074,10 @@ export async function input(kind, a = {}) {
     }
   }
 
-  return {
+  return withTactic({
+    /* **把实际用的手段带给上层**：tools.js 会转成可读文本给 AI。
+     * 没有它，AI 不知道这次用的是什么参数，也没法向用户解释为什么慢。 */
+    tactic,
     ok: changed !== false,          // 轮询完还是没变，才算这次操作大概率没生效
     displayId: d,
     changed,
@@ -2998,7 +3086,7 @@ export async function input(kind, a = {}) {
       ? '画面在 2 秒内一直没有变化，这一下可能真的没生效（坐标偏了 / 控件不可点 / 界面还没加载完）。建议重新截一张图确认位置，不要盲目重复点同一坐标。'
       : undefined,
     out: out.trim(),
-  };
+  });
 }
 
 /**
