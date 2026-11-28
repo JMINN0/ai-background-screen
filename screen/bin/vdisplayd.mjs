@@ -200,7 +200,53 @@ const ACTIONS = {
   async launch(args) {
     const pkg = String(args?.pkg || '').trim();
     if (!/^[a-z][\w.]*$/i.test(pkg)) return { hint: 'pkg 看起来不是合法包名。' };
-    return vd.launch(pkg, args?.activity ? String(args.activity).trim() : '');
+    /* ═══ 投屏时定级（2026-11-28 实测发现漏洞后补）══════════════
+     *
+     * **为什么在这里**：
+     * MCP 的正常路径是 `vdisplay_launch` → MCP server → **daemon** → vd.launch()。
+     * 而 tools.js 的 launch() 根本没被走到 —— 所以那天加的定级逻辑全白做了。
+     *
+     * 实测证据：零知识子代理操作计算器 30 秒，
+     * opmode 全程是 `?`（未评估），从没定过级。
+     *
+     * 等级必须在 vd.launch() 之前写：投屏要 60-120 秒，
+     * 这期间 input 照样能调，会用到上一个 App 的等级。
+     */
+    let _lv = null;
+    try {
+      const wantRaw = args?.level;
+      if (wantRaw != null && String(wantRaw).trim() !== "") {
+        const norm = String(wantRaw).trim().toUpperCase();
+        const lv = norm === '?' ? '?' : ('L' + norm.replace(/^L/, ''));
+        if (lv === '?' || /^L[0-5]$/.test(lv)) {
+          const res = vd.setRiskAssessment({ pkg, level: lv, reason: args?.reason });
+          if (res && res.ok) _lv = { level: lv, source: "AI 指定" };
+        }
+      }
+      /* 没传就查表（risk.json），表里没有就用 unknown_level */
+      if (!_lv) {
+        let ref = null;
+        try {
+          const T = await import('../src/tools.js');
+          const rc = await T.riskCheck(pkg);
+          if (rc && typeof rc.level === "number") ref = rc.level;
+        } catch { ref = null; }
+        if (ref != null && ref >= 0 && ref <= 5) {
+          const lv = 'L' + ref;
+          const res = vd.setRiskAssessment({ pkg, level: lv });
+          if (res && res.ok) _lv = { level: lv, source: "查表建议" };
+        }
+      }
+    } catch { /* 定级失败不阻塞投屏 */ }
+    const _lr = await vd.launch(pkg, args?.activity ? String(args.activity).trim() : "");
+    if (_lv && _lr && typeof _lr === "object") {
+      _lr.riskLevel = _lv.level;
+      _lr.riskSource = _lv.source;
+    } else if (_lr && typeof _lr === "object") {
+      _lr.riskLevel = null;
+      _lr.riskSource = "未定级";
+    }
+    return _lr;
   },
   async shot(args) {
     const region = args?.region && typeof args.region === 'object' ? args.region : null;

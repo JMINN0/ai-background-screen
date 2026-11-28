@@ -270,8 +270,23 @@ async function callTool(name, args) {
       // apps 的返回：{ok, count, packages[]}
       text = `第三方 App 共 ${res.count} 个（用包名调 vdisplay_launch）：\n`
         + res.packages.map((p) => `  ${p}`).join('\n');
-    } else if (res.text) text = res.text;
-    else if (typeof res.ok === 'boolean' && res.ok === false) text = `失败：${res.hint || '未知原因'}`;
+    /* **launch 的返回没有 text 字段**（2026-11-28 加 riskLevel 时发现）。
+     * 原来会落到最后的 JSON.stringify，AI 看到一堆原始字段。
+     * 这里单独格式化，把风控等级也带出来 —— 那是「投屏即定级」的关键信息。
+     */
+    } else if (res.displayId != null && res.landedOnVd !== undefined) {
+      const pl = [
+        `投到虚拟屏 display=${res.displayId}`,
+        `落在虚拟屏上：${res.landedOnVd ? '是' : '否'}`,
+      ];
+      if (res.riskLevel) {
+        pl.push(`风控等级：${res.riskLevel}（${res.riskSource || "未知来源"}）`);
+      } else {
+        pl.push("风控等级：未定级 -> 注入按 L3 保守档执行（每次等 1.3-1.6 秒）");
+        pl.push("  建议下次传 level 参数，例如 level:\"L2\"");
+      }
+      text = pl.join('\n');
+    } else if (typeof res.ok === 'boolean' && res.ok === false) text = `失败：${res.hint || '未知原因'}`;
     else if (Array.isArray(res.lines)) {
       const W = res.imageWidth || 720; const H = res.imageHeight || 1600;
       const pl = [`识别到 ${res.count} 行（${res.cached ? '缓存命中' : (res.elapsedMs + 'ms')}）`];
