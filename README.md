@@ -18,6 +18,7 @@
 - [为什么会有这个项目](#为什么会有这个项目)
 - [它能做什么 / 不能做什么](#它能做什么--不能做什么)
 - [三分钟上手](#三分钟上手)
+- [5 分钟跑通](#5-分钟跑通)
 - [它是怎么做到的](#它是怎么做到的)
 - [浮窗：让你看见 AI 在干什么](#浮窗让你看见-ai-在干什么)
 - [开发历程](#开发历程)
@@ -180,11 +181,297 @@ node screen/bin/vdisplay.mjs stop
 
 ### 自检
 
-```bash
-node screen/bin/vdisplay.mjs selfcheck
+**没有单独的 `selfcheck` 命令** —— 五项自检是 `start` 的一部分，建完屏当场跑、
+不过就自动修一次再复检，结果写在 `start` 的输出里。所以别去找别的命令，
+看 `start` 那一段输出就够了（逐项含义见下面的[清单](#第一次建屏失败自检项逐项含义)）。
+
+### 用 Claude Desktop / Cursor / Cline（不装 DSH）
+
+这个包自带零依赖的 MCP server，配一个 `mcpServers` 条目就能用：
+
+```json
+{
+  "mcpServers": {
+    "background-screen": {
+      "command": "node",
+      "args": ["/Users/你的用户名/ai-background-screen/screen/bin/mcp-server.mjs"]
+    }
+  }
+}
 ```
 
-五项全过才算能用。任何一项不过，它会告诉你是哪一项、为什么、怎么办。
+配置细节、各客户端配置文件位置、常见错误 → [`docs/MCP-配置指南.md`](docs/MCP-配置指南.md)
+
+---
+
+## 5 分钟跑通
+
+装完之后照着做一遍。**每一步都有命令、预期输出、和失败时看哪里**，
+每步都能独立判断过没过，不要跳步。
+
+> 下面的命令都在**仓库根目录**（`ai-background-screen/`）执行，
+> 跑 adb 的那台机器要和手机连着。
+
+### 第 0 步：adb 连通（最常见的失败点）
+
+```bash
+adb devices
+```
+
+**预期**：至少有一行 `127.0.0.1:5555	device`。注意结尾是 `device`，
+不是 `offline` / `unauthorized`。
+
+```bash
+adb -s 127.0.0.1:5555 shell id
+```
+
+**预期**：
+
+```
+uid=2000(shell) gid=2000(shell) groups=2000(shell),1004(input),... context=u:r:shell:s0
+```
+
+`uid=2000(shell)` 是这套工具的工作前提。**不要 `adb root`**，它设计成 uid 2000 就能跑。
+
+```bash
+adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk
+```
+
+**预期**：`31` 或更大（`36` 也行）。小于 31 就是 Android 11 及以下，虚拟屏这条路走不通。
+
+| 你看到 | 意思 | 怎么办 |
+|---|---|---|
+| `List of devices attached` 后什么都没有 | 没连上 | `adb connect 127.0.0.1:5555`；还不行就在手机上重开无线调试再配对 |
+| `127.0.0.1:5555	offline` | 连着但 adbd 没响应 | `adb disconnect 127.0.0.1:5555` → `adb connect 127.0.0.1:5555` |
+| `unauthorized` | 手机没授权这台电脑 | 看手机屏幕，点「允许 USB 调试」 |
+| `adb: more than one device/emulator` | 连了不止一台（比如手机 + 模拟器） | **每条命令都带 `-s 127.0.0.1:5555`**，插件自己也是这么调的 |
+| `command not found: adb` | 没装 platform-tools | 装完之后用 `ADB_BIN=/绝对路径/adb` 指给插件 |
+
+**为什么是 `127.0.0.1:5555`**：无线调试默认绑在 WiFi 网卡上，WiFi 一断就没了。
+跑一次 `adb tcpip 5555` 之后固定走回环，**关 WiFi、开飞行模式都不断**。
+
+**权限那一关也得先过**：私有虚拟屏要求 `com.android.shell` 有 `ADD_TRUSTED_DISPLAY`。
+一部分机型有，Pixel 和部分 Android 15 没有。查法：
+
+```bash
+adb -s 127.0.0.1:5555 shell dumpsys package com.android.shell | grep "ADD_TRUSTED_DISPLAY: granted"
+```
+
+**预期**：出现 `ADD_TRUSTED_DISPLAY: granted=true`。
+**一条都没有**，后面的步骤全部做不了，直接换机型。
+
+### 第 1 步：建屏
+
+```bash
+node screen/bin/vdisplay.mjs start
+```
+
+**预期**（节选）：
+
+```
+虚拟屏已就绪：displayId=1396，SurfaceFlinger id=11529215049433181066
+能托管 App：是 ✅
+硬件合成（HWC）：未开启（3D 游戏会黑屏，轻量 App 正常）
+标志位：FLAG_OWN_CONTENT_ONLY ... FLAG_OWN_FOCUS ...
+这块屏用户看不见，不占主屏焦点。
+✅ 推流已自动开启，悬浮窗浮起（能看到这块屏的画面）
+...
+  ✅ 虚拟屏存在：displayId=1396
+  ✅ 推流在监听：port=38836 ...
+  ✅ 画面帧可取：27425 字节 JPEG头正确
+  ✅ 画面有内容：平均亮度=14 标准差=21
+  ✅ 悬浮窗可见：窗口数=1，位置(59,312) 尺寸117x208
+  ✅ 画面是预期的 App：前台=mCurrentFocus=Window{...com.android.calendar...}
+创建完成并自检通过 ✅
+```
+
+看到最后一行 **`创建完成并自检通过 ✅`** 才算过。
+同时你手机上应该出现一块小浮窗，里面是刚投上去的 App 画面。
+
+### 第 2 步：投一个 App
+
+先查包名（别猜）：
+
+```bash
+adb -s 127.0.0.1:5555 shell pm list packages -3
+```
+
+**预期**：一行一个 `package:com.xxx.yyy`。
+
+> **CLI 没有 `apps` 子命令**（`vdisplay help` 里也没列，别试）。
+> 上面这条 adb 命令就是 `vdisplay_apps` 工具内部做的那件事 —— 结果一模一样。
+> 用 MCP / DSH 时有 `vdisplay_apps` 工具，不用自己敲 adb。
+
+挑一个投上去：
+
+```bash
+node screen/bin/vdisplay.mjs launch com.android.calendar
+```
+
+**预期**：
+
+```
+投到虚拟屏 display=1396
+方式：接管已有实例（没 force-stop，进程和状态保住）
+落在虚拟屏上：是 ✅
+```
+
+`落在虚拟屏上：是 ✅` 是关键。**是 `否 ❌` 就别往下做了** —— 说明任务没落到这块屏上，
+后面所有点击都会点在空气里。
+
+> **投之前先看一眼**：如果这个 App 正开在你的主屏上，插件会**拒绝**投屏，
+> 因为它投过去会杀掉你正在用的那个实例。切到别的 App 再投。
+
+### 第 3 步：点一下
+
+看整屏，随便点中间：
+
+```bash
+node screen/bin/vdisplay.mjs input tap --nx 0.5 --ny 0.5
+```
+
+**预期**：`已在 display=1396 注入 tap`，有时后面跟一句风控状态。
+
+也可以读屏文字，直接按文字点（比算坐标准）：
+
+```bash
+node screen/bin/vdisplay.mjs text
+```
+
+**预期**：
+
+```
+识别到 N 行文字，耗时 1.6 秒
+屏 720x1592，下面每行的 nx/ny 是归一化坐标，可直接传给 vdisplay_input。
+
+  [0.98] (  32, 210) 120x40  nx=0.128 ny=0.145  日程
+  ...
+```
+
+拿到 `nx=` `ny=` 之后：
+
+```bash
+node screen/bin/vdisplay.mjs input tap --nx 0.128 --ny 0.145
+```
+
+**`text` 报 OCR 相关的错是正常的、可以不装**：它依赖 `pip install rapidocr-onnxruntime`。
+没装不影响建屏、投屏、点击、截图，只影响读文字。
+
+### 第 4 步：看到画面
+
+```bash
+node screen/bin/vdisplay.mjs shot --out /tmp/a.jpg
+```
+
+**预期**：`截图：/tmp/a.jpg`，然后打开 `/tmp/a.jpg` 就是刚才点过之后的画面。
+
+**别忘了抬头看手机**：主屏上那块小浮窗里的画面，应该和这张截图是同一个界面。
+两边不一致就是出问题了（多半是浮窗还指着旧屏）。
+
+### 第 5 步：关掉
+
+```bash
+node screen/bin/vdisplay.mjs stop
+```
+
+**预期**：
+
+```
+虚拟屏已销毁。
+仍在后台运行：com.android.calendar              ← 正常，默认不杀 App
+```
+
+或者 `虚拟屏已销毁。`（没有残留时就这一行）。
+
+```bash
+node screen/bin/vdisplay.mjs status
+```
+
+**预期**：`虚拟屏没有在运行。`
+
+**默认不杀投上去的 App**（里面有可能是微信、Shizuku 这类不能随便杀的）。
+要一并清掉就加开关：
+
+```bash
+node screen/bin/vdisplay.mjs stop --forceStopApps
+```
+
+---
+
+### 第一次建屏失败：自检项逐项含义
+
+`start` 会跑这六项。**任何一项标 ❌，先对照下表**，别直接重装。
+
+| 自检项 | 它到底在量什么 | ❌ 说明什么 | 怎么办 |
+|---|---|---|---|
+| `虚拟屏存在` | `running` 为真**且**拿得到 displayId | 屏根本没建起来，或者建完立刻被系统收掉 | 先看 adb 是否还连通（第 0 步重跑）；再检查 `ADD_TRUSTED_DISPLAY` 权限 |
+| `推流在监听` | 取帧服务的端口在听，**且属于这块屏** | 端口被别的屏占着，或者 framesrv 没起来 | 插件会自动修一次；修完还 ❌ 就 `stop` 再 `start` |
+| `画面帧可取` | 真取一帧，且帧头是合法 JPEG | 取到 0 字节，或者根本不是图 | 屏上没 App 时 ImageReader 一帧不出，所以 `start` 会自动投一个 App —— 这一步 ❌ 多半是投放也失败了，看上一项 |
+| `画面有内容` | 算这一帧的平均亮度和标准差 | 纯黑 / 纯白（App 崩了，或者渲染不出来） | 全白通常是崩溃页；全黑见下面的[「虚拟屏全黑」](#虚拟屏全黑state-off) |
+| `悬浮窗可见` | 主屏上那个窗口真的在，且在屏幕范围内 | 窗口没出现，或者被别的 App 藏了 | 插件自己会 `appops set ... SYSTEM_ALERT_WINDOW allow`，一般不用你手点；某些 App 带 `HIDE_NON_SYSTEM_OVERLAY` 会把浮窗强制藏掉，`start` 会自动换一个 App 重试 |
+| `画面是预期的 App` | 这块屏的前台确实是刚投的那个包 | 投放失败，或者任务跑到了别的屏上 | 常见于 `singleTask` App —— `am start --display` 只会把主屏任务搬过去；也可能这个 App 主屏正开着，被拒绝了 |
+
+自检不过时插件**会自动修一次**（只修失败的那几项），修完再来一遍复检。
+所以输出里可能看到两轮 ✅/❌。**以复检那一轮为准**，而且复检里标 ⚠️ 的是「没量到」——
+它既不算通过也不算失败，不要把 ⚠️ 当 ✅ 用。
+
+### 虚拟屏全黑（state OFF）
+
+**症状**：自检全绿或者部分绿，但 `shot` 截出一张纯黑的图，OCR 读到 0 行，浮窗里也是黑的。
+
+**先分清三种黑屏，处理办法完全不同：**
+
+```bash
+node screen/bin/vdisplay.mjs status
+```
+
+| `status` 说 | 含义 | 怎么办 |
+|---|---|---|
+| `⚠️ 这块屏处于僵尸态（任务还在但没焦点、渲染纯黑）` | 手机锁过屏，虚拟屏醒了没恢复 | `stop` → `start` **重建**。重拉 App 没用 |
+| `⚠️ 这块屏上已经没有 App 了` | App 被划掉或者崩了 | 重新 `launch`。这是黑屏，不是「加载中」 |
+| `虚拟屏没有在运行` | 屏没了 | `start` |
+| 屏在跑、App 也在，但图就是黑的 | 见下面的 state OFF | 继续看 |
+
+**state OFF 是什么**：虚拟屏在系统里建成功了，但系统**没给它上电**。
+App 渲染不出来，画面自然全黑。`start` 会直接拦下来并告诉你是谁：
+
+```
+虚拟屏创建成功但系统没给它上电（state OFF），App 渲染不出来、画面全黑。
+这不是你的操作问题，也不是插件坏了：实测等 30 秒、注入触摸、screencap、keyevent 都救不回来。
+怎么办：① 再调一次 vdisplay_start（多数情况第二次就好）；
+② 反复出现就重启手机 —— SurfaceFlinger 跑太久（实测 20 天）会出这个状态。
+```
+
+**根因**：`start` 会先清残留（有旧虚拟屏没清干净时再建，新的那块就容易不上电）。
+干净环境下实测 3/3 都是正常上电，有残留时才会踩到。
+所以**最简单的一条：失败了就再跑一次 `start`**，多数第二次就正常。
+反复出现再考虑重启手机。
+
+**还有一种「全黑」不是黑屏**：银行、支付类 App 用了 `FLAG_SECURE`，
+截屏 API 拿到的一律是纯黑 —— 这是系统保护，绕不过去，也不是你的问题。
+用 `vdisplay_probe_secure` 可以确认。
+
+### 跑不通时先看这里
+
+```bash
+# daemon 在不在、端口是多少
+cat ~/.dsh/plugin-screen/cli-daemon.json
+
+# daemon 的日志
+tail -50 ~/.dsh/plugin-screen/vdisplayd.log
+
+# 系统里到底有几块虚拟屏
+adb -s 127.0.0.1:5555 shell dumpsys SurfaceFlinger --display-id | grep "Virtual display"
+```
+
+> **`vdisplayd.log` 有没有文件，取决于 daemon 是怎么起来的**：
+> 它由 `vdisplay.mjs` 拉起时（CLI 第一次调用）输出全部写进这个文件；
+> 而 DSH 引擎自己持有的那份 daemon 不经过这条路径，那就没有这个文件。
+> 所以「这个文件不存在」不代表 daemon 没跑 —— 以 `cli-daemon.json` 的 `port` 为准。
+
+`cli-daemon.json` 里没有 `port` 或者端口是 0，说明 daemon 没起来 ——
+跑一次 `start` 或 `launch` 这类要写状态的命令，它会自动拉起来。
+（提醒：`start` 会真的建屏，不想建屏就先用 `status` 看一眼当前状态。）
 
 ---
 

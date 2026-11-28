@@ -2257,7 +2257,7 @@ export async function tapText(args) {
 
   return {
     text: `${verdict}\n点击目标：「${r.label}」 nx=${r.nx.toFixed(3)} ny=${r.ny.toFixed(3)}\n`
-      + `画面：${pageChanged ? '变了' : '没变'}`,
+      + `画面：${pageChanged ? '变了' : '没变'}` + riskTailOf(t),
     clicked: tapOk,
     pageChanged,
     label: r.label,
@@ -2265,6 +2265,34 @@ export async function tapText(args) {
   };
 }
 
+  /* **从 input() 的返回里提取风控信息，供高层工具透传。**
+   *
+   * 2026-11-28 审查抓到：`tap_text` / `tap_image` / `tap_color`
+   * 内部调 `input()` 后把返回文字丢了，自己拼一个新的 ——
+   * 于是走这条路一次风控提示都收不到。
+   * 而手册推荐的就是 `tap_text`，所以「85 次点击只提醒 7 次」
+   * 很可能就是这个原因。
+   */
+  function riskTailOf(t) {
+    try {
+      const s = String((t && t.text) || "");
+      /* **按行挑，不用正则跨行匹配。**
+       * 2026-11-28 头一版用 `\n(风控等级：.*|⚠️ 当前 App（.*)$/`，
+       * 但 `.*` 不跨行，而实际输出是：
+       *   \n⚠️ 当前 App（xxx）的风控还没评估 —— 建议先调 …
+       *   \n[风控 L3 · 等待 2132ms · 落点散布 32]
+       * 两行都要带，正则只能抓到一行。
+       */
+      const keep = s.split('\n').filter((l) => {
+        const x = l.trim();
+        return x.startsWith('风控等级：')
+          || x.startsWith('⚠️ 当前 App（')
+          || (x.startsWith('[') && x.includes('风控 '));
+      });
+      return keep.length ? '\n' + keep.join('\n') : "";
+    } catch { return ""; }
+  }
+  
 /** 编辑距离（用于「没找到」时给相近建议）。 */
 function levenshtein(a, b) {
   a = String(a); b = String(b);
@@ -2565,7 +2593,7 @@ export async function tapImage(args) {
       ? '✅ 点击已生效（画面变了）'
       : '✅ 已点击，但没测到画面变化（可能是开关类控件、空→有内容的局部变化、或这一下没打到可点的地方）';
   return {
-    text: `${verdict}\n模板目标 nx=${r.nx} ny=${r.ny}（score ${r.score}）\n画面：${pageChanged ? '变了' : '没变'}`,
+    text: `${verdict}\n模板目标 nx=${r.nx} ny=${r.ny}（score ${r.score}）\n画面：${pageChanged ? '变了' : '没变'}` + riskTailOf(t),
     clicked: injected, pageChanged, nx: r.nx, ny: r.ny,
   };
 }
@@ -2789,7 +2817,7 @@ export async function tapColor(args) {
       ? '✅ 点击已生效（画面变了）'
       : '✅ 已点击，但没测到画面变化（可能不是可点区域，也可能是空→有内容这种整屏 dHash 抓不到的变化）';
   return {
-    text: `${verdict}\n色块 ${b.w}×${b.h} 中心 nx=${b.cx} ny=${b.cy}\n画面：${pageChanged ? '变了' : '没变'}`,
+    text: `${verdict}\n色块 ${b.w}×${b.h} 中心 nx=${b.cx} ny=${b.cy}\n画面：${pageChanged ? '变了' : '没变'}` + riskTailOf(t),
     clicked: injected, pageChanged, nx: b.cx, ny: b.cy,
   };
 }

@@ -2767,7 +2767,44 @@ export function markOpMode(text) {
   } catch { /* ignore */ }
 }
 
+/** 把「操作方式」那一段换成新的说法，并立刻写进浮窗读的那个文件。
+ *
+ *  为什么不直接改 `_riskCache.op` 就算：`syncRiskLevel()` 有 5 秒缓存，
+ *  缓存命中那条路只写文件、不重算，很快；但缓存未命中时会先跑一次 `status()`
+ *  （约 250ms）。所以**调用方必须先确认「这一档确实要等」**再进来
+ *  （见 `_willWait`），否则 L0 的每一次点击都会白多一次 dumpsys。
+ *
+ *  **不 await**：markOpMode 本来就是 fire-and-forget，这一次 adb 往返
+ *  和紧接着的 `waitFor()` 并行，不会让等待变长。
+ *
+ *  等级沿用 `_riskCache` 里记的那一个（syncRiskLevel 自己的 5 秒语义）。
+ *  第一次调用时会现算，算不出来写 `?`，浮窗显示「风控 未评估」——
+ *  和它在这之前的行为一致。
+ */
+function _setOpNow(op) {
+  try {
+    _riskCache.op = op;
+    _riskCache.at = 0;
+    const p = syncRiskLevel();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch { /* 不影响操作 */ }
+}
+
+/** 这一档等级在注入前会不会真的等一段时间。
+ *
+ *  和 tactics.js 的 waitFor() 用同一份规则，这里只用来判断
+ *  「要不要为显示多做 adb 往返」：返回 false 时 input() 走原来的路，
+ *  一次额外 I/O 都不加（L0、L5 是 [0,0]，永远 false）。
+ */
+function _willWait(ta, level) {
+  try {
+    const p = ta.planFor(level);
+    return !!(p.useThink || (Array.isArray(p.intervalMs) && p.intervalMs[1] > 0));
+  } catch { return false; }
+}
+
 export async function input(kind, a = {}) {
+  /* 先按「注入」写；tap / swipe 真正要等的时候，下面会先切成「等待·」再切回「注入·」。 */
   try { _riskCache.op = '注入·' + kind; _riskCache.at = 0; syncRiskLevel(); } catch { /* 不影响操作 */ }
   const s = await start();
   if (!s.ok) return { ok: false, hint: s.hint };
@@ -2878,7 +2915,29 @@ export async function input(kind, a = {}) {
 
     tactic = ta.planFor(riskLevel);
     if (kind === 'tap' || kind === 'swipe') {
-      tactic.waitedMs = await ta.waitFor(tactic.level);
+      /* **等待期间让浮窗显示「等待·」，不要显示「注入·」。**
+       *
+       * L2 每次点前要等 1.6 秒（thinkDelay，随机 0.7~9 秒）。这段时间浮窗
+       * 原来一直写着「注入·tap」，用户看到的是 AI「发呆」——
+       * 他以为卡住了，看不到这是风控要求的等待。
+       *
+       * 写进「操作方式」那一段（`等级|操作方式|屏号` 的第二段），
+       * **不新增第四段**：浮窗 readStatus() 只解析前三段，多余的直接丢。
+       *
+       * 0 毫秒的等级（L0）一个字节都不写，不为显示多花一次往返。
+       * 写文件不 await，那次 adb 往返和下面的等待并行，等待时长不变。
+       */
+      if (_willWait(ta, tactic.level)) {
+        _setOpNow('等待·' + kind);
+        try {
+          tactic.waitedMs = await ta.waitFor(tactic.level);
+        } finally {
+          /* 等待出错也要切回来，否则浮窗永远停在「等待·」。 */
+          _setOpNow('注入·' + kind);
+        }
+      } else {
+        tactic.waitedMs = await ta.waitFor(tactic.level);
+      }
     }
 
     /* ═══ 第二阶段 B：L3 写操作确认 ══════════════════════════════════
