@@ -805,6 +805,55 @@ export async function launch(args) {
     return { text: 'activity 名不合法（只允许字母数字下划线和点，不能有分号空格等）。' };
   }
   const mode = (args?.mode === 'fresh') ? 'fresh' : 'move';
+  /* ═══ 投屏时就定级（2026-11-28 合并）═══════════════════════
+   *
+   * 用户要求：「启用 app 的同时就已经输入了风控等级」。
+   *
+   * **为什么必须在 vd.launch() 之前**：
+   * 投屏要 60-120 秒（建屏+启动），这期间 input 照样能调，
+   * 而它读的是 _riskAssessment（全局单值）。
+   * 如果等 launch 返回再写等级，整个投屏过程都在用**上一个 App 的等级**
+   * 或者「未评估」的 L3 保守档 —— 那几十秒的点击可能已经出事了。
+   *
+   * setRiskAssessment 是同步纯内存操作（毫秒级），放前面没有代价。
+   */
+  let _launchLevel = null;
+  let _launchLevelSource = "";
+  try {
+    const wantRaw = args?.level;
+    if (wantRaw != null && String(wantRaw).trim() !== "") {
+      const norm = String(wantRaw).trim().toUpperCase();
+      const lv = norm === '?' ? '?' : ('L' + norm.replace(/^L/, ''));
+      if (lv === '?' || /^L[0-5]$/.test(lv)) {
+        const res = vd.setRiskAssessment({ pkg, level: lv, reason: args?.reason });
+        if (res && res.ok) {
+          _launchLevel = lv;
+          _launchLevelSource = "AI 指定";
+        }
+      }
+    }
+    /* **没传 level：查表给建议值**（不假装是 AI 判断的，标来源）。
+     * 表里也没有 → 保持未评估，input 会按 L3 保守档走。
+     */
+    if (!_launchLevel) {
+      /* **用 riskCheck 查表**（同文件函数，直接调）。
+       * 表里没有这个包 → 它返回 unknown_level。 */
+      let refLv = null;
+      try {
+        const ref = await riskCheck(pkg);
+        if (ref && typeof ref.level === 'number' && Number.isFinite(ref.level)) refLv = ref.level;
+      } catch { refLv = null; }
+      if (refLv != null && refLv >= 0 && refLv <= 5) {
+        const lv = 'L' + refLv;
+        const res = vd.setRiskAssessment({ pkg, level: lv });
+        if (res && res.ok) {
+          _launchLevel = lv;
+          _launchLevelSource = "查表建议";
+        }
+      }
+    }
+  } catch { /* 定级失败不阻塞投屏，但要如实说 */ }
+  
   const r = await vd.launch(pkg, act, mode);
   if (!r.displayId) return { text: `投屏失败：${r.hint}` };
   const lines = [
@@ -814,6 +863,18 @@ export async function launch(args) {
       : '方式：强制重开（先 force-stop）',
     `落在虚拟屏上：${r.landedOnVd ? '是 ✅' : '否 ❌'}`,
   ];
+  /* **把定级结果说清楚**：用户要求「投屏时就知道风控等级」。
+   * 来源要标明 —— AI 自己指定的和查表建议的，可信度不一样。
+   */
+  if (_launchLevel) {
+    lines.push(`风控等级：${_launchLevel}（${_launchLevelSource}）→ 后续注入按这一档的参数执行`);
+    if (_launchLevelSource === "查表建议") {
+      lines.push("   这是 risk.json 的建议值，不是你判断的。要改就传 level 参数。");
+    }
+  } else {
+    lines.push("风控等级：未定级 → 注入会按 L3 保守档执行（慢但安全）");
+    lines.push("   建议这次调用就传 level 参数，别再单独调一次。");
+  }
   // 不再自动还原（见 vd.js 里的说明），所以这里**必须明确告诉调用方**：
   // 主屏被抢了，而且我们没管。以前这行只在 restoredMain 为真时打，而它永远是 false。
   if (r.mainChanged) {

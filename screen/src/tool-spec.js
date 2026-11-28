@@ -146,6 +146,21 @@ export function launchSpec() {
       '（用户自己切了 App 时插件反而去改主屏），所以只观察、只报告，由你决定要不要处理。',
     ].join('\n'),
     parameters: {
+        /* **投屏时同时定级**（2026-11-28 合并）。
+         * 用户要求：「启用 app 的同时就已经输入了风控等级」。
+         * 不传就用 risk.json 的建议值，表里没有则保持未评估（走 L3 保守档）。
+         */
+        level: {
+          type: 'string',
+          description: '风控等级 L0..L5 或 "?"。'
+            + '不传：按 risk.json 查表给建议值（返回里会标明来源）。'
+            + 'L0=无风控(设置/计算器) L1=轻微(视频/浏览器) L2=中等(电商/社交,拟人化) '
+            + 'L3=严格(微信/支付宝/银行,只读) L4=禁止(游戏/抢购) L5=硬边界。',
+        },
+        reason: {
+          type: 'string',
+          description: '为什么定这个等级。低于 risk.json 参照值时必填（防止随手定低）。',
+        },
       pkg: { type: 'string', required: true, description: '包名，例如 com.tencent.mm。' },
       mode: {
         type: 'string',
